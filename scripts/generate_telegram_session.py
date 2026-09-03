@@ -45,6 +45,10 @@ def default_session_file(repository_root: Path) -> Path:
     return repository_root / "data" / "telegram" / "telegram.session"
 
 
+def default_env_file() -> Path:
+    return Path(__file__).resolve().parents[1] / ".env"
+
+
 def load_dotenv(path: Path) -> None:
     """Load only missing environment values from the gitignored local .env."""
     if not path.exists():
@@ -79,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--env-file",
         type=Path,
-        default=Path(".env"),
+        default=default_env_file(),
         help="ignored local environment file; shell environment values take precedence",
     )
     return parser.parse_args()

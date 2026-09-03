@@ -27,3 +27,7 @@ def test_session_file_path_stays_below_gitignored_data_directory() -> None:
     path = MODULE.default_session_file(Path("C:/repo"))
 
     assert path == Path("C:/repo/data/telegram/telegram.session")
+
+
+def test_default_env_file_resolves_to_repository_root() -> None:
+    assert MODULE.default_env_file() == SCRIPT.parents[1] / ".env"
