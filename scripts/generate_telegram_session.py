@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import getpass
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,7 +93,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     load_dotenv(args.env_file)
-    credentials = TelegramCredentials.from_environment(os.environ)
+    try:
+        credentials = TelegramCredentials.from_environment(os.environ)
+    except ValueError as error:
+        print(f"Configuration error: {error}", file=sys.stderr)
+        print(
+            "Fill TG_API_ID, TG_API_HASH, and TG_PHONE in the repository .env file.",
+            file=sys.stderr,
+        )
+        return 2
     session = asyncio.run(generate_string_session(credentials))
     print("\nSession generated. Add this value to the ignored .env file:")
     print(f"TELEGRAM_SESSION={session}")

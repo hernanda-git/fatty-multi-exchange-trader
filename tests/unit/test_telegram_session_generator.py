@@ -1,6 +1,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,3 +32,15 @@ def test_session_file_path_stays_below_gitignored_data_directory() -> None:
 
 def test_default_env_file_resolves_to_repository_root() -> None:
     assert MODULE.default_env_file() == SCRIPT.parents[1] / ".env"
+
+
+def test_main_reports_missing_credentials_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for key in ("TG_API_ID", "TG_API_HASH", "TG_PHONE"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(MODULE, "load_dotenv", lambda _: None)
+    monkeypatch.setattr(MODULE, "parse_args", lambda: SimpleNamespace(env_file=Path("ignored")))
+
+    assert MODULE.main() == 2
+    assert "TG_API_ID" in capsys.readouterr().err
