@@ -16,7 +16,7 @@ services:
 
   migrate:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "migrate"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "migrate"]
     environment:
       PGHOST: postgres
       PGPORT: "5432"
@@ -30,7 +30,7 @@ services:
 
   init:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "init"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "init"]
     environment:
       TRADER_MODE: PAPER
       SERVICE_NAME: init
@@ -56,7 +56,7 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -64,7 +64,7 @@ services:
 
   intake:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "intake"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "intake"]
     environment:
       TRADER_MODE: PAPER
       SERVICE_NAME: intake
@@ -80,12 +80,12 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "intake", "--check"]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "intake", "--check"]
     restart: unless-stopped
 
   analyzer:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "analyzer"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer"]
     environment:
       TRADER_MODE: PAPER
       SERVICE_NAME: analyzer
@@ -102,12 +102,12 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "analyzer", "--check"]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer", "--check"]
     restart: unless-stopped
 
   dispatcher-binance:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
     environment:
       TRADER_MODE: PAPER
       SERVICE_NAME: dispatcher-binance
@@ -122,12 +122,12 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "dispatcher-binance", "--check"]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-binance", "--check"]
     restart: unless-stopped
 
   dispatcher-bitget:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
     environment:
       TRADER_MODE: PAPER
       SERVICE_NAME: dispatcher-bitget
@@ -143,26 +143,26 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget", "--check"]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget", "--check"]
     restart: unless-stopped
 
   monitor-binance:
     extends:
       service: dispatcher-binance
-    command: ["python", "-m", "fatty_trader.service", "--service", "monitor-binance"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "monitor-binance"]
     environment:
       SERVICE_NAME: monitor-binance
 
   monitor-bitget:
     extends:
       service: dispatcher-bitget
-    command: ["python", "-m", "fatty_trader.service", "--service", "monitor-bitget"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "monitor-bitget"]
     environment:
       SERVICE_NAME: monitor-bitget
 
   operator-bot:
     build: .
-    command: ["python", "-m", "fatty_trader.service", "--service", "operator-bot"]
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
       TRADER_MODE: PAPER
       SERVICE_NAME: operator-bot
@@ -177,5 +177,5 @@ services:
       init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "operator-bot", "--check"]
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot", "--check"]
     restart: unless-stopped
