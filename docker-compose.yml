@@ -76,6 +76,8 @@ services:
       TG_API_ID: ${TG_API_ID:-}
       TG_API_HASH: ${TG_API_HASH:-}
       TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
+      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-@example_source_channel}
+      TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-123456789}
     depends_on:
       init:
         condition: service_completed_successfully

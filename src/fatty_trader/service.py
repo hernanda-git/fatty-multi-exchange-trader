@@ -11,7 +11,12 @@ import asyncio
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
+from fatty_trader.config.telegram import TelegramSettings
+from fatty_trader.intake.persistence import InMemoryRawMessageRepository
+from fatty_trader.intake.telegram import TelegramForwarder
+from fatty_trader.intake.telethon_client import build_telethon_client
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
 
 SUPPORTED_SERVICES = (
@@ -34,7 +39,13 @@ class ServiceConfig:
 
 
 _CREDENTIALS: dict[str, tuple[str, ...]] = {
-    "intake": ("TG_API_ID", "TG_API_HASH", "TELEGRAM_SESSION"),
+    "intake": (
+        "TG_API_ID",
+        "TG_API_HASH",
+        "TELEGRAM_SESSION",
+        "TELEGRAM_SOURCE_CHANNELS",
+        "TELEGRAM_TARGET_CHAT_ID",
+    ),
     "analyzer": (),
     "dispatcher-binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
     "dispatcher-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET"),
@@ -68,11 +79,42 @@ def apply_schema() -> None:
 
 async def run_worker(name: str) -> None:
     config = service_config(name, os.environ)
+    if name == "intake":
+        await run_intake(os.environ)
+        return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:
         # Keep this boundary observable without writing secrets or business payloads.
         print(f"service={config.name} mode={config.mode} state=ready", flush=True)
         await asyncio.sleep(interval)
+
+
+def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:
+    """Return settings only when fully configured; missing config disables intake."""
+    try:
+        return TelegramSettings.from_mapping(environ)
+    except ValueError:
+        return None
+
+
+async def run_intake(
+    environ: Mapping[str, str],
+    *,
+    client_factory: Any = build_telethon_client,
+    repository: Any = None,
+) -> None:
+    """Run the real Telethon intake, or remain inert when config is absent."""
+    settings = intake_settings(environ)
+    if settings is None:
+        print("service=intake mode=PAPER state=disabled reason=missing-telegram-config", flush=True)
+        while True:
+            await asyncio.sleep(float(environ.get("WORKER_HEARTBEAT_SECONDS", "30")))
+    client = client_factory(settings)
+    forwarder = TelegramForwarder(client, settings, repository or InMemoryRawMessageRepository())
+    await forwarder.attach()
+    await client.start()
+    print("service=intake mode=PAPER state=ready", flush=True)
+    await client.run_until_disconnected()
 
 
 def parse_args() -> argparse.Namespace:

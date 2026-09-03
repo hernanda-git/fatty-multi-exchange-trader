@@ -26,6 +26,12 @@ def test_unknown_service_is_rejected() -> None:
         service_config("not-a-service", {})
 
 
+def test_intake_config_allows_missing_telegram_values_without_starting() -> None:
+    from fatty_trader.service import intake_settings
+
+    assert intake_settings({}) is None
+
+
 def test_compose_contains_migration_init_and_isolated_workers() -> None:
     for service in ("migrate", "init", *SUPPORTED_SERVICES):
         assert f"  {service}:" in COMPOSE

@@ -18,6 +18,7 @@ def test_telegram_settings_require_session_and_configured_channels() -> None:
             "TELEGRAM_API_HASH": "a" * 32,
             "TELEGRAM_SESSION": "session-value",
             "TELEGRAM_CHANNELS": "@example_source_channel, -100123",
+            "TELEGRAM_TARGET_CHAT_ID": "123456789",
         }
     )
     assert settings.api_id == 123456

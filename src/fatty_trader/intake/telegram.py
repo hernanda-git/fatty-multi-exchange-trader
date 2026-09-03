@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from html import escape
 from typing import Any
 
 from telethon import events  # type: ignore[import-untyped]
 
+from fatty_trader.config.telegram import TelegramSettings
 from fatty_trader.intake.persistence import (
     RawMessageRepository,
     RawTelegramMessage,
@@ -43,6 +45,54 @@ class TelegramIntake:
             has_media=has_media,
         )
         return self._repository.save_if_new(item)
+
+
+def format_forward_html(raw_text: str) -> str:
+    """Wrap source text as safe, consistently branded Telegram HTML."""
+    body = escape(raw_text.strip() or "(media attachment)").replace("\n", "<br>")
+    return f"<b>Fatty Signal Relay</b><br><i>Source channel update</i><br><br>{body}"
+
+
+class TelegramForwarder:
+    """Persist and relay source updates, with process-local idempotency."""
+
+    def __init__(
+        self, client: Any, settings: TelegramSettings, repository: RawMessageRepository
+    ) -> None:
+        if settings.target_chat_id is None:
+            raise ValueError("Telegram forwarding target is not configured")
+        self._client = client
+        self._settings = settings
+        self._intake = TelegramIntake(repository)
+        self._seen: set[tuple[int, int, str]] = set()
+
+    async def handle_message(self, channel_id: int, message: Any) -> None:
+        item = self._intake.ingest(channel_id=channel_id, message=message)
+        key = (item.channel_id, item.message_id, item.revision_hash)
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        caption = format_forward_html(item.raw_text)
+        media = getattr(message, "media", None)
+        if media is not None:
+            await self._client.send_file(
+                self._settings.target_chat_id,
+                media,
+                caption=caption,
+                parse_mode="html",
+            )
+        else:
+            await self._client.send_message(
+                self._settings.target_chat_id, caption, parse_mode="html", link_preview=False
+            )
+
+    async def attach(self) -> None:
+        async def handle(event: Any) -> None:
+            await self.handle_message(int(event.chat_id), event.message)
+
+        self._client.add_event_handler(
+            handle, events.NewMessage(chats=list(self._settings.channels))
+        )
 
 
 def _message_time(message: Any) -> datetime:
