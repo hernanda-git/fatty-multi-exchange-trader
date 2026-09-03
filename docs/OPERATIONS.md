@@ -35,4 +35,4 @@ Restore is intentionally an explicit destructive action. Stop application worker
 
 ## Deployment boundary
 
-Deployment to `production-host`, Telegram listener authorization, Codex OAuth setup, exchange metadata probes, credentials, and all exchange/PAPER execution are deliberately not run from this workstation. A live order is explicitly out of scope until the independent go-live gates in the implementation plan are satisfied and a human operator approves a venue.
+Deployment to the production host, Telegram listener authorization, Codex OAuth setup, exchange metadata probes, credentials, and all exchange/PAPER execution are deliberately not run from this workstation. A live order is explicitly out of scope until the independent go-live gates in the implementation plan are satisfied and a human operator approves a venue.

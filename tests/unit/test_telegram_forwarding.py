@@ -47,7 +47,8 @@ async def test_forwarder_deduplicates_and_sends_media_with_wrapper() -> None:
 
     message = SimpleNamespace(id=7, message="BTCUSDT LONG", media=object(), reply_to=None)
     forwarder = TelegramForwarder(
-        FakeClient(), TelegramSettings(1, "hash", "session", ("@example_source_channel",), 123456789),
+        FakeClient(),
+        TelegramSettings(1, "hash", "session", ("@example_source_channel",), 123456789),
         InMemoryRawMessageRepository(),
     )
     await forwarder.handle_message(-1001, message)
