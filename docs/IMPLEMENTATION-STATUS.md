@@ -22,6 +22,6 @@ PostgreSQL/Alembic persistence, Telethon intake, literal Codex queue worker, exc
 
 - Docker Desktop Linux engine is running; `docker build -t fatty-multi-exchange-trader:local .` passed and a direct container `/health` smoke test returned the expected PAPER-only payload.
 - Compose schema validation passed and the `postgres` service reached `healthy`.
-- The Compose `web` service cannot bind its declared `127.0.0.1:8080` port because the unrelated running `docker-mssnetx-1` container already owns host port 8080. This is a local port-allocation blocker, not a web-image failure.
+- The Compose `web` service now binds configurable `WEB_HOST_PORT` (default `18081`). PostgreSQL is healthy, web is running, and `http://127.0.0.1:18081/health` returned HTTP 200 with the expected PAPER-only payload.
 - Binance Futures testnet public clock and BTCUSDT `TRADING`/`PERPETUAL` metadata probes passed. No credentials and no order endpoint were used.
 - Codex Phase-0 proof remains blocked because `codex` is absent from PATH.
