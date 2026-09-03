@@ -1,9 +1,10 @@
-from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL, apply_initial_schema
+from fatty_trader.storage.schema import CLAIM_DISPATCH_SQL, INITIAL_SCHEMA_SQL, apply_initial_schema
 
 
 def test_schema_enforces_one_dispatch_per_signal_revision_and_exchange() -> None:
     assert "UNIQUE (source_type, source_id, revision, exchange)" in INITIAL_SCHEMA_SQL
-    assert "FOR UPDATE SKIP LOCKED" not in INITIAL_SCHEMA_SQL
+    assert "FOR UPDATE SKIP LOCKED" in CLAIM_DISPATCH_SQL
+    assert "lease_until <= now()" in CLAIM_DISPATCH_SQL
 
 
 def test_schema_records_submission_idempotency_and_protection_state() -> None:

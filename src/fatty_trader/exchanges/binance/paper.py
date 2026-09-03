@@ -1,34 +1,36 @@
-"""Credential-free Bitget PAPER execution adapter."""
-
 from __future__ import annotations
 
-from fatty_trader.config.bitget import BitgetVenueConfig, BitgetVenueState
+from dataclasses import dataclass
+from typing import Literal
+
 from fatty_trader.domain.enums import Exchange
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionReport, ProtectionState
 from fatty_trader.execution.service import PaperOrderRequest, PaperOrderResult
 
 
-class BitgetPaperAdapter:
-    """Simulate fills locally and expose explicit protection/reconciliation contracts."""
+@dataclass(frozen=True)
+class BinancePaperConfig:
+    mode: Literal["PAPER"] = "PAPER"
+    enabled: bool = True
 
-    def __init__(self, config: BitgetVenueConfig) -> None:
-        self._config = config
+
+class BinancePaperAdapter:
+    """Deterministic in-memory Binance executor; it has no network or credentials."""
+
+    def __init__(self, config: BinancePaperConfig | None = None) -> None:
+        self._config = config or BinancePaperConfig()
         self._orders: dict[str, PaperOrderResult] = {}
 
     @property
-    def state(self) -> BitgetVenueState:
-        return self._config.state
-
-    @property
     def is_enabled(self) -> bool:
-        return self.state is BitgetVenueState.PAPER_READY
+        return self._config.mode == "PAPER" and self._config.enabled
 
     def __call__(self, request: PaperOrderRequest) -> PaperOrderResult:
-        if request.exchange is not Exchange.BITGET or not self.is_enabled:
-            raise ValueError("Bitget PAPER adapter is disabled")
+        if request.exchange is not Exchange.BINANCE or not self.is_enabled:
+            raise ValueError("Binance PAPER adapter is disabled")
         result = PaperOrderResult(
             request.client_order_id,
-            f"paper-bitget-{request.client_order_id[-8:]}",
+            f"paper-binance-{request.client_order_id[-8:]}",
             request.sizing.quantity,
             request.signal.entry_price,
         )

@@ -88,6 +88,25 @@ CREATE TABLE IF NOT EXISTS notifications_outbox (
 """
 
 
+CLAIM_DISPATCH_SQL = """
+UPDATE dispatches
+SET claimed_by = %(worker_id)s,
+    lease_until = now() + (%(lease_seconds)s * interval '1 second'),
+    attempts = attempts + 1,
+    updated_at = now()
+WHERE id = (
+    SELECT id FROM dispatches
+    WHERE state IN ('QUEUED', 'RETRY_WAIT')
+      AND (claimed_by IS NULL OR lease_until <= now())
+      AND exchange = %(exchange)s
+    ORDER BY created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING *;
+"""
+
+
 def apply_initial_schema(cursor: SqlCursor) -> None:
     """Apply the initial schema inside the caller's transaction boundary."""
     cursor.execute(INITIAL_SCHEMA_SQL)

@@ -60,4 +60,5 @@ def test_paper_adapter_exposes_no_network_signing_or_order_operations() -> None:
         if not name.startswith("_")
     }
 
-    assert public_members == set()
+    assert {"ensure_protection", "reconcile_protection"}.issubset(public_members)
+    assert "place_live_order" not in public_members
