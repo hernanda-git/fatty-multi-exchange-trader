@@ -29,14 +29,12 @@ def test_unknown_service_is_rejected() -> None:
 def test_compose_contains_migration_init_and_isolated_workers() -> None:
     for service in ("migrate", "init", *SUPPORTED_SERVICES):
         assert f"  {service}:" in COMPOSE
-    assert (
-        'command: ["python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]'
-        in COMPOSE
-    )
-    assert (
-        'command: ["python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]'
-        in COMPOSE
-    )
+    for service in ("dispatcher-binance", "dispatcher-bitget"):
+        command = (
+            'command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", '
+            f'"--service", "{service}"]'
+        )
+        assert command in COMPOSE
     assert "service_completed_successfully" in COMPOSE
     assert "TRADER_MODE: PAPER" in COMPOSE
 
