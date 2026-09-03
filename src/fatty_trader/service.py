@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fatty_trader.config.telegram import TelegramSettings
-from fatty_trader.intake.persistence import InMemoryRawMessageRepository
+from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
@@ -110,7 +110,11 @@ async def run_intake(
         while True:
             await asyncio.sleep(float(environ.get("WORKER_HEARTBEAT_SECONDS", "30")))
     client = client_factory(settings)
-    forwarder = TelegramForwarder(client, settings, repository or InMemoryRawMessageRepository())
+    if repository is None:
+        import psycopg
+
+        repository = PostgresRawMessageRepository(psycopg.connect)
+    forwarder = TelegramForwarder(client, settings, repository)
     await forwarder.attach()
     await client.start()
     print("service=intake mode=PAPER state=ready", flush=True)

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,36 @@ class InMemoryRawMessageRepository:
         key = (message.channel_id, message.message_id, message.revision_hash)
         existing = self._messages.setdefault(key, message)
         return existing
+
+
+class PostgresRawMessageRepository:
+    """Durably retain source messages for relay idempotency and operator telemetry."""
+
+    def __init__(self, connection_factory: Any) -> None:
+        self._connection_factory = connection_factory
+
+    def save_if_new(self, message: RawTelegramMessage) -> RawTelegramMessage:
+        statement = """
+            INSERT INTO telegram_messages (
+                id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED')
+            ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
+        """
+        with closing(self._connection_factory()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    statement,
+                    (
+                        uuid4(),
+                        message.channel_id,
+                        message.message_id,
+                        message.revision_hash,
+                        message.received_at,
+                        message.raw_text,
+                    ),
+                )
+            connection.commit()
+        return message
 
 
 def revision_hash(*, raw_text: str, reply_to_message_id: int | None, has_media: bool) -> str:
