@@ -18,4 +18,10 @@ PostgreSQL/Alembic persistence, Telethon intake, literal Codex queue worker, exc
 
 `uv run pytest -q` → 12 passed; `ruff format --check`, `ruff check`, `mypy src`, `docker compose config --quiet`, and `git diff --check` passed before commit.
 
-Container image build is blocked because Docker Desktop's Linux engine is not running on this workstation (`//./pipe/dockerDesktopLinuxEngine` missing). Codex Phase-0 proof is blocked because `codex` is absent from PATH.
+## Container and venue verification update (2026-09-03)
+
+- Docker Desktop Linux engine is running; `docker build -t fatty-multi-exchange-trader:local .` passed and a direct container `/health` smoke test returned the expected PAPER-only payload.
+- Compose schema validation passed and the `postgres` service reached `healthy`.
+- The Compose `web` service cannot bind its declared `127.0.0.1:8080` port because the unrelated running `docker-mssnetx-1` container already owns host port 8080. This is a local port-allocation blocker, not a web-image failure.
+- Binance Futures testnet public clock and BTCUSDT `TRADING`/`PERPETUAL` metadata probes passed. No credentials and no order endpoint were used.
+- Codex Phase-0 proof remains blocked because `codex` is absent from PATH.
