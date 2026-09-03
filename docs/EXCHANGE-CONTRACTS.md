@@ -18,3 +18,18 @@ is a deliberately read-only adapter for `https://testnet.binancefuture.com`.
 - The adapter exposes no account, credential, signing, or order-submission operation.
   It must remain public-market-data-only until a separately reviewed execution contract
   is introduced.
+
+## Bitget PAPER venue skeleton
+
+`fatty_trader.config.bitget.BitgetVenueConfig` and
+`fatty_trader.exchanges.bitget.paper.BitgetPaperAdapter` form a strictly fail-closed
+PAPER-only selection boundary.
+
+- `mode` accepts only `PAPER`; `LIVE` is rejected during configuration validation.
+- The venue is `disabled` when any required credential is missing, empty, or whitespace-only.
+  It becomes `paper_ready` only when API key, API secret, and passphrase are all non-blank.
+- Credential fields use secret-aware values and are not revealed by configuration `repr` or
+  `str` output.
+- The adapter exposes only availability state. It has no HTTP client, API request, signing,
+  account, or order-submission operation. Adding any such capability requires a separately
+  reviewed execution contract.
