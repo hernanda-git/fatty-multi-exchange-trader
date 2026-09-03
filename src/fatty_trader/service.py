@@ -34,7 +34,7 @@ class ServiceConfig:
 
 
 _CREDENTIALS: dict[str, tuple[str, ...]] = {
-    "intake": ("TG_API_ID", "TG_API_HASH", "TG_SESSION_STRING"),
+    "intake": ("TG_API_ID", "TG_API_HASH", "TELEGRAM_SESSION"),
     "analyzer": (),
     "dispatcher-binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
     "dispatcher-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET"),

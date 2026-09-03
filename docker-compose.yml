@@ -75,7 +75,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       TG_API_ID: ${TG_API_ID:-}
       TG_API_HASH: ${TG_API_HASH:-}
-      TG_SESSION_STRING: ${TG_SESSION_STRING:-}
+      TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
     depends_on:
       init:
         condition: service_completed_successfully

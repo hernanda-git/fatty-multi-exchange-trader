@@ -25,6 +25,7 @@ def test_protection_report_preserves_explicit_degraded_state() -> None:
     class Adapter:
         def reconcile_protection(self, _: ProtectionPlan):
             from fatty_trader.execution.protection import ProtectionReport
+
             return ProtectionReport(ProtectionState.DEGRADED, Decimal("0"), "stream stale")
 
     report = reconcile_protection(Adapter(), plan())
@@ -36,6 +37,7 @@ def test_protection_rejects_negative_venue_quantity() -> None:
     class Adapter:
         def reconcile_protection(self, _: ProtectionPlan):
             from fatty_trader.execution.protection import ProtectionReport
+
             return ProtectionReport(ProtectionState.FAILED, Decimal("-1"))
 
     with pytest.raises(ValueError, match="negative"):

@@ -47,6 +47,7 @@ def test_service_persists_transitions_and_returns_paper_fill() -> None:
         quantity=Decimal("0.001"),
         required_min_notional_usdt=Decimal("64"),
     )
+
     def adapter(request: PaperOrderRequest) -> PaperOrderResult:
         return PaperOrderResult(
             client_order_id=request.client_order_id,
@@ -65,10 +66,17 @@ def test_service_persists_transitions_and_returns_paper_fill() -> None:
 
 
 def test_paper_request_has_stable_idempotency_id() -> None:
-    first = PaperOrderRequest(signal(), Exchange.BITGET, SizingPlan(
-        effective_leverage=3, effective_margin_usdt=Decimal("10"), notional_usdt=Decimal("30"),
-        quantity=Decimal("1"), required_min_notional_usdt=Decimal("10"),
-    ))
+    first = PaperOrderRequest(
+        signal(),
+        Exchange.BITGET,
+        SizingPlan(
+            effective_leverage=3,
+            effective_margin_usdt=Decimal("10"),
+            notional_usdt=Decimal("30"),
+            quantity=Decimal("1"),
+            required_min_notional_usdt=Decimal("10"),
+        ),
+    )
     second = PaperOrderRequest(first.signal, first.exchange, first.sizing)
     assert first.client_order_id == second.client_order_id
 

@@ -87,7 +87,7 @@ def test_session_client_wraps_string_session_without_leaking_value() -> None:
         session_factory=lambda value: ("wrapped", value),
     )
     assert isinstance(client, FakeClient)
-    assert calls == [(('wrapped', 'private-session'), 123456, "a" * 32)]
+    assert calls == [(("wrapped", "private-session"), 123456, "a" * 32)]
     assert "private-session" not in repr(client)
 
 

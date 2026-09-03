@@ -68,9 +68,14 @@ class InMemoryDispatchRepository:
             eligible = item.state in {DispatchState.QUEUED, DispatchState.RETRY_WAIT}
             if eligible and (item.claimed_by is None or lease_expired):
                 claimed = Dispatch(
-                    item.id, item.signal, item.exchange, item.state, worker_id,
+                    item.id,
+                    item.signal,
+                    item.exchange,
+                    item.state,
+                    worker_id,
                     current_time + timedelta(seconds=lease_seconds),
-                    item.attempts + 1, item.terminal_reason,
+                    item.attempts + 1,
+                    item.terminal_reason,
                 )
                 self._items[item.id] = claimed
                 return claimed
@@ -92,6 +97,12 @@ class InMemoryDispatchRepository:
     def set_state(self, dispatch_id: UUID, state: DispatchState) -> None:
         item = self._items[dispatch_id]
         self._items[dispatch_id] = Dispatch(
-            item.id, item.signal, item.exchange, state, item.claimed_by, item.lease_until,
-            item.attempts, item.terminal_reason
+            item.id,
+            item.signal,
+            item.exchange,
+            state,
+            item.claimed_by,
+            item.lease_until,
+            item.attempts,
+            item.terminal_reason,
         )

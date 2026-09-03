@@ -71,9 +71,10 @@ class DurableExecutionService:
             result = self._adapters[claimed.exchange](
                 PaperOrderRequest(claimed.signal, claimed.exchange, sizing)
             )
-            if result.client_order_id != PaperOrderRequest(
-                claimed.signal, claimed.exchange, sizing
-            ).client_order_id:
+            if (
+                result.client_order_id
+                != PaperOrderRequest(claimed.signal, claimed.exchange, sizing).client_order_id
+            ):
                 raise ValueError("paper adapter returned mismatched client order id")
             self._move(claimed, DispatchState.ACKNOWLEDGED)
             self._move(claimed, DispatchState.FILLED)

@@ -44,9 +44,7 @@ class ProtectionAdapter(Protocol):
     def reconcile_protection(self, plan: ProtectionPlan) -> ProtectionReport: ...
 
 
-def reconcile_protection(
-    adapter: ProtectionAdapter, plan: ProtectionPlan
-) -> ProtectionReport:
+def reconcile_protection(adapter: ProtectionAdapter, plan: ProtectionPlan) -> ProtectionReport:
     """Re-read venue protection and never upgrade a degraded/failed result locally."""
     report = adapter.reconcile_protection(plan)
     if report.observed_quantity < 0:
