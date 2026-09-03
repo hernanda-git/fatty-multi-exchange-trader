@@ -14,13 +14,168 @@ services:
       retries: 10
     restart: unless-stopped
 
-  web:
+  migrate:
     build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "migrate"]
     environment:
-      GLOBAL_MODE: PAPER
-    ports:
-      - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  init:
+    build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "init"]
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: init
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  web:
+    build: .
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: web
+      SERVICE_COMPONENTS: postgres=ready,migrate=ready
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  intake:
+    build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "intake"]
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: intake
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      TG_API_ID: ${TG_API_ID:-}
+      TG_API_HASH: ${TG_API_HASH:-}
+      TG_SESSION_STRING: ${TG_SESSION_STRING:-}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "intake", "--check"]
+    restart: unless-stopped
+
+  analyzer:
+    build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "analyzer"]
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: analyzer
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      CODEX_HOME: /app/runtime/codex-home
+    volumes:
+      - ./data/codex-home:/app/runtime/codex-home
+      - ./data/media:/app/runtime/media:ro
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "analyzer", "--check"]
+    restart: unless-stopped
+
+  dispatcher-binance:
+    build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: dispatcher-binance
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "dispatcher-binance", "--check"]
+    restart: unless-stopped
+
+  dispatcher-bitget:
+    build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: dispatcher-bitget
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      BITGET_API_KEY: ${BITGET_API_KEY:-}
+      BITGET_API_SECRET: ${BITGET_API_SECRET:-}
+      BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget", "--check"]
+    restart: unless-stopped
+
+  monitor-binance:
+    extends:
+      service: dispatcher-binance
+    command: ["python", "-m", "fatty_trader.service", "--service", "monitor-binance"]
+    environment:
+      SERVICE_NAME: monitor-binance
+
+  monitor-bitget:
+    extends:
+      service: dispatcher-bitget
+    command: ["python", "-m", "fatty_trader.service", "--service", "monitor-bitget"]
+    environment:
+      SERVICE_NAME: monitor-bitget
+
+  operator-bot:
+    build: .
+    command: ["python", "-m", "fatty_trader.service", "--service", "operator-bot"]
+    environment:
+      TRADER_MODE: PAPER
+      SERVICE_NAME: operator-bot
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
+      TG_OPERATOR_ID: ${TG_OPERATOR_ID:-}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "fatty_trader.service", "--service", "operator-bot", "--check"]
     restart: unless-stopped
