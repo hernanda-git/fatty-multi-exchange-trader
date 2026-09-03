@@ -19,7 +19,7 @@ services:
     environment:
       GLOBAL_MODE: PAPER
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
     depends_on:
       postgres:
         condition: service_healthy
