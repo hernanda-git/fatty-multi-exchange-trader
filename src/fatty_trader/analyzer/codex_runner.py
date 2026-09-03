@@ -183,7 +183,7 @@ class _BoundedCapture:
         if not self._truncated and len(encoded) <= self._limit:
             return text
         suffix = _TRUNCATED.encode("utf-8")
-        return (encoded[: self._limit - len(suffix)].decode("utf-8", errors="ignore") + _TRUNCATED)
+        return encoded[: self._limit - len(suffix)].decode("utf-8", errors="ignore") + _TRUNCATED
 
 
 def _start_readers(
