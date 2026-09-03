@@ -1,0 +1,38 @@
+from enum import StrEnum
+
+
+class Exchange(StrEnum):
+    BINANCE = "binance"
+    BITGET = "bitget"
+
+
+class Direction(StrEnum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class MarginMode(StrEnum):
+    ISOLATED = "ISOLATED"
+    CROSSED = "CROSSED"
+
+
+class DispatchState(StrEnum):
+    QUEUED = "QUEUED"
+    PREFLIGHT = "PREFLIGHT"
+    SIZED = "SIZED"
+    VALIDATED = "VALIDATED"
+    SUBMITTING = "SUBMITTING"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    PENDING_FILL = "PENDING_FILL"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    PROTECTING = "PROTECTING"
+    ACTIVE = "ACTIVE"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
+    EXPIRED = "EXPIRED"
+    REJECTED = "REJECTED"
+    RETRY_WAIT = "RETRY_WAIT"
+    UNKNOWN = "UNKNOWN"
+    MANUAL_REVIEW = "MANUAL_REVIEW"
+    FAILED = "FAILED"

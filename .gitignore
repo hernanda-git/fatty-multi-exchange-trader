@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/postgres/
+data/media/
+data/codex-home/
+data/backups/
+data/logs/
+*.py[cod]
