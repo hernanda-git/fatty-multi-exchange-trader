@@ -43,6 +43,76 @@ UNION ALL SELECT 'total_orders', count(*)::text FROM orders;
 ")"
 latest="$(query "SELECT channel_id::text, message_id::text, to_char(received_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI UTC'), encode(convert_to(left(raw_text, 1200), 'UTF8'), 'base64') FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT 1;" || true)"
 
+# Codex subscription quota is informational only. Never let this optional probe
+# make the operational report fail, and never persist the access token.
+usage_cache="${XDG_CACHE_HOME:-$HOME/.cache}/fatty/codex_usage.json"
+mkdir -p "$(dirname "$usage_cache")"
+read -r codex_usage_status codex_5h codex_7d codex_reset codex_refreshed < <(python3 - "$usage_cache" <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+
+cache_path = sys.argv[1]
+def emit(status, five, seven, reset, refreshed):
+    print(status, five, seven, reset, refreshed)
+
+def fmt_reset(seconds):
+    if seconds is None:
+        return "N/A"
+    seconds = max(0, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+def from_cache():
+    try:
+        cached = json.load(open(cache_path, encoding="utf-8"))
+        emit("STALE", cached.get("5h", "N/A"), cached.get("7d", "N/A"),
+             cached.get("reset", "N/A"), cached.get("refreshed", "unknown"))
+    except Exception:
+        emit("N/A", "N/A", "N/A", "N/A", "never")
+
+try:
+    with open(os.path.expanduser("~/.codex/auth.json"), encoding="utf-8") as f:
+        token = json.load(f)["tokens"]["access_token"]
+    req = urllib.request.Request(
+        "https://chatgpt.com/backend-api/wham/usage",
+        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=12) as response:
+        data = json.load(response)
+    rate = data["rate_limit"]
+    primary = rate["primary_window"]
+    secondary = rate["secondary_window"]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    fresh = {
+        "5h": f"{primary['used_percent']}% used / {100 - primary['used_percent']}% left",
+        "7d": f"{secondary['used_percent']}% used / {100 - secondary['used_percent']}% left",
+        "reset": f"5h {fmt_reset(primary.get('reset_after_seconds'))}; 7d {fmt_reset(secondary.get('reset_after_seconds'))}",
+        "refreshed": now,
+        "saved_at": int(time.time()),
+    }
+    tmp = cache_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(fresh, f)
+    os.replace(tmp, cache_path)
+    emit("LIVE", fresh["5h"], fresh["7d"], fresh["reset"], fresh["refreshed"])
+except Exception:
+    from_cache()
+PY
+)
+
+codex_cli_version="$(codex --version 2>/dev/null || printf '%s' 'unavailable')"
+codex_model="${CODEX_MODEL:-default (no explicit model configured)}"
+
 lookup_metric() { awk -F'|' -v key="$1" '$1 == key { print $2; exit }' <<<"$metrics"; }
 message_count="$(lookup_metric telegram_messages)"
 signal_count="$(lookup_metric canonical_signals)"
@@ -78,6 +148,15 @@ Intake started: <code>$uptime</code>
 
 <b>Service Matrix</b>
 ${service_rows}
+<b>Codex Usage</b>
+CLI: <code>$codex_cli_version</code>
+Model: <code>$codex_model</code>
+Quota: <code>$codex_usage_status</code>
+5h: <code>$codex_5h</code>
+7d: <code>$codex_7d</code>
+Reset: <code>$codex_reset</code>
+Refreshed: <code>$codex_refreshed</code>
+
 <b>Latest Telegram Signal</b>
 $last_signal
 
