@@ -64,12 +64,14 @@ class FakeLiveGateway:
             "tp": take_profits,
         }
         self.last_open = result
-        self.positions.append({
-            "symbol": symbol,
-            "side": direction,
-            "size": quantity,
-            "entry": self.price,
-        })
+        self.positions.append(
+            {
+                "symbol": symbol,
+                "side": direction,
+                "size": quantity,
+                "entry": self.price,
+            }
+        )
         return result
 
     def cancel_order(self, target: str) -> dict[str, Any]:
@@ -122,7 +124,9 @@ def test_open_market_alert_contains_required_fields() -> None:
     svc, gw = make_service()
     alert = svc.handle(
         "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto",
-        sender_id=1, is_private=True, is_forwarded=False,
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
     )
     assert "BTCUSDT" in alert
     assert "LONG" in alert
@@ -135,8 +139,11 @@ def test_cancel_all_requires_confirmation_first() -> None:
     svc, gw = make_service()
     gw.orders = [
         {
-            "symbol": "BTCUSDT", "order_id": "a",
-            "side": "BUY", "price": Decimal("60000"), "size": Decimal("0.01"),
+            "symbol": "BTCUSDT",
+            "order_id": "a",
+            "side": "BUY",
+            "price": Decimal("60000"),
+            "size": Decimal("0.01"),
         },
     ]
     first = svc.handle("/cancel all", sender_id=1, is_private=True, is_forwarded=False)
@@ -144,7 +151,10 @@ def test_cancel_all_requires_confirmation_first() -> None:
     # Second call with confirm token
     token = svc._pending.token if svc._pending else ""
     second = svc.handle(
-        f"/cancel all confirm={token}", sender_id=1, is_private=True, is_forwarded=False,
+        f"/cancel all confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
     )
     assert "cancel" in second.lower()
 
@@ -158,7 +168,10 @@ def test_close_all_requires_confirmation_first() -> None:
     assert "confirm" in first.lower()
     token = svc._pending.token if svc._pending else ""
     second = svc.handle(
-        f"/close all confirm={token}", sender_id=1, is_private=True, is_forwarded=False,
+        f"/close all confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
     )
     assert "close" in second.lower()
 
@@ -176,8 +189,11 @@ def test_orders_lists_pending() -> None:
     svc, gw = make_service()
     gw.orders = [
         {
-            "symbol": "ETHUSDT", "order_id": "x",
-            "side": "SELL", "price": Decimal("3000"), "size": Decimal("0.1"),
+            "symbol": "ETHUSDT",
+            "order_id": "x",
+            "side": "SELL",
+            "price": Decimal("3000"),
+            "size": Decimal("0.1"),
         },
     ]
     alert = svc.handle("/orders", sender_id=1, is_private=True, is_forwarded=False)

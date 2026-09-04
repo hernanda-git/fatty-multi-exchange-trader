@@ -73,9 +73,7 @@ class LiveSizingDecision(BaseModel):
 
 
 def _skip(reason: str, *, fallback_used: bool = False) -> LiveSizingDecision:
-    return LiveSizingDecision(
-        accepted=False, reason=reason, fallback_used=fallback_used
-    )
+    return LiveSizingDecision(accepted=False, reason=reason, fallback_used=fallback_used)
 
 
 def _leverage_bounds(meta: SymbolMetadata, risk: BitgetLiveRiskConfig) -> tuple[int, int]:
@@ -169,9 +167,7 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
             high=high,
         )
         if found is None:
-            return _skip(
-                "min-notional unmeetable even all-in", fallback_used=True
-            )
+            return _skip("min-notional unmeetable even all-in", fallback_used=True)
         margin = data.available_usdt
 
     leverage, qty, notional = found

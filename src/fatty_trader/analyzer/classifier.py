@@ -1,4 +1,5 @@
 """Strict JSON-to-domain classification for arbitrary Telegram text."""
+
 from __future__ import annotations
 
 import hashlib
@@ -95,7 +96,13 @@ def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalCla
             or not take_profits
         ):
             return SignalClassification(
-                False, pair, side, entry, stop, take_profits, confidence,
+                False,
+                pair,
+                side,
+                entry,
+                stop,
+                take_profits,
+                confidence,
                 "missing required trade geometry",
             )
         try:
@@ -110,7 +117,13 @@ def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalCla
             )
         except ValueError as exc:
             return SignalClassification(
-                False, pair, side, entry, stop, take_profits, confidence,
+                False,
+                pair,
+                side,
+                entry,
+                stop,
+                take_profits,
+                confidence,
                 f"invalid geometry: {exc}",
             )
     return SignalClassification(

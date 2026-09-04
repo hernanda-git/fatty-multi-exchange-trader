@@ -28,18 +28,20 @@ def parse_explicit_signal(text: str, *, message_id: int) -> CanonicalSignal | No
         direction = Direction(match["direction"].upper())
         stop_loss = Decimal(match["sl"])
         take_profits = (Decimal(match["tp"]),)
-        entry = Decimal(match["entry"]) if match.groupdict().get("entry") else (
-            stop_loss + (take_profits[0] - stop_loss) / 2
-            if direction is Direction.LONG
-            else stop_loss - (stop_loss - take_profits[0]) / 2
+        entry = (
+            Decimal(match["entry"])
+            if match.groupdict().get("entry")
+            else (
+                stop_loss + (take_profits[0] - stop_loss) / 2
+                if direction is Direction.LONG
+                else stop_loss - (stop_loss - take_profits[0]) / 2
+            )
         )
         return CanonicalSignal(
             source_message_id=message_id,
             source_revision=hashlib.sha256(text.encode("utf-8")).hexdigest(),
             pair_token=(
-                (match.groupdict().get("pair2") or match["pair"])
-                .upper()
-                .removesuffix("USDT")
+                (match.groupdict().get("pair2") or match["pair"]).upper().removesuffix("USDT")
             ),
             direction=direction,
             entry_price=entry,

@@ -75,9 +75,7 @@ def ok_envelope(data: object = None) -> dict[str, object]:
     return {"code": "00000", "msg": "success", "requestTime": 1, "data": data or {}}
 
 
-def make_client(
-    handler: object, **kwargs: object
-) -> tuple[BitgetRestClient, list[httpx.Request]]:
+def make_client(handler: object, **kwargs: object) -> tuple[BitgetRestClient, list[httpx.Request]]:
     seen: list[httpx.Request] = []
 
     def wrapped(request: httpx.Request) -> httpx.Response:

@@ -122,10 +122,9 @@ class Reconciler:
         positions = self.client.get_positions()
         orders = self.client.get_orders()
         fills = self.client.get_fills()
-        known_order_ids = (
-            {o.get("order_id") for o in orders if o.get("order_id")}
-            | self._known_order_ids
-        )
+        known_order_ids = {
+            o.get("order_id") for o in orders if o.get("order_id")
+        } | self._known_order_ids
 
         for order in orders:
             oid = order.get("order_id")

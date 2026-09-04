@@ -12,8 +12,12 @@ class Cursor:
         self.executed: list[tuple[str, object]] = []
         self.rows = [
             (
-                uuid4(), 7, 42, "a" * 64,
-                "#ETH LONG ENTRY: 100 TARGET: 110 STOPLOSS: 95", datetime.now(UTC)
+                uuid4(),
+                7,
+                42,
+                "a" * 64,
+                "#ETH LONG ENTRY: 100 TARGET: 110 STOPLOSS: 95",
+                datetime.now(UTC),
             )
         ]
 

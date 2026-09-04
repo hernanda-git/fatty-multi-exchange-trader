@@ -91,15 +91,11 @@ def test_all_in_fallback_only_when_zero_active() -> None:
     # Dust balance: 20% allocation cannot meet min notional at any leverage
     # in [20, 50] (0.01 USDT margin -> max 0.5 USDT notional < 5 USDT min),
     # and even the full 0.05 USDT balance all-in (max 2.5 USDT) cannot.
-    dust_zero = plan_live_position(
-        make_input(available_usdt=Decimal("0.05"), active_positions=0)
-    )
+    dust_zero = plan_live_position(make_input(available_usdt=Decimal("0.05"), active_positions=0))
     assert dust_zero.accepted is False  # even all-in can't meet 5 USDT
     assert dust_zero.fallback_used is True
 
-    dust_busy = plan_live_position(
-        make_input(available_usdt=Decimal("0.05"), active_positions=2)
-    )
+    dust_busy = plan_live_position(make_input(available_usdt=Decimal("0.05"), active_positions=2))
     assert dust_busy.accepted is False
     assert dust_busy.fallback_used is False
 

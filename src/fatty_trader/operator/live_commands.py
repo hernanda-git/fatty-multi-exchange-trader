@@ -76,6 +76,7 @@ class OperatorCommandService:
         if self._now is not None:
             return self._now
         import time
+
         return time.time()
 
     def _require_auth(self, *, sender_id: int, is_private: bool, is_forwarded: bool) -> None:

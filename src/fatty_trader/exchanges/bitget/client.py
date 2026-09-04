@@ -173,18 +173,14 @@ class BitgetRestClient:
     ) -> Any:
         return await self._request("POST", path, params=params, payload=payload)
 
-    async def get_ticker(
-        self, symbol: str, product_type: str = "USDT-FUTURES"
-    ) -> dict[str, Any]:
+    async def get_ticker(self, symbol: str, product_type: str = "USDT-FUTURES") -> dict[str, Any]:
         data = await self._get(
             "/api/v2/mix/market/ticker", {"symbol": symbol, "productType": product_type}
         )
         return data if isinstance(data, dict) else {"data": data}
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> Any:
-        return await self._get(
-            "/api/v2/mix/market/contracts", {"productType": product_type}
-        )
+        return await self._get("/api/v2/mix/market/contracts", {"productType": product_type})
 
     async def get_account_bills(
         self,

@@ -72,11 +72,17 @@ class DemoBitgetClient:
         self.leverage = leverage
 
     def place_entry_order(
-        self, *, symbol: str, side: str, quantity: Decimal,
-        client_oid: str, order_type: str = "market",
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        client_oid: str,
+        order_type: str = "market",
     ) -> dict[str, Any]:
         if self._fail_next_entry:
             from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
+
             raise BitgetUnknownResultError("simulated timeout")
         self._order_counter += 1
         order_id = f"demo-order-{self._order_counter}"
@@ -98,12 +104,14 @@ class DemoBitgetClient:
             "fee": str(self.price * quantity * Decimal("0.0005")),
         }
         self.fills.append(fill)
-        self.positions.append({
-            "symbol": symbol,
-            "side": "LONG" if side == "BUY" else "SHORT",
-            "size": quantity,
-            "entry": self.price,
-        })
+        self.positions.append(
+            {
+                "symbol": symbol,
+                "side": "LONG" if side == "BUY" else "SHORT",
+                "size": quantity,
+                "entry": self.price,
+            }
+        )
         return order
 
     def get_order_detail(self, client_oid: str) -> dict[str, Any]:
@@ -113,25 +121,44 @@ class DemoBitgetClient:
         return {"status": "unknown", "clientOid": client_oid}
 
     def place_market_close(
-        self, *, symbol: str, side: str, quantity: Decimal, client_oid: str,
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        client_oid: str,
     ) -> dict[str, Any]:
         self.positions = [p for p in self.positions if p["symbol"] != symbol]
         self._order_counter += 1
         return {"orderId": f"close-{self._order_counter}", "status": "filled"}
 
     def ensure_protection(
-        self, *, symbol: str, side: str, quantity: Decimal,
-        stop_loss: Decimal, take_profits: tuple[Decimal, ...], client_oid: str,
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        stop_loss: Decimal,
+        take_profits: tuple[Decimal, ...],
+        client_oid: str,
     ) -> Any:
         from fatty_trader.execution.protection import ProtectionReport, ProtectionState
+
         self._order_counter += 1
         return ProtectionReport(ProtectionState.VENUE_PROTECTED, quantity)
 
     def place_protection_orders(
-        self, *, symbol: str, side: str, quantity: Decimal,
-        stop_loss: Decimal, take_profits: tuple[Decimal, ...], client_oid: str,
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        stop_loss: Decimal,
+        take_profits: tuple[Decimal, ...],
+        client_oid: str,
     ) -> Any:
         from fatty_trader.execution.protection import ProtectionConfirmation
+
         self._order_counter += 1
         return ProtectionConfirmation(
             sl_order_id=f"sl-{self._order_counter}",
@@ -140,17 +167,29 @@ class DemoBitgetClient:
         )
 
     def read_protection_state(
-        self, *, symbol: str, sl_order_id: str | None, tp_order_ids: tuple[str, ...],
+        self,
+        *,
+        symbol: str,
+        sl_order_id: str | None,
+        tp_order_ids: tuple[str, ...],
     ) -> Any:
         from fatty_trader.execution.protection import ProtectionReport, ProtectionState
+
         qty = Decimal("0.01") if sl_order_id else Decimal("0")
         return ProtectionReport(ProtectionState.VENUE_PROTECTED, qty)
 
     def reconcile_protection(
-        self, *, symbol: str, side: str, quantity: Decimal,
-        stop_loss: Decimal, take_profits: tuple[Decimal, ...], client_oid: str,
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        stop_loss: Decimal,
+        take_profits: tuple[Decimal, ...],
+        client_oid: str,
     ) -> Any:
         from fatty_trader.execution.protection import ProtectionReport, ProtectionState
+
         return ProtectionReport(ProtectionState.VENUE_PROTECTED, quantity)
 
     def get_fills(self, ref: str | None = None) -> list[dict[str, Any]]:
@@ -188,14 +227,22 @@ class DemoBitgetClient:
         return self.orders
 
     def open_position(
-        self, *, symbol: str, direction: str, quantity: Decimal,
-        leverage: int, entry: str, stop_loss: Decimal | str,
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        quantity: Decimal,
+        leverage: int,
+        entry: str,
+        stop_loss: Decimal | str,
         take_profits: tuple[Decimal | str, ...],
     ) -> dict[str, Any]:
         if quantity <= 0:
             return {
-                "error": "insufficient margin", "symbol": symbol,
-                "state": "skipped", "order_id": None,
+                "error": "insufficient margin",
+                "symbol": symbol,
+                "state": "skipped",
+                "order_id": None,
             }
         req = LiveEntryRequest(
             symbol=symbol,
@@ -204,8 +251,7 @@ class DemoBitgetClient:
             leverage=leverage,
             stop_loss=Decimal(str(stop_loss)) if stop_loss != "auto" else Decimal("59000"),
             take_profits=tuple(
-                Decimal(str(t)) if t != "auto" else Decimal("62000")
-                for t in take_profits
+                Decimal(str(t)) if t != "auto" else Decimal("62000") for t in take_profits
             ),
         )
         store = InMemoryLiveIntentStore()
@@ -320,8 +366,7 @@ def test_demo_unknown_result_reconciles_by_client_oid(demo: DemoBitgetClient) ->
 def test_demo_reconciler_passes_for_protected_position(demo: DemoBitgetClient) -> None:
     rec = Reconciler(client=demo, config=ReconcilerConfig(symbol="BTCUSDT"))
     demo.positions = [
-        {"symbol": "BTCUSDT", "side": "LONG",
-         "size": Decimal("0.01"), "entry": Decimal("60000")},
+        {"symbol": "BTCUSDT", "side": "LONG", "size": Decimal("0.01"), "entry": Decimal("60000")},
     ]
     demo.orders = [
         {"order_id": "sl", "symbol": "BTCUSDT", "side": "SELL", "role": "SL"},
@@ -337,8 +382,7 @@ def test_demo_reconciler_flags_unprotected_position(demo: DemoBitgetClient) -> N
     cfg = ReconcilerConfig(symbol="BTCUSDT", kill_on_missing_protection=False)
     rec = Reconciler(client=demo, config=cfg)
     demo.positions = [
-        {"symbol": "BTCUSDT", "side": "LONG",
-         "size": Decimal("0.01"), "entry": Decimal("60000")},
+        {"symbol": "BTCUSDT", "side": "LONG", "size": Decimal("0.01"), "entry": Decimal("60000")},
     ]
     rec.tick()
     assert any("protection" in m.lower() for m in rec.last_mismatches)
@@ -363,6 +407,7 @@ def test_demo_operator_open_price_balance_positions_flow(demo: DemoBitgetClient)
 
 def test_demo_invalid_symbol_rejected(demo: DemoBitgetClient) -> None:
     from fatty_trader.operator.command_parser import CommandError
+
     # Parser rejects malformed commands (too few args)
     with pytest.raises(CommandError):
         parse_operator_command("/open")

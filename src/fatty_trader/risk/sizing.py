@@ -116,9 +116,7 @@ def round_qty_to_step(quantity: Decimal, step: Decimal) -> Decimal:
     return (quantity / step).to_integral_value(rounding=ROUND_DOWN) * step
 
 
-def derive_sl_tp(
-    entry: Decimal, direction: Direction, atr: Decimal
-) -> tuple[Decimal, Decimal]:
+def derive_sl_tp(entry: Decimal, direction: Direction, atr: Decimal) -> tuple[Decimal, Decimal]:
     """Deterministic SL/TP fallback when a signal lacks SL/TP.
 
     LONG:  SL = entry - 1.5*ATR, TP = entry + 2.0*ATR.
