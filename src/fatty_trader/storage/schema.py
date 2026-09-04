@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS canonical_signals (
     stop_loss NUMERIC NOT NULL CHECK (stop_loss > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS canonical_signals_message_revision
+ON canonical_signals (message_id, revision);
 
 CREATE TABLE IF NOT EXISTS dispatches (
     id UUID PRIMARY KEY,
