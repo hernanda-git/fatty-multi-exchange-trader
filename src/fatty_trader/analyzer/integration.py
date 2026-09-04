@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from fatty_trader.analyzer.classifier import classifier_prompt, classify_json
 from fatty_trader.analyzer.codex_runner import CodexRunResult
 from fatty_trader.analyzer.deterministic_parser import parse_explicit_signal
 from fatty_trader.domain.models import CanonicalSignal
@@ -31,11 +32,12 @@ def analyze_with_fallback(
     codex_runner: Callable[[str], CodexRunResult],
 ) -> AnalysisResult:
     try:
-        codex = codex_runner(text)
+        codex = codex_runner(classifier_prompt(text))
     except OSError:
         return _fallback(text, message_id, "codex unavailable")
     if codex.succeeded:
-        return AnalysisResult(AnalysisStatus.CODEX_SUCCEEDED, None)
+        classified = classify_json(text, codex.stdout, message_id=message_id)
+        return AnalysisResult(AnalysisStatus.CODEX_SUCCEEDED, classified.signal)
     return _fallback(text, message_id, codex.failure_reason or "codex failed")
 
 
