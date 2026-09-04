@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Fatty Telegram health report every two hours
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2h
+Persistent=true
+Unit=fatty-health-report.service
+
+[Install]
+WantedBy=timers.target
