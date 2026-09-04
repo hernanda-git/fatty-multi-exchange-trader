@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID, uuid5
 
 from fatty_trader.domain.enums import DispatchState, Exchange
 from fatty_trader.domain.models import CanonicalSignal, SizingPlan
 from fatty_trader.domain.state_machines import transition_dispatch
 from fatty_trader.storage.memory import Dispatch, InMemoryDispatchRepository
+
+if TYPE_CHECKING:
+    from fatty_trader.exchanges.bitget.live import (
+        BitgetLiveClientProtocol,
+        LiveEntryRequest,
+        LiveEntryResult,
+        LiveIntentStoreProtocol,
+    )
 
 
 @dataclass(frozen=True)
@@ -96,6 +105,23 @@ class DurableExecutionService:
 
 def stable_paper_order_id(dispatch_id: UUID) -> str:
     return f"paper-{uuid5(dispatch_id, 'entry').hex[:24]}"
+
+
+def submit_live_entry(
+    client: BitgetLiveClientProtocol,
+    store: LiveIntentStoreProtocol,
+    request: LiveEntryRequest,
+    *,
+    alert: Callable[[str], None] | None = None,
+) -> LiveEntryResult:
+    """LIVE entry seam: delegates to the intent-first live workflow.
+
+    The PAPER path above is untouched; this is the only entry point the
+    live operator lane calls for real order submission.
+    """
+    from fatty_trader.exchanges.bitget.live import enter_live_position
+
+    return enter_live_position(client, store, request, alert=alert)
 
 
 def utc_now() -> datetime:
