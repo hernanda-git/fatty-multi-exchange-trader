@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -99,6 +100,8 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
     import psycopg
 
     runner = CodexRunner()
+    account_label = environ.get("CODEX_ACCOUNT_LABEL", "UNCONFIGURED")
+    codex_cli = "available" if shutil.which("codex") else "unavailable"
     poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "5"))
     batch_size = int(environ.get("ANALYZER_BATCH_SIZE", "10"))
     while True:
@@ -108,7 +111,8 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             limit=batch_size,
         )
         print(
-            f"service=analyzer mode=PAPER state=ready processed={processed}",
+            f"service=analyzer mode=PAPER state=ready processed={processed} "
+            f"codex_cli={codex_cli} codex_account={account_label}",
             flush=True,
         )
         await asyncio.sleep(poll_seconds if processed == 0 else 0)

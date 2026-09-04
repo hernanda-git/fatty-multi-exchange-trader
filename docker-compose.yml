@@ -97,6 +97,7 @@ services:
       PGUSER: fatty_app
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       CODEX_HOME: /app/runtime/codex-home
+      CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}
     volumes:
       - ./data/codex-home:/app/runtime/codex-home
       - ./data/media:/app/runtime/media:ro
