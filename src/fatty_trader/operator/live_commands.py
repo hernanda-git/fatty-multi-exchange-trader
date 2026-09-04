@@ -177,6 +177,8 @@ class OperatorCommandService:
             stop_loss=command.stop_loss,
             take_profits=command.take_profits,
         )
+        if result.get("error"):
+            return f"SKIP {result['symbol']} reason={result['error']}"
         return (
             f"OPEN {result['symbol']} {result['side']} qty={result['qty']} "
             f"lev={result['leverage']} entry={result['entry']} id={result['order_id']} "
