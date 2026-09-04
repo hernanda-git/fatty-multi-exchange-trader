@@ -47,7 +47,7 @@ latest="$(query "SELECT channel_id::text, message_id::text, to_char(received_at 
 # make the operational report fail, and never persist the access token.
 usage_cache="${XDG_CACHE_HOME:-$HOME/.cache}/fatty/codex_usage.json"
 mkdir -p "$(dirname "$usage_cache")"
-read -r codex_usage_status codex_5h codex_7d codex_reset codex_refreshed < <(python3 - "$usage_cache" <<'PY'
+IFS='|' read -r codex_usage_status codex_5h codex_7d codex_reset codex_refreshed < <(python3 - "$usage_cache" <<'PY'
 import json
 import os
 import sys
@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 
 cache_path = sys.argv[1]
 def emit(status, five, seven, reset, refreshed):
-    print(status, five, seven, reset, refreshed)
+    print("|".join((status, five, seven, reset, refreshed)))
 
 def fmt_reset(seconds):
     if seconds is None:
