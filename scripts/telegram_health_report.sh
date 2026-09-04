@@ -47,7 +47,7 @@ latest="$(query "SELECT channel_id::text, message_id::text, to_char(received_at 
 # make the operational report fail, and never persist the access token.
 usage_cache="${XDG_CACHE_HOME:-$HOME/.cache}/fatty/codex_usage.json"
 mkdir -p "$(dirname "$usage_cache")"
-IFS='|' read -r codex_usage_status codex_5h codex_7d codex_reset codex_refreshed < <(python3 - "$usage_cache" <<'PY'
+IFS='|' read -r codex_usage_status codex_5h codex_7d codex_reset codex_plan codex_refreshed < <(python3 - "$usage_cache" <<'PY'
 import json
 import os
 import sys
@@ -56,8 +56,40 @@ import urllib.request
 from datetime import datetime, timezone
 
 cache_path = sys.argv[1]
-def emit(status, five, seven, reset, refreshed):
-    print("|".join((status, five, seven, reset, refreshed)))
+def emit(status, five, seven, reset, plan, refreshed):
+    print("|".join((status, five, seven, reset, plan, refreshed)))
+
+def fmt_reset(value):
+    if value is None:
+        return "N/A"
+    try:
+        seconds = max(0, int(value))
+    except (TypeError, ValueError):
+        return "N/A"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+def auth_candidates():
+    for path in (os.path.expanduser("~/.pi/agent/auth.json"), os.path.expanduser("~/.codex/auth.json")):
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+        except Exception:
+            continue
+        def walk(value):
+            if isinstance(value, dict):
+                token = value.get("access_token") or value.get("accessToken")
+                account = value.get("account_id") or value.get("accountId")
+                if isinstance(token, str) and token and not token.startswith("sk-"):
+                    yield token, account if isinstance(account, str) else None
+                for child in value.values():
+                    yield from walk(child)
+        yield from walk(data)
 
 def fmt_reset(seconds):
     if seconds is None:
@@ -76,27 +108,31 @@ def from_cache():
     try:
         cached = json.load(open(cache_path, encoding="utf-8"))
         emit("STALE", cached.get("5h", "N/A"), cached.get("7d", "N/A"),
-             cached.get("reset", "N/A"), cached.get("refreshed", "unknown"))
+             cached.get("reset", "N/A"), cached.get("plan", "N/A"), cached.get("refreshed", "unknown"))
     except Exception:
-        emit("N/A", "N/A", "N/A", "N/A", "never")
+        emit("N/A", "N/A", "N/A", "N/A", "N/A", "never")
 
 try:
-    with open(os.path.expanduser("~/.codex/auth.json"), encoding="utf-8") as f:
-        token = json.load(f)["tokens"]["access_token"]
+    token, account_id = next(auth_candidates())
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
     req = urllib.request.Request(
         "https://chatgpt.com/backend-api/wham/usage",
-        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+        headers=headers,
     )
     with urllib.request.urlopen(req, timeout=12) as response:
         data = json.load(response)
     rate = data["rate_limit"]
     primary = rate["primary_window"]
     secondary = rate["secondary_window"]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).strftime("%m-%d %H:%M UTC")
+    plan = str(data.get("plan_type") or "N/A")
     fresh = {
         "5h": f"{primary['used_percent']}% used / {100 - primary['used_percent']}% left",
         "7d": f"{secondary['used_percent']}% used / {100 - secondary['used_percent']}% left",
         "reset": f"5h {fmt_reset(primary.get('reset_after_seconds'))}; 7d {fmt_reset(secondary.get('reset_after_seconds'))}",
+        "plan": plan,
         "refreshed": now,
         "saved_at": int(time.time()),
     }
@@ -104,7 +140,7 @@ try:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(fresh, f)
     os.replace(tmp, cache_path)
-    emit("LIVE", fresh["5h"], fresh["7d"], fresh["reset"], fresh["refreshed"])
+    emit("LIVE", fresh["5h"], fresh["7d"], fresh["reset"], fresh["plan"], fresh["refreshed"])
 except Exception:
     from_cache()
 PY
@@ -138,49 +174,45 @@ else
   last_signal='<i>No source message has been stored yet.</i>'
 fi
 
-report="<b>Fatty Signal Relay</b>
-<i>Paper Trading Operations Report</i>
+codex_plan="$(printf '%s' "$codex_plan" | html_escape)"
+codex_refreshed="$(printf '%s' "$codex_refreshed" | html_escape)"
+report="<b>Fatty Signal Relay</b>  <i>Paper Ops</i>
 
-<b>System Status</b>
-Status: $overall
-Mode: <code>PAPER</code>
-Host: <code>fspmi-hostinger</code>
-Intake started: <code>$uptime</code>
+<b>Status</b>
+<pre>Overall  $overall
+Mode     PAPER
+Host     fspmi-hostinger
+Uptime   $uptime</pre>
 
-<b>Service Matrix</b>
-${service_rows}
-<b>Codex Usage</b>
-CLI: <code>$codex_cli_version</code>
-Model: <code>$codex_model</code>
-Reasoning: <code>$codex_reasoning</code>
-Quota: <code>$codex_usage_status</code>
-5h: <code>$codex_5h</code>
-7d: <code>$codex_7d</code>
-Reset: <code>$codex_reset</code>
-Refreshed: <code>$codex_refreshed</code>
+<b>Services</b>
+<pre>$(printf '%s' "$services" | while IFS='|' read -r service state health_state; do [[ -z "$service" ]] && continue; icon='✅'; [[ "$state" == 'running' && "$health_state" == 'healthy' ]] || icon='⚠️'; printf '%-20s %s\n' "$service" "$icon ${health_state:-n/a}"; done)</pre>
 
-<b>Latest Telegram Signal</b>
+<b>Codex Usage</b> <code>$codex_usage_status</code>
+<pre>Plan     $codex_plan
+Window   Used / Left
+5h       $codex_5h
+7d       $codex_7d
+Reset    $codex_reset
+Updated  $codex_refreshed</pre>
+
+<b>Latest Signal</b>
 $last_signal
 
-<b>Trading Snapshot</b>
-Balance / Equity: <i>N/A — paper ledger is not implemented</i>
-Open Positions: <code>${open_positions:-0}</code>
-Pending Orders: <code>${pending_orders:-0}</code>
-
-<b>P&amp;L Summary</b>
-Realized Profit: <i>N/A — no realized-P&amp;L ledger</i>
-Realized Loss: <i>N/A — no realized-P&amp;L ledger</i>
-Fees: <i>N/A — no fee ledger</i>
-Net P&amp;L: <i>N/A — no P&amp;L ledger</i>
+<b>Trading</b>
+<pre>Balance  N/A (paper ledger)
+Open Pos ${open_positions:-0}
+Pending  ${pending_orders:-0}
+Profit   N/A
+Loss     N/A
+Fees     N/A
+Net P&amp;L  N/A</pre>
 
 <b>Database</b>
-Telegram Messages: <code>${message_count:-0}</code>
-Canonical Signals: <code>${signal_count:-0}</code>
-Orders: <code>${total_orders:-0}</code>
+<pre>Messages $message_count
+Signals  $signal_count
+Orders   $total_orders</pre>
 
-<b>Safety</b>
-Live Execution: <code>DISABLED</code>
-Real Orders: <code>DISABLED</code>"
+<b>Safety</b> <code>PAPER · LIVE DISABLED · REAL ORDERS DISABLED</code>"
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
