@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Deterministic PAPER-only operator report. Runs on the deployment host.
+# Deterministic operator report. Runs on the deployment host.
+# Live Bitget telemetry is DB-backed and best-effort: missing data renders
+# as N/A or STALE, never as fabricated zeros.
 set -euo pipefail
 
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -176,6 +178,86 @@ fi
 
 codex_plan="$(printf '%s' "$codex_plan" | html_escape)"
 codex_refreshed="$(printf '%s' "$codex_refreshed" | html_escape)"
+
+# ---- Live trading telemetry (Bitget, DB-backed, best-effort) ----
+# Every probe ends in `|| true`: an empty result renders as N/A or STALE
+# below, never as a fabricated zero. Table/column names follow
+# src/fatty_trader/storage/schema.py LIVE_SCHEMA_SQL exactly.
+esc() { printf '%s' "$1" | html_escape; }
+
+live_balance="$(query "SELECT total_balance::text, available_balance::text, equity::text, margin_coin, to_char(captured_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI UTC'), floor(extract(epoch FROM (now() - captured_at)))::text FROM balance_snapshots WHERE exchange = 'bitget' ORDER BY captured_at DESC LIMIT 1;" || true)"
+live_positions="$(query "SELECT symbol, side, size::text, COALESCE(entry_price::text, 'N/A'), COALESCE(mark_price::text, 'N/A'), COALESCE(liquidation_price::text, 'N/A'), COALESCE(leverage::text, 'N/A'), COALESCE(margin_mode, 'N/A'), unrealized_pnl::text FROM position_snapshots WHERE exchange = 'bitget' AND captured_at = (SELECT max(captured_at) FROM position_snapshots WHERE exchange = 'bitget') ORDER BY symbol LIMIT 20;" || true)"
+live_sltp="$(query "SELECT symbol, bool_or(role = 'SL' AND state IN ('requested', 'acknowledged'))::text, bool_or(role = 'TP' AND state IN ('requested', 'acknowledged'))::text FROM live_order_intents WHERE exchange = 'bitget' GROUP BY symbol;" || true)"
+live_pending="$(query "SELECT symbol, side, role, requested_qty::text, COALESCE(requested_price::text, 'N/A'), state FROM live_order_intents WHERE exchange = 'bitget' AND state IN ('requested', 'acknowledged') ORDER BY created_at DESC LIMIT 10;" || true)"
+live_pnl="$(query "SELECT count(*)::text, COALESCE(sum(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END)::text, 'N/A'), COALESCE(sum(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END)::text, 'N/A'), COALESCE(sum(fee)::text, 'N/A'), COALESCE(sum(realized_pnl - fee)::text, 'N/A') FROM fills WHERE exchange = 'bitget';" || true)"
+live_unreal="$(query "SELECT COALESCE(sum(unrealized_pnl)::text, 'N/A') FROM position_snapshots WHERE exchange = 'bitget' AND captured_at = (SELECT max(captured_at) FROM position_snapshots WHERE exchange = 'bitget');" || true)"
+
+sltp_for() { awk -F'|' -v sym="$1" -v col="$2" '$1 == sym { print $col; exit }' <<<"$live_sltp"; }
+
+if [[ -n "$live_balance" ]]; then
+  IFS='|' read -r bal_total bal_avail bal_equity bal_coin bal_when bal_age <<<"$live_balance"
+  bal_flag='LIVE'
+  if [[ "${bal_age:-0}" -gt 1800 ]]; then bal_flag='STALE'; fi
+  balance_block="Total      $(esc "${bal_total:-N/A}") $(esc "${bal_coin:-N/A}") [$bal_flag]
+Available  $(esc "${bal_avail:-N/A}") $(esc "${bal_coin:-N/A}")
+Equity     $(esc "${bal_equity:-N/A}") $(esc "${bal_coin:-N/A}")
+Updated    $(esc "${bal_when:-N/A}")"
+else
+  balance_block='N/A (no balance_snapshots for bitget)'
+fi
+
+missing_sl=''
+if [[ -n "$live_positions" ]]; then
+  positions_block='SYMBOL       SIDE  SIZE       ENTRY      MARK       LIQ        LEV  MARGIN   SL   TP   UPNL'
+  while IFS='|' read -r psym pside psize pentry pmark pliq plev pmode pupnl; do
+    [[ -z "$psym" ]] && continue
+    sl="$(sltp_for "$psym" 2)"; tp="$(sltp_for "$psym" 3)"
+    if [[ "$sl" == 'true' ]]; then sl='OK'; else sl='MISS'; missing_sl+="$psym "; fi
+    if [[ "$tp" == 'true' ]]; then tp='OK'; else tp='--'; fi
+    positions_block+=$'\n'"$(printf '%-12s %-5s %-10s %-10s %-10s %-10s %-4s %-8s %-4s %-4s %s' "$(esc "$psym")" "$(esc "$pside")" "$(esc "$psize")" "$(esc "$pentry")" "$(esc "$pmark")" "$(esc "$pliq")" "$(esc "$plev")" "$(esc "$pmode")" "$sl" "$tp" "$(esc "$pupnl")")"
+  done <<<"$live_positions"
+else
+  positions_block='N/A (no position_snapshots for bitget)'
+fi
+
+if [[ -n "$live_pending" ]]; then
+  orders_block='SYMBOL       SIDE  ROLE  QTY        PRICE      STATE'
+  while IFS='|' read -r osym oside orole oqty oprice ostate; do
+    [[ -z "$osym" ]] && continue
+    orders_block+=$'\n'"$(printf '%-12s %-5s %-5s %-10s %-10s %s' "$(esc "$osym")" "$(esc "$oside")" "$(esc "$orole")" "$(esc "$oqty")" "$(esc "$oprice")" "$(esc "$ostate")")"
+  done <<<"$live_pending"
+else
+  orders_block='N/A (no pending live_order_intents for bitget)'
+fi
+
+if [[ -n "$live_pnl" ]]; then
+  IFS='|' read -r fill_n pnl_profit pnl_loss pnl_fees pnl_net <<<"$live_pnl"
+  if [[ "${fill_n:-0}" == '0' ]]; then
+    pnl_block='N/A (no fills for bitget yet)'
+  else
+    pnl_block="Profit     $(esc "${pnl_profit:-N/A}")  [$(esc "${fill_n:-?}") fills]
+Loss       $(esc "${pnl_loss:-N/A}")
+Fees       $(esc "${pnl_fees:-N/A}")
+Net        $(esc "${pnl_net:-N/A}")
+Unrealized $(esc "${live_unreal:-N/A}")  (open positions)"
+  fi
+else
+  pnl_block='N/A (fills unavailable)'
+fi
+
+if [[ -n "$live_positions" ]]; then
+  modes="$(cut -d'|' -f8 <<<"$live_positions" | sort -u | paste -sd, -)"
+  levs="$(cut -d'|' -f7 <<<"$live_positions" | sort -u | paste -sd, -)"
+  if [[ "$modes" == 'ISOLATED' ]]; then iso='yes'; elif [[ "$modes" == *'ISOLATED'* ]]; then iso='mixed'; elif [[ -n "$modes" ]]; then iso='no'; else iso='N/A'; fi
+  if [[ -z "${missing_sl// }" ]]; then sliq='OK'; else sliq="MISSING ${missing_sl}"; fi
+  safety_block="Isolated     $(esc "$iso") [$(esc "$modes")]
+Leverage     $(esc "${levs:-N/A}")
+SL-before-liq $(esc "$sliq")"
+else
+  safety_block='Isolated     N/A
+Leverage     N/A
+SL-before-liq N/A (no position snapshots)'
+fi
 report="<b>Fatty Signal Relay</b>  <i>Paper Ops</i>
 
 <b>Status</b>
@@ -198,21 +280,31 @@ Updated  $codex_refreshed</pre>
 <b>Latest Signal</b>
 $last_signal
 
-<b>Trading</b>
-<pre>Balance  N/A (paper ledger)
-Open Pos ${open_positions:-0}
-Pending  ${pending_orders:-0}
-Profit   N/A
-Loss     N/A
-Fees     N/A
-Net P&amp;L  N/A</pre>
+<b>Balance</b> <code>bitget</code>
+<pre>$balance_block</pre>
+
+<b>Positions</b> <code>open · bitget</code>
+<pre>$positions_block</pre>
+
+<b>Orders</b> <code>pending · bitget</code>
+<pre>$orders_block</pre>
+
+<b>PNL</b> <code>bitget · realized + unrealized</code>
+<pre>$pnl_block</pre>
 
 <b>Database</b>
 <pre>Messages $message_count
 Signals  $signal_count
 Orders   $total_orders</pre>
 
-<b>Safety</b> <code>PAPER · LIVE DISABLED · REAL ORDERS DISABLED</code>"
+<b>Safety</b> <code>PAPER · LIVE DISABLED · REAL ORDERS DISABLED</code>
+<pre>$safety_block</pre>"
+
+# Telegram Bot API text limit is 4096 chars; truncate with notice, never split.
+if [[ "${#report}" -gt 3800 ]]; then
+  report="${report:0:3700}
+<i>... (truncated to fit Telegram 4096-char limit)</i>"
+fi
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
