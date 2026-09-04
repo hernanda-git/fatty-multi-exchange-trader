@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -69,3 +70,24 @@ class SizingPlan(BaseModel):
     notional_usdt: Decimal
     quantity: Decimal
     required_min_notional_usdt: Decimal
+
+
+class BitgetLiveRiskConfig(BaseModel):
+    """Frozen domain mirror of the Bitget LIVE venue contract (no secrets)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    product_type: Literal["USDT-FUTURES"] = "USDT-FUTURES"
+    margin_coin: Literal["USDT"] = "USDT"
+    margin_mode: Literal["isolated"] = "isolated"
+    min_leverage: int = Field(default=20, ge=20, le=50)
+    max_leverage: int = Field(default=50, ge=20, le=50)
+    allocation_pct: Decimal = Field(default=Decimal("0.20"), gt=0, le=1)
+    max_normal_positions: int = Field(default=5, gt=0)
+    liquidation_buffer: Decimal = Field(default=Decimal("0.10"), gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_leverage_range(self) -> "BitgetLiveRiskConfig":
+        if self.min_leverage > self.max_leverage:
+            raise ValueError("min_leverage must not exceed max_leverage")
+        return self
