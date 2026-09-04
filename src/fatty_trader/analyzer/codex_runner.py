@@ -34,6 +34,8 @@ class CodexRunnerConfig:
     """Resource limits for the local, literal `codex exec` subprocess."""
 
     executable: str = "codex"
+    model: str = "gpt-5.6-luna"
+    reasoning_effort: str = "medium"
     timeout_seconds: float = 30.0
     terminate_grace_seconds: float = 2.0
     max_output_bytes: int = 8_192
@@ -81,7 +83,15 @@ class CodexRunner:
     def run(self, prompt: str) -> CodexRunResult:
         try:
             process = self._popen_factory(
-                [self._config.executable, "exec", prompt],
+                [
+                    self._config.executable,
+                    "exec",
+                    "--model",
+                    self._config.model,
+                    "-c",
+                    f'model_reasoning_effort="{self._config.reasoning_effort}"',
+                    prompt,
+                ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

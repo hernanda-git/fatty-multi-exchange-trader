@@ -111,7 +111,8 @@ PY
 )
 
 codex_cli_version="$(codex --version 2>/dev/null || printf '%s' 'unavailable')"
-codex_model="${CODEX_MODEL:-default (no explicit model configured)}"
+codex_model="${CODEX_MODEL:-gpt-5.6-luna}"
+codex_reasoning="${CODEX_REASONING_EFFORT:-medium}"
 
 lookup_metric() { awk -F'|' -v key="$1" '$1 == key { print $2; exit }' <<<"$metrics"; }
 message_count="$(lookup_metric telegram_messages)"
@@ -151,6 +152,7 @@ ${service_rows}
 <b>Codex Usage</b>
 CLI: <code>$codex_cli_version</code>
 Model: <code>$codex_model</code>
+Reasoning: <code>$codex_reasoning</code>
 Quota: <code>$codex_usage_status</code>
 5h: <code>$codex_5h</code>
 7d: <code>$codex_7d</code>

@@ -59,7 +59,15 @@ def test_runner_uses_literal_codex_exec_argv_without_a_shell() -> None:
     assert not result.terminal_failure
     assert calls == [
         (
-            ["codex", "exec", "analyze this; do not execute it"],
+            [
+                "codex",
+                "exec",
+                "--model",
+                "gpt-5.6-luna",
+                "-c",
+                'model_reasoning_effort="medium"',
+                "analyze this; do not execute it",
+            ],
             {
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
