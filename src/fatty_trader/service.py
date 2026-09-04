@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from fatty_trader.analyzer.codex_runner import CodexRunner
+from fatty_trader.analyzer.postgres_worker import process_received_batch
 from fatty_trader.config.telegram import TelegramSettings
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
@@ -82,11 +84,34 @@ async def run_worker(name: str) -> None:
     if name == "intake":
         await run_intake(os.environ)
         return
+    if name == "analyzer":
+        await run_analyzer(os.environ)
+        return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:
         # Keep this boundary observable without writing secrets or business payloads.
         print(f"service={config.name} mode={config.mode} state=ready", flush=True)
         await asyncio.sleep(interval)
+
+
+async def run_analyzer(environ: Mapping[str, str]) -> None:
+    """Continuously analyze durable RECEIVED rows and enqueue PAPER intents."""
+    import psycopg
+
+    runner = CodexRunner()
+    poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "5"))
+    batch_size = int(environ.get("ANALYZER_BATCH_SIZE", "10"))
+    while True:
+        processed = process_received_batch(
+            psycopg.connect,
+            runner=runner,
+            limit=batch_size,
+        )
+        print(
+            f"service=analyzer mode=PAPER state=ready processed={processed}",
+            flush=True,
+        )
+        await asyncio.sleep(poll_seconds if processed == 0 else 0)
 
 
 def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:

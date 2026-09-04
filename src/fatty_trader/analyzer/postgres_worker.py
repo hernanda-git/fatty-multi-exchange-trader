@@ -1,0 +1,100 @@
+"""Durable analyzer worker: RECEIVED messages become ANALYZED + PAPER fan-out."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from contextlib import closing
+from typing import Any
+from uuid import uuid4
+
+from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunResult
+from fatty_trader.analyzer.integration import analyze_with_fallback
+from fatty_trader.intake.persistence import RawTelegramMessage
+
+_SELECT_RECEIVED = """
+SELECT id, channel_id, message_id, revision_hash, raw_text, received_at
+FROM telegram_messages
+WHERE intake_state = 'RECEIVED'
+ORDER BY received_at, message_id
+FOR UPDATE SKIP LOCKED
+LIMIT %s
+"""
+_UPDATE_STATE = "UPDATE telegram_messages SET intake_state = %s WHERE id = %s"
+_SIGNAL_INSERT = """
+INSERT INTO canonical_signals
+(id, message_id, revision, pair_token, direction, entry_price, stop_loss)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (message_id, revision) DO NOTHING
+"""
+_DISPATCH_INSERT = """
+INSERT INTO dispatches
+(id, source_type, source_id, revision, exchange, state)
+VALUES (%s, 'canonical_signal', %s, %s, %s, 'QUEUED')
+ON CONFLICT (source_type, source_id, revision, exchange) DO NOTHING
+"""
+
+
+def process_received_batch(
+    connection_factory: Callable[[], Any],
+    *,
+    runner: Callable[[str], CodexRunResult] | CodexRunner | None = None,
+    limit: int = 10,
+) -> int:
+    """Process one bounded transaction. Dispatch rows are PAPER intents only."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    analysis_runner = runner or CodexRunner()
+    processed = 0
+    with closing(connection_factory()) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(_SELECT_RECEIVED, (limit,))
+            rows = cursor.fetchall()
+            for row in rows:
+                message_uuid, channel_id, message_id, revision, raw_text, received_at = row
+                message = RawTelegramMessage(
+                    channel_id=channel_id,
+                    message_id=message_id,
+                    revision_hash=revision,
+                    raw_text=raw_text,
+                    received_at=received_at,
+                )
+                try:
+                    result = analyze_with_fallback(
+                        text=message.raw_text,
+                        message_id=message.message_id,
+                        codex_runner=_runner_callable(analysis_runner),
+                    )
+                    if result.signal is not None:
+                        signal = result.signal.model_copy(update={"source_revision": revision})
+                        signal_id = uuid4()
+                        cursor.execute(
+                            _SIGNAL_INSERT,
+                            (
+                                signal_id,
+                                message_uuid,
+                                revision,
+                                signal.pair_token,
+                                signal.direction.value,
+                                signal.entry_price,
+                                signal.stop_loss,
+                            ),
+                        )
+                        for exchange in ("binance", "bitget"):
+                            cursor.execute(
+                                _DISPATCH_INSERT,
+                                (uuid4(), signal_id, revision, exchange),
+                            )
+                    cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
+                except Exception:
+                    cursor.execute(_UPDATE_STATE, ("FAILED", message_uuid))
+                processed += 1
+        connection.commit()
+    return processed
+
+
+def _runner_callable(
+    runner: Callable[[str], CodexRunResult] | CodexRunner,
+) -> Callable[[str], CodexRunResult]:
+    if callable(runner):
+        return runner
+    return runner.run
