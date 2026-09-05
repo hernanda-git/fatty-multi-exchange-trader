@@ -101,18 +101,17 @@ async def test_worker_retries_transient_failures_then_marks_attempt_limit_failed
     item = OutboxNotification(uuid4(), {"reason": "timeout"}, attempts=2)
     retry_outbox = FakeOutbox(item)
     retry_sender = FakeSender(NotificationDeliveryError(retryable=True))
-    retry_worker = NotificationWorker(
-        retry_outbox, retry_sender, max_attempts=3, retry_seconds=7
-    )
-    assert await retry_worker.run_once(
-        "worker-a", 30
-    ) == "retry"
+    retry_worker = NotificationWorker(retry_outbox, retry_sender, max_attempts=3, retry_seconds=7)
+    assert await retry_worker.run_once("worker-a", 30) == "retry"
     assert retry_outbox.calls[-1] == ("retry", (item.id, "worker-a", 14))
 
     failed_outbox = FakeOutbox(OutboxNotification(uuid4(), {"reason": "timeout"}, attempts=3))
-    assert await NotificationWorker(
-        failed_outbox, retry_sender, max_attempts=3
-    ).run_once("worker-a", 30) == "failed"
+    assert (
+        await NotificationWorker(failed_outbox, retry_sender, max_attempts=3).run_once(
+            "worker-a", 30
+        )
+        == "failed"
+    )
     assert failed_outbox.calls[-1][0] == "failed"
 
 

@@ -134,9 +134,7 @@ class PostgresNotificationOutbox:
         if row is None:
             return None
         values = (
-            row
-            if isinstance(row, dict)
-            else {"id": row[0], "payload": row[1], "attempts": row[2]}
+            row if isinstance(row, dict) else {"id": row[0], "payload": row[1], "attempts": row[2]}
         )
         payload = values["payload"]
         if not isinstance(payload, Mapping):

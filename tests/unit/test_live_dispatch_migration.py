@@ -9,8 +9,10 @@ def test_live_dispatch_migration_persists_take_profits() -> None:
 
 
 def test_kill_switch_migration_is_additive_and_persistent() -> None:
-    version, sql = MIGRATIONS[-1]
+    matching = [(version, sql) for version, sql in MIGRATIONS if "venue_kill_switches" in sql]
 
+    assert matching
+    version, sql = matching[-1]
     assert version >= 4
     assert "venue_kill_switches" in sql
     assert "CREATE TABLE IF NOT EXISTS" in sql
