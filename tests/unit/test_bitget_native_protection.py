@@ -24,10 +24,14 @@ class NativeProtectionClient:
     ) -> None:
         self.position_qty = position_qty
         self.margin_mode = margin_mode
-        self.plans = plans if plans is not None else [
-            {"planType": "loss_plan", "size": position_qty},
-            {"planType": "profit_plan", "size": position_qty},
-        ]
+        self.plans = (
+            plans
+            if plans is not None
+            else [
+                {"planType": "loss_plan", "size": position_qty},
+                {"planType": "profit_plan", "size": position_qty},
+            ]
+        )
         self.read_fails = read_fails
         self.protection_calls: list[dict[str, str]] = []
         self.close_calls: list[dict[str, str]] = []

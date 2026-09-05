@@ -54,9 +54,9 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
     ),
     "analyzer": (),
     "dispatcher-binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
-    "dispatcher-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET"),
+    "dispatcher-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"),
     "monitor-binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
-    "monitor-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET"),
+    "monitor-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"),
     "operator-bot": ("TG_BOT_TOKEN", "TG_OPERATOR_ID"),
 }
 
@@ -106,6 +106,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     """Run the durable dispatcher in observe-only mode until human cutover wiring exists."""
     from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
     from fatty_trader.execution.bitget_dispatcher import BitgetDispatcher, DispatchGate
+    from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
     config = service_config("dispatcher-bitget", environ)
     state = bitget_dispatcher_state(environ)
@@ -117,6 +118,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         PostgresBitgetDispatchRepository(psycopg.connect),
         gate=DispatchGate(execution_enabled=False),
         preflight=lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed")),
+        kill_switch=PostgresReconciliationRepository(psycopg.connect),
     )
     interval = float(environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
@@ -128,6 +130,34 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             flush=True,
         )
         await asyncio.sleep(interval)
+
+
+async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
+    """Run only signed provider GETs and persist fail-closed reconciliation state."""
+    import psycopg
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+    from fatty_trader.execution.bitget_monitor import BitgetMonitor
+    from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
+
+    config = service_config("monitor-bitget", environ)
+    client = BitgetRestClient(
+        environ["BITGET_API_KEY"], environ["BITGET_API_SECRET"], environ["BITGET_API_PASSPHRASE"]
+    )
+    repository = PostgresReconciliationRepository(psycopg.connect)
+    monitor = BitgetMonitor(client, repository)
+    interval = float(environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+    try:
+        while True:
+            report = await monitor.run_once()
+            print(
+                f"service=monitor-bitget mode={config.mode} venue_mode={config.venue_mode} "
+                f"state={report.status} reasons={','.join(report.reasons) or 'none'}",
+                flush=True,
+            )
+            await asyncio.sleep(interval)
+    finally:
+        await client.aclose()
 
 
 def apply_schema() -> None:
@@ -151,6 +181,9 @@ async def run_worker(name: str) -> None:
         return
     if name == "dispatcher-bitget":
         await run_bitget_dispatcher(os.environ)
+        return
+    if name == "monitor-bitget":
+        await run_bitget_monitor(os.environ)
         return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:

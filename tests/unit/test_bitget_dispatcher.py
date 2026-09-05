@@ -127,6 +127,30 @@ async def test_invalid_geometry_or_missing_take_profit_never_posts_when_gate_is_
 
 
 @pytest.mark.asyncio
+async def test_persistent_kill_switch_blocks_before_provider_post() -> None:
+    class KillSwitch:
+        def is_active(self, scope: str) -> bool:
+            return scope == "bitget"
+
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        kill_switch=KillSwitch(),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "kill-switch-latched"
+    assert execution.post_count == 0
+    assert repository.transitions == [("QUEUED", "REJECTED", "kill-switch-latched")]
+    assert repository.alerts == ["kill-switch-latched"]
+
+
+@pytest.mark.asyncio
 async def test_valid_dispatch_persists_only_the_explicit_state_order() -> None:
     repository = Repository(_dispatch())
     execution = Execution()

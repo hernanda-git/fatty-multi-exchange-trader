@@ -105,6 +105,8 @@ async def confirm_native_protection(
     if not has_take_profit:
         return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
     report = ProtectionReport(ProtectionState.VENUE_PROTECTED, observed)
-    return report if protection_is_confirmed(report, expected_quantity) else ProtectionReport(
-        ProtectionState.DEGRADED, observed, "position-quantity-mismatch"
+    return (
+        report
+        if protection_is_confirmed(report, expected_quantity)
+        else ProtectionReport(ProtectionState.DEGRADED, observed, "position-quantity-mismatch")
     )

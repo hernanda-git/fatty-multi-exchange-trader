@@ -50,6 +50,17 @@ def test_bitget_dispatcher_starts_cutover_gated_without_constructing_execution_c
     assert service_config("dispatcher-bitget", {}).execution_enabled is False
 
 
+def test_bitget_monitor_has_only_bitget_credentials_and_no_execution_toggle() -> None:
+    config = service_config("monitor-bitget", {})
+
+    assert config.required_credentials == (
+        "BITGET_API_KEY",
+        "BITGET_API_SECRET",
+        "BITGET_API_PASSPHRASE",
+    )
+    assert "BITGET_EXECUTION_ENABLED" not in config.allowed_environment
+
+
 def test_non_bitget_live_mode_is_rejected() -> None:
     with pytest.raises(ValueError, match="only PAPER mode"):
         service_config("dispatcher-binance", {"TRADER_MODE": "LIVE"})
@@ -101,11 +112,10 @@ def test_health_report_is_sanitized_and_exposes_component_states() -> None:
 def test_bitget_dispatch_migration_records_auditable_transitions() -> None:
     from fatty_trader.storage.migrations import MIGRATIONS
 
-    version, sql = MIGRATIONS[-1]
+    matching = [sql for _, sql in MIGRATIONS if "dispatch_transitions" in sql]
 
-    assert version >= 3
-    assert "dispatch_transitions" in sql
-    assert "dispatch_id" in sql
+    assert matching
+    assert "dispatch_id" in matching[0]
 
 
 def test_apply_schema_runs_additive_live_migrations(monkeypatch: pytest.MonkeyPatch) -> None:

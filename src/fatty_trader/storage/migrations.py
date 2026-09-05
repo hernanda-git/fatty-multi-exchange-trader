@@ -47,6 +47,18 @@ MIGRATIONS: Final = [
         3,
         BITGET_DISPATCH_SCHEMA_SQL,
     ),
+    (
+        4,
+        """
+        CREATE TABLE IF NOT EXISTS venue_kill_switches (
+            scope TEXT PRIMARY KEY,
+            active BOOLEAN NOT NULL DEFAULT FALSE,
+            reason TEXT,
+            latched_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

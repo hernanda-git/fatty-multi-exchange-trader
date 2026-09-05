@@ -29,6 +29,10 @@ class DispatchRepository(Protocol):
     def alert(self, dispatch_id: UUID, reason: str) -> None: ...
 
 
+class KillSwitch(Protocol):
+    def is_active(self, scope: str) -> bool: ...
+
+
 class EntryExecution(Protocol):
     async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str: ...
 
@@ -56,8 +60,10 @@ class BitgetDispatcher:
         gate: DispatchGate | None = None,
         execution: EntryExecution | None = None,
         preflight: Preflight,
+        kill_switch: KillSwitch | None = None,
     ) -> None:
         self._repository = repository
+        self._kill_switch = kill_switch
         self._gate = gate or DispatchGate()
         self._execution = execution
         self._preflight = preflight
@@ -66,6 +72,9 @@ class BitgetDispatcher:
         dispatch = self._repository.claim(worker_id, lease_seconds)
         if dispatch is None:
             return "idle"
+        if self._kill_switch is not None and self._kill_switch.is_active("bitget"):
+            self._reject(dispatch, "kill-switch-latched")
+            return "kill-switch-latched"
         if not self._gate.execution_enabled:
             self._reject(dispatch, "cutover-gated")
             return "cutover-gated"
