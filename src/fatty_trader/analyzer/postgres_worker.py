@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from contextlib import closing
 from typing import Any
@@ -22,8 +23,8 @@ LIMIT %s
 _UPDATE_STATE = "UPDATE telegram_messages SET intake_state = %s WHERE id = %s"
 _SIGNAL_INSERT = """
 INSERT INTO canonical_signals
-(id, message_id, revision, pair_token, direction, entry_price, stop_loss)
-VALUES (%s, %s, %s, %s, %s, %s, %s)
+(id, message_id, revision, pair_token, direction, entry_price, stop_loss, take_profits)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
 ON CONFLICT (message_id, revision) DO NOTHING
 """
 _DISPATCH_INSERT = """
@@ -77,6 +78,7 @@ def process_received_batch(
                                 signal.direction.value,
                                 signal.entry_price,
                                 signal.stop_loss,
+                                json.dumps([str(target) for target in signal.take_profits]),
                             ),
                         )
                         for exchange in ("binance", "bitget"):

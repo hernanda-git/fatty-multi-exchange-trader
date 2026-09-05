@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 MIGRATIONS: Final = [
     (1, LIVE_SCHEMA_SQL),
+    (
+        2,
+        """
+        ALTER TABLE canonical_signals
+        ADD COLUMN take_profits JSONB NOT NULL DEFAULT '[]';
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
