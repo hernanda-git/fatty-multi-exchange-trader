@@ -30,6 +30,26 @@ def test_bitget_mode_is_isolated_from_global_paper_mode() -> None:
     assert config.venue_mode == "LIVE"
 
 
+def test_bitget_dispatcher_starts_cutover_gated_without_constructing_execution_client() -> None:
+    from fatty_trader.service import bitget_dispatcher_state
+
+    constructed = False
+
+    def execution_client_factory() -> object:
+        nonlocal constructed
+        constructed = True
+        return object()
+
+    state = bitget_dispatcher_state(
+        {"TRADER_MODE": "PAPER", "BITGET_MODE": "LIVE"},
+        execution_client_factory=execution_client_factory,
+    )
+
+    assert state == "cutover-gated"
+    assert not constructed
+    assert service_config("dispatcher-bitget", {}).execution_enabled is False
+
+
 def test_non_bitget_live_mode_is_rejected() -> None:
     with pytest.raises(ValueError, match="only PAPER mode"):
         service_config("dispatcher-binance", {"TRADER_MODE": "LIVE"})
@@ -76,6 +96,16 @@ def test_health_report_is_sanitized_and_exposes_component_states() -> None:
         "dispatcher-binance": "starting",
     }
     assert "API_SECRET" not in str(report)
+
+
+def test_bitget_dispatch_migration_records_auditable_transitions() -> None:
+    from fatty_trader.storage.migrations import MIGRATIONS
+
+    version, sql = MIGRATIONS[-1]
+
+    assert version >= 3
+    assert "dispatch_transitions" in sql
+    assert "dispatch_id" in sql
 
 
 def test_apply_schema_runs_additive_live_migrations(monkeypatch: pytest.MonkeyPatch) -> None:

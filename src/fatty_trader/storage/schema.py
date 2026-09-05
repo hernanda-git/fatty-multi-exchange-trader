@@ -145,6 +145,20 @@ def validate_order_intent_state(state: str) -> str:
     return state
 
 
+BITGET_DISPATCH_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS dispatch_transitions (
+    id UUID PRIMARY KEY,
+    dispatch_id UUID NOT NULL REFERENCES dispatches(id),
+    from_state TEXT NOT NULL,
+    to_state TEXT NOT NULL,
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS dispatch_transitions_dispatch_time
+ON dispatch_transitions (dispatch_id, created_at);
+"""
+
+
 LIVE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS live_order_intents (
     id UUID PRIMARY KEY,

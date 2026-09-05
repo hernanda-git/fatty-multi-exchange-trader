@@ -10,7 +10,7 @@ import argparse
 import asyncio
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +39,7 @@ class ServiceConfig:
     name: str
     mode: str
     venue_mode: str
+    execution_enabled: bool
     required_credentials: tuple[str, ...]
     allowed_environment: tuple[str, ...]
 
@@ -73,8 +74,60 @@ def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
         if venue_mode not in {"PAPER", "LIVE"}:
             raise ValueError("BITGET_MODE must be PAPER or LIVE")
     credentials = _CREDENTIALS[name]
+    execution_enabled = False
+    if name == "dispatcher-bitget":
+        raw_execution = environ.get("BITGET_EXECUTION_ENABLED", "0").lower()
+        if raw_execution not in {"0", "1"}:
+            raise ValueError("BITGET_EXECUTION_ENABLED must be 0 or 1")
+        execution_enabled = raw_execution == "1"
     common = ("TRADER_MODE", "SERVICE_NAME", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")
-    return ServiceConfig(name, mode, venue_mode, credentials, common + credentials)
+    allowed_environment = common + credentials
+    if name == "dispatcher-bitget":
+        allowed_environment += ("BITGET_MODE", "BITGET_EXECUTION_ENABLED")
+    return ServiceConfig(
+        name, mode, venue_mode, execution_enabled, credentials, allowed_environment
+    )
+
+
+def bitget_dispatcher_state(
+    environ: Mapping[str, str], *, execution_client_factory: Callable[[], object] | None = None
+) -> str:
+    """Return the safe dispatcher startup state without touching credentials when gated."""
+    config = service_config("dispatcher-bitget", environ)
+    if not config.execution_enabled:
+        return "cutover-gated"
+    if execution_client_factory is None:
+        return "execution-not-wired"
+    execution_client_factory()
+    return "execution-enabled"
+
+
+async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
+    """Run the durable dispatcher in observe-only mode until human cutover wiring exists."""
+    from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
+    from fatty_trader.execution.bitget_dispatcher import BitgetDispatcher, DispatchGate
+
+    config = service_config("dispatcher-bitget", environ)
+    state = bitget_dispatcher_state(environ)
+    if state != "cutover-gated":
+        raise RuntimeError("Bitget execution is not wired by this observe-only service")
+    import psycopg
+
+    dispatcher = BitgetDispatcher(
+        PostgresBitgetDispatchRepository(psycopg.connect),
+        gate=DispatchGate(execution_enabled=False),
+        preflight=lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed")),
+    )
+    interval = float(environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+    lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
+    while True:
+        cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
+        print(
+            f"service=dispatcher-bitget mode=PAPER venue_mode={config.venue_mode} "
+            f"state={cycle_state}",
+            flush=True,
+        )
+        await asyncio.sleep(interval)
 
 
 def apply_schema() -> None:
@@ -95,6 +148,9 @@ async def run_worker(name: str) -> None:
         return
     if name == "analyzer":
         await run_analyzer(os.environ)
+        return
+    if name == "dispatcher-bitget":
+        await run_bitget_dispatcher(os.environ)
         return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:

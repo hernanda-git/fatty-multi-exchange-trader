@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Final, Protocol
 
-from fatty_trader.storage.schema import LIVE_SCHEMA_SQL
+from fatty_trader.storage.schema import BITGET_DISPATCH_SCHEMA_SQL, LIVE_SCHEMA_SQL
 
 
 class MigrationCursor(Protocol):
@@ -42,6 +42,10 @@ MIGRATIONS: Final = [
         ALTER TABLE live_order_intents
         ADD COLUMN provider_fill_ids JSONB NOT NULL DEFAULT '[]';
         """,
+    ),
+    (
+        3,
+        BITGET_DISPATCH_SCHEMA_SQL,
     ),
 ]
 
