@@ -154,6 +154,20 @@ class BitgetRestClient:
                 last_error = None
                 continue
             if response.status_code >= 400:
+                try:
+                    error_payload = response.json()
+                except ValueError:
+                    error_payload = None
+                if isinstance(error_payload, dict):
+                    code = str(error_payload.get("code", ""))
+                    msg = str(error_payload.get("msg", ""))
+                    if code or msg:
+                        raise BitgetApiError(
+                            f"Bitget {method.upper()} {path} HTTP {response.status_code}: "
+                            f"{code} {msg}".strip(),
+                            code=code,
+                            provider_msg=msg,
+                        )
                 raise BitgetApiError(f"Bitget {method.upper()} {path} HTTP {response.status_code}")
             try:
                 envelope = response.json()

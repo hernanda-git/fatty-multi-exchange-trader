@@ -181,6 +181,20 @@ async def test_transport_error_message_is_redacted() -> None:
     await client.aclose()
 
 
+async def test_http_error_preserves_provider_code_and_message_without_credentials() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"code": "40012", "msg": "apikey/password is incorrect"})
+
+    client, _ = make_client(handler)
+    with pytest.raises(BitgetApiError) as exc_info:
+        await client.get_account(symbol="BTCUSDT")
+    assert exc_info.value.code == "40012"
+    assert "apikey/password is incorrect" in str(exc_info.value)
+    for secret in ("my-key", "my-secret", "my-pass"):
+        assert secret not in str(exc_info.value)
+    await client.aclose()
+
+
 async def test_explicit_params_and_all_methods() -> None:
     seen: list[httpx.Request] = []
     paths: list[str] = []
