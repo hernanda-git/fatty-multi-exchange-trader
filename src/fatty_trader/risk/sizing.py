@@ -71,6 +71,7 @@ class SymbolMetadata(BaseModel):
     price_tick: Decimal = Field(gt=0)
     size_step: Decimal = Field(gt=0)
     min_order_qty: Decimal = Field(gt=0)
+    max_order_qty: Decimal | None = Field(default=None, gt=0)
     contract_value: Decimal = Field(default=Decimal("1"), gt=0)
     max_leverage: int = Field(ge=1, le=125)
     min_notional: Decimal = Field(default=Decimal("5"), ge=0)
