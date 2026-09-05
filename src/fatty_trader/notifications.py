@@ -232,7 +232,9 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
             continue
         value = "[redacted]" if _SECRET_KEY.search(str(key)) else _safe_value(payload[key])
         lines.append(f"<b>{escape(str(key).replace('_', ' ').title())}:</b> {escape(value)}")
-    return "<br>".join(lines)[:4000]
+    # Telegram's HTML subset does not support <br>; literal newlines preserve
+    # card readability without causing a permanent Bot API parse failure.
+    return "\n".join(lines)[:4000]
 
 
 def _safe_value(value: Any) -> str:

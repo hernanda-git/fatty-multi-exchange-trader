@@ -52,6 +52,7 @@ def test_notification_html_escapes_and_redacts_untrusted_payload() -> None:
     assert "not-for-telegram" not in text
     assert "must-not-appear" not in text
     assert "password=[redacted]" in text
+    assert "<br>" not in text
 
 
 class FakeOutbox:
