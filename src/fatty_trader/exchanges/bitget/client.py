@@ -286,6 +286,18 @@ class BitgetRestClient:
             params["symbol"] = symbol
         return await self._get("/api/v2/mix/order/orders-pending", params)
 
+    async def get_pending_plan_orders(
+        self,
+        symbol: str,
+        product_type: str = "USDT-FUTURES",
+        margin_coin: str = "USDT",
+    ) -> Any:
+        """Read pending native TP/SL plans for exactly one symbol."""
+        return await self._get(
+            "/api/v2/mix/order/orders-plan-pending",
+            {"symbol": symbol, "productType": product_type, "marginCoin": margin_coin},
+        )
+
     async def get_order_detail(
         self,
         symbol: str,

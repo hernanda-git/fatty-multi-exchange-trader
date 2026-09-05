@@ -299,6 +299,18 @@ async def test_http_error_preserves_provider_code_and_message_without_credential
     await client.aclose()
 
 
+async def test_pending_plan_orders_is_symbol_aware() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/mix/order/orders-plan-pending"
+        assert request.url.params["symbol"] == "BTCUSDT"
+        assert request.url.params["productType"] == "USDT-FUTURES"
+        return httpx.Response(200, json=ok_envelope({"entrustedList": []}))
+
+    client, _ = make_client(handler)
+    assert await client.get_pending_plan_orders("BTCUSDT") == {"entrustedList": []}
+    await client.aclose()
+
+
 async def test_explicit_params_and_all_methods() -> None:
     seen: list[httpx.Request] = []
     paths: list[str] = []
