@@ -9,7 +9,12 @@ file="$backup_dir/fatty_trader_${timestamp}.dump"
 
 mkdir -p "$backup_dir"
 # Default invocation: docker compose exec -T postgres pg_dump (COMPOSE_BIN is a test override).
-$compose_bin exec -T postgres pg_dump --format=custom --no-owner --dbname=fatty_trader >"$file"
+# Docker exec runs as root by default, which is not a PostgreSQL role in this image.
+$compose_bin exec -T postgres pg_dump \
+  --username="${POSTGRES_USER:-fatty_app}" \
+  --format=custom \
+  --no-owner \
+  --dbname="${POSTGRES_DB:-fatty_trader}" >"$file"
 if ! test -s "$file"; then
   rm -f "$file"
   printf 'backup_failed=empty_dump\n' >&2

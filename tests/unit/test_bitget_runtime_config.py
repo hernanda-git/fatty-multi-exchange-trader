@@ -72,6 +72,7 @@ def test_backup_and_runtime_scripts_are_safe_compose_operational_tools() -> None
     verify = (REPO_ROOT / "scripts" / "verify_bitget_runtime.sh").read_text(encoding="utf-8")
 
     assert "docker compose exec -T postgres pg_dump" in backup
+    assert '--username="${POSTGRES_USER:-fatty_app}"' in backup
     assert "test -s" in backup
     assert "restore_postgres.sh" in backup
     assert "BITGET_API_SECRET" not in backup
