@@ -109,6 +109,7 @@ services:
     restart: unless-stopped
 
   dispatcher-binance:
+    profiles: ["binance-disabled"]
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
     environment:
@@ -159,6 +160,7 @@ services:
     restart: unless-stopped
 
   monitor-binance:
+    profiles: ["binance-disabled"]
     extends:
       service: dispatcher-binance
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "monitor-binance"]
