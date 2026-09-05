@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Compose-operated backup: credentials remain inside the postgres container.
-backup_dir="${BACKUP_DIR:-data/backups}"
+backup_dir="${BACKUP_DIR:-backups}"
 compose_bin="${COMPOSE_BIN:-docker compose}"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 file="$backup_dir/fatty_trader_${timestamp}.dump"
