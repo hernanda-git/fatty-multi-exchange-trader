@@ -59,6 +59,18 @@ MIGRATIONS: Final = [
         );
         """,
     ),
+    (
+        5,
+        """
+        ALTER TABLE notifications_outbox ADD COLUMN claimed_by TEXT;
+        ALTER TABLE notifications_outbox ADD COLUMN lease_until TIMESTAMPTZ;
+        ALTER TABLE notifications_outbox ADD COLUMN next_attempt_at TIMESTAMPTZ;
+        ALTER TABLE notifications_outbox ADD COLUMN failed_at TIMESTAMPTZ;
+        CREATE INDEX IF NOT EXISTS notifications_outbox_pending
+        ON notifications_outbox (created_at, id)
+        WHERE sent_at IS NULL AND failed_at IS NULL;
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

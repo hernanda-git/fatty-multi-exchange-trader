@@ -170,7 +170,13 @@ class PostgresReconciliationRepository:
                 (
                     uuid4(),
                     f"kill-switch:{scope}:{reason}",
-                    json.dumps({"scope": scope, "reason": reason}),
+                    json.dumps(
+                        {
+                            "kind": "kill-switch",
+                            "scope": scope,
+                            "reason": reason,
+                        }
+                    ),
                 ),
             )
             connection.commit()

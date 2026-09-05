@@ -126,7 +126,13 @@ class PostgresBitgetDispatchRepository:
                 (
                     uuid4(),
                     f"bitget-dispatch:{dispatch_id}:{reason}",
-                    json.dumps({"reason": reason}),
+                    json.dumps(
+                        {
+                            "kind": "execution-alert",
+                            "dispatch_id": str(dispatch_id),
+                            "reason": reason,
+                        }
+                    ),
                 ),
             )
             connection.commit()
