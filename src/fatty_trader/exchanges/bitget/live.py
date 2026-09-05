@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol
@@ -76,8 +76,8 @@ class BitgetLiveClientProtocol(LiveProtectionClient, Protocol):
         client_oid: str,
         order_type: str = "market",
     ) -> dict[str, Any]: ...
-    def get_order_detail(self, client_oid: str) -> dict[str, Any]: ...
-    def get_fills(self, client_oid: str) -> list[dict[str, Any]]: ...
+    def get_order_detail(self, symbol: str, client_oid: str) -> dict[str, Any]: ...
+    def get_fills(self, symbol: str, client_oid: str) -> list[dict[str, Any]]: ...
     def place_market_close(
         self,
         *,
@@ -151,13 +151,36 @@ class InMemoryLiveIntentStore:
         self._records: dict[str, LiveIntentRecord] = {}
 
     def save(self, record: LiveIntentRecord) -> None:
-        self._records[record.client_oid] = record
+        existing = self._records.get(record.client_oid)
+        if existing is not None:
+            if existing.exchange != record.exchange:
+                raise ValueError("live intent exchange conflict")
+            if (
+                existing.provider_order_id is not None
+                and record.provider_order_id is not None
+                and existing.provider_order_id != record.provider_order_id
+            ):
+                raise ValueError("live intent provider order id conflict")
+            return
+        self._records[record.client_oid] = replace(record)
 
     def get(self, client_oid: str) -> LiveIntentRecord | None:
-        return self._records.get(client_oid)
+        record = self._records.get(client_oid)
+        return replace(record) if record is not None else None
 
     def update(self, record: LiveIntentRecord) -> None:
-        self._records[record.client_oid] = record
+        existing = self._records.get(record.client_oid)
+        if existing is None:
+            raise LookupError(f"unknown live intent: {record.client_oid}")
+        if existing.exchange != record.exchange:
+            raise ValueError("live intent exchange conflict")
+        if (
+            existing.provider_order_id is not None
+            and record.provider_order_id is not None
+            and existing.provider_order_id != record.provider_order_id
+        ):
+            raise ValueError("live intent provider order id conflict")
+        self._records[record.client_oid] = replace(record)
 
 
 @dataclass(frozen=True)
@@ -334,8 +357,8 @@ def reconcile_by_client_oid(
     record = store.get(client_oid)
     if record is None:
         raise LookupError(f"unknown live intent: {client_oid}")
-    detail = client.get_order_detail(client_oid)
-    fills = client.get_fills(client_oid)
+    detail = client.get_order_detail(record.symbol, client_oid)
+    fills = client.get_fills(record.symbol, client_oid)
     status = _persist_readback(store, record, detail, fills)
     return LiveEntryResult(
         client_oid=client_oid,
@@ -363,8 +386,9 @@ def enter_live_position(
         request.exchange, request.symbol, request.oid_token
     )
     existing = store.get(client_oid)
-    # Idempotent retry: an already-submitted clientOid reconciles via GETs only.
-    if existing is not None and existing.provider_order_id is not None:
+    # Any existing durable intent may have reached Bitget before a crash. Reconcile
+    # via GET only; never submit a second POST for the same client OID.
+    if existing is not None:
         result = reconcile_by_client_oid(
             client, store, exchange=request.exchange, client_oid=client_oid
         )
@@ -398,8 +422,8 @@ def enter_live_position(
     record.provider_order_id = str(provider_order_id) if provider_order_id is not None else None
     store.update(record)
 
-    detail = client.get_order_detail(client_oid)
-    fills = client.get_fills(client_oid)
+    detail = client.get_order_detail(record.symbol, client_oid)
+    fills = client.get_fills(record.symbol, client_oid)
     status = _persist_readback(store, record, detail, fills)
     result = LiveEntryResult(
         client_oid=client_oid,

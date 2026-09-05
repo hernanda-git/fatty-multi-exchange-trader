@@ -164,6 +164,8 @@ CREATE TABLE IF NOT EXISTS live_order_intents (
     requested_price NUMERIC CHECK (requested_price IS NULL OR requested_price > 0),
     acknowledged_price NUMERIC CHECK (acknowledged_price IS NULL OR acknowledged_price > 0),
     filled_price NUMERIC CHECK (filled_price IS NULL OR filled_price > 0),
+    fee NUMERIC NOT NULL DEFAULT 0,
+    provider_fill_ids JSONB NOT NULL DEFAULT '[]',
     leverage NUMERIC CHECK (leverage IS NULL OR leverage > 0),
     margin_mode TEXT CHECK (margin_mode IS NULL OR margin_mode IN ('ISOLATED', 'CROSS')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

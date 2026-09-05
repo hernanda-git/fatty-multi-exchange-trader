@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from fatty_trader.exchanges.bitget.live import LiveIntentRecord
+from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore, LiveIntentRecord
 from fatty_trader.storage.live_intents import PostgresLiveIntentStore
 
 
@@ -66,6 +66,7 @@ def test_get_maps_database_row_without_exposing_payload() -> None:
             "50000",
             "0.03",
             "provider-1",
+            '["fill-1", "fill-2"]',
         )
     )
     result = PostgresLiveIntentStore(lambda: connection).get(record().client_oid)
@@ -73,3 +74,21 @@ def test_get_maps_database_row_without_exposing_payload() -> None:
     assert result.state == "filled"
     assert result.filled_qty == Decimal("0.001")
     assert result.provider_order_id == "provider-1"
+    assert result.fee == Decimal("0.03")
+    assert result.provider_fill_ids == ("fill-1", "fill-2")
+
+
+def test_update_rejects_conflicting_provider_order_id() -> None:
+    store = InMemoryLiveIntentStore()
+    existing = record()
+    existing.provider_order_id = "provider-a"
+    conflicting = record()
+    conflicting.provider_order_id = "provider-b"
+    store.save(existing)
+
+    try:
+        store.update(conflicting)
+    except ValueError as exc:
+        assert "conflict" in str(exc)
+    else:
+        raise AssertionError("provider order-id conflict must fail closed")

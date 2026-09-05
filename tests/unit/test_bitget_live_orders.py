@@ -9,9 +9,11 @@ from typing import Any
 from fatty_trader.exchanges.bitget.live import (
     InMemoryLiveIntentStore,
     LiveEntryRequest,
+    LiveIntentRecord,
     LiveOrderStatus,
     build_live_client_oid,
     enter_live_position,
+    reconcile_by_client_oid,
 )
 from fatty_trader.execution.protection import ProtectionReport
 
@@ -102,12 +104,12 @@ class FakeLiveClient:
             raise BitgetUnknownResultError("POST result unknown: transport failure")
         return {"orderId": f"venue-{client_oid[-6:]}", "clientOid": client_oid}
 
-    def get_order_detail(self, client_oid: str) -> dict[str, Any]:
-        self.calls.append(f"detail:{client_oid}")
+    def get_order_detail(self, symbol: str, client_oid: str) -> dict[str, Any]:
+        self.calls.append(f"detail:{symbol}:{client_oid}")
         return dict(self._detail)
 
-    def get_fills(self, client_oid: str) -> list[dict[str, Any]]:
-        self.calls.append(f"fills:{client_oid}")
+    def get_fills(self, symbol: str, client_oid: str) -> list[dict[str, Any]]:
+        self.calls.append(f"fills:{symbol}:{client_oid}")
         return [dict(f) for f in self._fills]
 
     # -- protection path --
@@ -246,6 +248,47 @@ def test_idempotent_retry_by_client_oid_posts_once() -> None:
     assert client.post_count == 1
     assert first.client_oid == second.client_oid == oid
     assert second.status is LiveOrderStatus.FILLED
+
+
+def test_restart_with_persisted_pre_submit_intent_never_posts_a_duplicate() -> None:
+    client = FakeLiveClient(detail=_filled_detail(), fills=[_fill()])
+    store = InMemoryLiveIntentStore()
+    oid = build_live_client_oid("bitget", "BTCUSDT", token_hex="0011223344556677")
+    store.save(
+        LiveIntentRecord(
+            exchange="bitget",
+            client_oid=oid,
+            symbol="BTCUSDT",
+            side="BUY",
+            requested_qty=Decimal("0.01"),
+        )
+    )
+
+    result = enter_live_position(client, store, _request(client_oid=oid))
+
+    assert result.status is LiveOrderStatus.FILLED
+    assert client.post_count == 0
+
+
+def test_reconciliation_passes_persisted_symbol_to_provider_reads() -> None:
+    client = FakeLiveClient(detail=_filled_detail(), fills=[_fill()])
+    store = InMemoryLiveIntentStore()
+    oid = build_live_client_oid("bitget", "ETHUSDT", token_hex="0011223344556677")
+    store.save(
+        LiveIntentRecord(
+            exchange="bitget",
+            client_oid=oid,
+            symbol="ETHUSDT",
+            side="BUY",
+            requested_qty=Decimal("0.01"),
+            provider_order_id="venue-eth",
+        )
+    )
+
+    reconcile_by_client_oid(client, store, exchange="bitget", client_oid=oid)
+
+    assert f"detail:ETHUSDT:{oid}" in client.calls
+    assert f"fills:ETHUSDT:{oid}" in client.calls
 
 
 def test_rejected_order_classified_and_no_protection() -> None:

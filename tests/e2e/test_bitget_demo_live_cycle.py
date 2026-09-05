@@ -114,9 +114,9 @@ class DemoBitgetClient:
         )
         return order
 
-    def get_order_detail(self, client_oid: str) -> dict[str, Any]:
+    def get_order_detail(self, symbol: str, client_oid: str) -> dict[str, Any]:
         for o in self.orders:
-            if o.get("clientOid") == client_oid:
+            if o.get("clientOid") == client_oid and o.get("symbol") == symbol:
                 return {**o, "status": "filled", "requestedQty": o["size"]}
         return {"status": "unknown", "clientOid": client_oid}
 
@@ -192,16 +192,20 @@ class DemoBitgetClient:
 
         return ProtectionReport(ProtectionState.VENUE_PROTECTED, quantity)
 
-    def get_fills(self, ref: str | None = None) -> list[dict[str, Any]]:
-        """Support live workflow (client_oid), reconciler (symbol), or no-arg."""
-        if ref is None:
+    def get_fills(
+        self, symbol: str | None = None, client_oid: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Support live workflow, reconciler, or no-arg provider reads."""
+        if symbol is None:
             return self.fills
-        # Live workflow: ref is a clientOid
-        if ref.startswith("live-"):
-            order_ids = {o["orderId"] for o in self.orders if o.get("clientOid") == ref}
+        if client_oid is not None:
+            order_ids = {
+                o["orderId"]
+                for o in self.orders
+                if o.get("clientOid") == client_oid and o.get("symbol") == symbol
+            }
             return [f for f in self.fills if f.get("orderId") in order_ids]
-        # Reconciler: ref is a symbol
-        return [f for f in self.fills if f.get("symbol") == ref]
+        return [f for f in self.fills if f.get("symbol") == symbol]
 
     def get_orders(self, ref: str | None = None) -> list[dict[str, Any]]:
         """Support live workflow (client_oid), reconciler (symbol), or no-arg."""

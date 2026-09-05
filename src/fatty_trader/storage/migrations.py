@@ -37,6 +37,10 @@ MIGRATIONS: Final = [
         """
         ALTER TABLE canonical_signals
         ADD COLUMN take_profits JSONB NOT NULL DEFAULT '[]';
+        ALTER TABLE live_order_intents
+        ADD COLUMN fee NUMERIC NOT NULL DEFAULT 0;
+        ALTER TABLE live_order_intents
+        ADD COLUMN provider_fill_ids JSONB NOT NULL DEFAULT '[]';
         """,
     ),
 ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Protocol
@@ -61,7 +62,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         cursor.execute(
             """
             SELECT exchange, client_order_id, symbol, side, role, state,
-                   requested_qty, filled_qty, avg_price, fee, provider_order_id
+                   requested_qty, filled_qty, filled_price, fee, provider_order_id,
+                   provider_fill_ids
             FROM live_order_intents
             WHERE client_order_id = %s
             """,
@@ -83,6 +85,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             avg_price=Decimal(str(values[8])) if values[8] is not None else None,
             fee=Decimal(str(values[9] or "0")),
             provider_order_id=str(values[10]) if values[10] is not None else None,
+            provider_fill_ids=tuple(str(item) for item in json.loads(values[11] or "[]")),
         )
 
     def update(self, record: LiveIntentRecord) -> None:
@@ -92,19 +95,27 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             cursor.execute(
                 """
                 UPDATE live_order_intents
-                SET provider_order_id = %s, state = %s, filled_qty = %s,
-                    filled_price = %s, updated_at = CURRENT_TIMESTAMP
+                SET provider_order_id = COALESCE(provider_order_id, %s),
+                    state = %s, filled_qty = %s, filled_price = %s, fee = %s,
+                    provider_fill_ids = %s::jsonb, updated_at = CURRENT_TIMESTAMP
                 WHERE exchange = %s AND client_order_id = %s
+                  AND (provider_order_id IS NULL OR provider_order_id = %s)
+                RETURNING provider_order_id
                 """,
                 (
                     record.provider_order_id,
                     record.state,
                     record.filled_qty,
                     record.avg_price,
+                    record.fee,
+                    json.dumps(record.provider_fill_ids),
                     record.exchange,
                     record.client_oid,
+                    record.provider_order_id,
                 ),
             )
+            if cursor.fetchone() is None:
+                raise ValueError("live intent provider order id conflict or missing record")
             connection.commit()
         except Exception:
             connection.rollback()
