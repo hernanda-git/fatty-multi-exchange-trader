@@ -20,6 +20,24 @@ class Connection(Protocol):
     def rollback(self) -> None: ...
 
 
+def build_emergency_close_intent(entry: LiveIntentRecord, quantity: Decimal) -> LiveIntentRecord:
+    """Build the one stable reduce-only containment intent for an unsafe fill."""
+    if quantity <= 0:
+        raise ValueError("emergency close quantity must be positive")
+    if entry.side not in {"BUY", "SELL"}:
+        raise ValueError("emergency close entry side must be BUY or SELL")
+    return LiveIntentRecord(
+        exchange=entry.exchange,
+        client_oid=f"{entry.client_oid}-emergency",
+        symbol=entry.symbol,
+        side="SELL" if entry.side == "BUY" else "BUY",
+        role="EMERGENCY_CLOSE",
+        state="requested",
+        requested_qty=quantity,
+        filled_qty=Decimal("0"),
+    )
+
+
 class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     """PostgreSQL-backed live intent store with insert-before-submit semantics."""
 

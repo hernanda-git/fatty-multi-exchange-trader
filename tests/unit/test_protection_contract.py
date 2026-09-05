@@ -6,6 +6,7 @@ from fatty_trader.domain.enums import Direction, Exchange
 from fatty_trader.execution.protection import (
     ProtectionPlan,
     ProtectionState,
+    protection_is_confirmed,
     reconcile_protection,
 )
 
@@ -42,3 +43,11 @@ def test_protection_rejects_negative_venue_quantity() -> None:
 
     with pytest.raises(ValueError, match="negative"):
         reconcile_protection(Adapter(), plan())
+
+
+def test_confirmation_requires_exact_readback_quantity() -> None:
+    from fatty_trader.execution.protection import ProtectionReport
+
+    report = ProtectionReport(ProtectionState.VENUE_PROTECTED, Decimal("0.009"))
+
+    assert protection_is_confirmed(report, Decimal("0.01")) is False

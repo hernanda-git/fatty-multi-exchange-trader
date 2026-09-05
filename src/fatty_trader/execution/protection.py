@@ -53,6 +53,22 @@ def reconcile_protection(adapter: ProtectionAdapter, plan: ProtectionPlan) -> Pr
     return report
 
 
+def protection_is_confirmed(report: ProtectionReport, expected_quantity: Decimal) -> bool:
+    """Accept protection only after a venue read proves the exact open quantity.
+
+    Native plan acknowledgements are intentionally not part of this predicate: callers
+    must pass the report built from a fresh provider read-back.
+    """
+    if expected_quantity <= 0:
+        raise ValueError("expected protected quantity must be positive")
+    if report.observed_quantity < 0:
+        raise ValueError("venue returned a negative protected quantity")
+    return (
+        report.state is ProtectionState.VENUE_PROTECTED
+        and report.observed_quantity == expected_quantity
+    )
+
+
 @dataclass(frozen=True)
 class ProtectionConfirmation:
     """Outcome of a live SL/TP placement before venue read-back."""

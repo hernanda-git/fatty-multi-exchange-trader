@@ -1,10 +1,13 @@
 import asyncio
+from decimal import Decimal
 
 from fatty_trader.exchanges.bitget.read_model import BitgetPositionState
 from fatty_trader.exchanges.bitget.reconciliation_live import (
     ProtectionReadiness,
+    confirm_native_protection,
     evaluate_position_protection,
 )
+from fatty_trader.execution.protection import ProtectionState
 
 
 def _position(*, stop_loss_id: str | None, take_profit_id: str | None) -> BitgetPositionState:
@@ -47,3 +50,21 @@ def test_open_position_missing_stop_is_kill_switch_condition() -> None:
 def test_flat_account_has_no_protection_requirement() -> None:
     state = asyncio.run(evaluate_position_protection(lambda: _read(None)))
     assert state is ProtectionReadiness.FLAT
+
+
+def test_native_confirmation_rejects_changed_margin_mode_even_when_plan_ids_exist() -> None:
+    async def position() -> list[dict[str, str]]:
+        return [{"total": "0.01", "marginMode": "crossed"}]
+
+    async def plans() -> list[dict[str, str]]:
+        return [
+            {"planType": "loss_plan", "size": "0.01"},
+            {"planType": "profit_plan", "size": "0.01"},
+        ]
+
+    report = asyncio.run(
+        confirm_native_protection(position, plans, expected_quantity=Decimal("0.01"))
+    )
+
+    assert report.state is ProtectionState.DEGRADED
+    assert report.reason == "margin-mode-not-isolated"
