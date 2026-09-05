@@ -409,3 +409,43 @@ class BitgetRestClient:
         if not isinstance(data, dict):
             raise BitgetApiError("Bitget close response is invalid")
         return data
+
+    async def place_position_tpsl(
+        self,
+        *,
+        symbol: str,
+        hold_side: str,
+        quantity: str,
+        stop_loss: str,
+        stop_loss_execute_price: str,
+        take_profit: str,
+        take_profit_execute_price: str,
+        stop_loss_client_oid: str,
+        take_profit_client_oid: str,
+        product_type: str = "USDT-FUTURES",
+        margin_coin: str = "USDT",
+    ) -> dict[str, Any]:
+        """Place venue-native mark-price SL/TP for the confirmed position size."""
+        if hold_side not in {"long", "short"}:
+            raise ValueError("Bitget hold side must be long or short")
+        data = await self._post(
+            "/api/v2/mix/order/place-pos-tpsl",
+            {
+                "symbol": symbol.upper(),
+                "productType": product_type,
+                "marginCoin": margin_coin,
+                "size": quantity,
+                "holdSide": hold_side,
+                "stopLossTriggerPrice": stop_loss,
+                "stopLossTriggerType": "mark_price",
+                "stopLossExecutePrice": stop_loss_execute_price,
+                "stopLossClientOid": stop_loss_client_oid,
+                "stopSurplusTriggerPrice": take_profit,
+                "stopSurplusTriggerType": "mark_price",
+                "stopSurplusExecutePrice": take_profit_execute_price,
+                "stopSurplusClientOid": take_profit_client_oid,
+            },
+        )
+        if not isinstance(data, dict):
+            raise BitgetApiError("Bitget protection response is invalid")
+        return data

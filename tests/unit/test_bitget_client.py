@@ -174,6 +174,43 @@ async def test_market_close_is_reduce_only_and_never_retried() -> None:
     await client.aclose()
 
 
+async def test_place_position_tpsl_uses_mark_price_triggers() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/mix/order/place-pos-tpsl"
+        body = json.loads(request.content.decode())
+        assert body == {
+            "holdSide": "long",
+            "marginCoin": "USDT",
+            "productType": "USDT-FUTURES",
+            "size": "0.001",
+            "stopLossClientOid": "sl-1",
+            "stopLossExecutePrice": "50000",
+            "stopLossTriggerPrice": "50010",
+            "stopLossTriggerType": "mark_price",
+            "stopSurplusClientOid": "tp-1",
+            "stopSurplusExecutePrice": "51000",
+            "stopSurplusTriggerPrice": "50990",
+            "stopSurplusTriggerType": "mark_price",
+            "symbol": "BTCUSDT",
+        }
+        return httpx.Response(200, json=ok_envelope({"orderId": "plan-1"}))
+
+    client, _ = make_client(handler)
+    result = await client.place_position_tpsl(
+        symbol="BTCUSDT",
+        hold_side="long",
+        quantity="0.001",
+        stop_loss="50010",
+        stop_loss_execute_price="50000",
+        take_profit="50990",
+        take_profit_execute_price="51000",
+        stop_loss_client_oid="sl-1",
+        take_profit_client_oid="tp-1",
+    )
+    assert result["orderId"] == "plan-1"
+    await client.aclose()
+
+
 async def test_auth_headers_include_passphrase_and_signature() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["ACCESS-KEY"] == "my-key"
