@@ -58,6 +58,12 @@ def test_query_canonicalization_sorts_keys() -> None:
     assert canonical_query_string(None) == ""
 
 
+def test_query_canonicalization_url_encodes_values() -> None:
+    assert canonical_query_string({"symbol": "BTC USDT", "note": "a+b/c"}) == (
+        "note=a%2Bb%2Fc&symbol=BTC+USDT"
+    )
+
+
 def test_body_serialization_compact_sorted() -> None:
     assert compact_body(None) == ""
     assert compact_body({}) == "{}"
@@ -104,6 +110,16 @@ async def test_public_ticker_hits_expected_path_with_params() -> None:
     client, _ = make_client(handler)
     data = await client.get_ticker("BTCUSDT")
     assert data["symbol"] == "BTCUSDT"
+    await client.aclose()
+
+
+async def test_server_time_is_normalized_to_milliseconds() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/public/time"
+        return httpx.Response(200, json=ok_envelope({"serverTime": "1693830000123"}))
+
+    client, _ = make_client(handler)
+    assert await client.get_server_time_ms() == 1693830000123
     await client.aclose()
 
 

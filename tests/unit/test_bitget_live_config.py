@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from fatty_trader.config.bitget import BitgetLiveConfig
+from fatty_trader.config.bitget import BitgetLiveConfig, live_canary_allowed
 
 
 def _creds(**overrides: object) -> dict[str, object]:
@@ -72,3 +72,28 @@ def test_secrets_are_masked_in_repr() -> None:
 
     assert "live-secret" not in rendered
     assert "live-passphrase" not in rendered
+
+
+def test_live_canary_gate_requires_every_runtime_precondition() -> None:
+    config = BitgetLiveConfig(**_creds())
+    assert not live_canary_allowed(
+        config,
+        authenticated_read_passed=True,
+        implementation_enabled=False,
+        safety_checks_passed=True,
+        approval_token="operator-approved",
+    )
+    assert live_canary_allowed(
+        config,
+        authenticated_read_passed=True,
+        implementation_enabled=True,
+        safety_checks_passed=True,
+        approval_token="operator-approved",
+    )
+    assert not live_canary_allowed(
+        config,
+        authenticated_read_passed=True,
+        implementation_enabled=True,
+        safety_checks_passed=True,
+        approval_token=" ",
+    )

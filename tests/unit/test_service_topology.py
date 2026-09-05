@@ -21,6 +21,20 @@ def test_service_config_defaults_to_paper_and_exposes_only_role_credentials() ->
     assert "BITGET_API_SECRET" not in analyzer.allowed_environment
 
 
+def test_bitget_mode_is_isolated_from_global_paper_mode() -> None:
+    config = service_config(
+        "dispatcher-bitget",
+        {"TRADER_MODE": "PAPER", "BITGET_MODE": "LIVE"},
+    )
+    assert config.mode == "PAPER"
+    assert config.venue_mode == "LIVE"
+
+
+def test_non_bitget_live_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="only PAPER mode"):
+        service_config("dispatcher-binance", {"TRADER_MODE": "LIVE"})
+
+
 def test_unknown_service_is_rejected() -> None:
     with pytest.raises(ValueError, match="unsupported service"):
         service_config("not-a-service", {})

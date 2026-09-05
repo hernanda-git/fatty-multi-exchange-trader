@@ -22,6 +22,15 @@ Inject via `.env` on the deployment host **or** via the orchestrator secret mech
 (`fly secret set` / compose `environment:`). After rotating any credential, restart the
 `dispatcher-bitget` container only.
 
+### Runtime boundary (current implementation)
+
+`TRADER_MODE` is the global topology mode and remains `PAPER`. The Bitget lane
+has a separate `BITGET_MODE` value, so `BITGET_MODE=LIVE` identifies the
+intended venue without promoting Binance, intake, analyzer, or operator
+services. Until the real dispatcher and monitor lifecycle is wired and its
+preflight gates pass, the Bitget workers must report `state=heartbeat-only` and
+must not submit provider mutations.
+
 Validation that credentials + product + margin mode are configured correctly:
 
 ```bash

@@ -38,6 +38,7 @@ SUPPORTED_SERVICES = (
 class ServiceConfig:
     name: str
     mode: str
+    venue_mode: str
     required_credentials: tuple[str, ...]
     allowed_environment: tuple[str, ...]
 
@@ -60,15 +61,20 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
 
 
 def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
-    """Return a paper-first config and the credential names this process may use."""
+    """Return a paper-first config with an isolated Bitget venue mode."""
     if name not in SUPPORTED_SERVICES:
         raise ValueError(f"unsupported service: {name}")
     mode = environ.get("TRADER_MODE", "PAPER").upper()
     if mode != "PAPER":
         raise ValueError("only PAPER mode is enabled by this local topology")
+    venue_mode = "PAPER"
+    if name in {"dispatcher-bitget", "monitor-bitget"}:
+        venue_mode = environ.get("BITGET_MODE", "PAPER").upper()
+        if venue_mode not in {"PAPER", "LIVE"}:
+            raise ValueError("BITGET_MODE must be PAPER or LIVE")
     credentials = _CREDENTIALS[name]
     common = ("TRADER_MODE", "SERVICE_NAME", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")
-    return ServiceConfig(name, mode, credentials, common + credentials)
+    return ServiceConfig(name, mode, venue_mode, credentials, common + credentials)
 
 
 def apply_schema() -> None:
@@ -93,7 +99,12 @@ async def run_worker(name: str) -> None:
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:
         # Keep this boundary observable without writing secrets or business payloads.
-        print(f"service={config.name} mode={config.mode} state=ready", flush=True)
+        state = "heartbeat-only"
+        print(
+            f"service={config.name} mode={config.mode} venue_mode={config.venue_mode} "
+            f"state={state}",
+            flush=True,
+        )
         await asyncio.sleep(interval)
 
 

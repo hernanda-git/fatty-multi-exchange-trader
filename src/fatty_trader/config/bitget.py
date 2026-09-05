@@ -85,3 +85,22 @@ class BitgetLiveConfig(BaseModel):
         if self.min_leverage > self.max_leverage:
             raise ValueError("min_leverage must not exceed max_leverage")
         return self
+
+
+def live_canary_allowed(
+    config: BitgetLiveConfig,
+    *,
+    authenticated_read_passed: bool,
+    implementation_enabled: bool,
+    safety_checks_passed: bool,
+    approval_token: str | None,
+) -> bool:
+    """Return true only when the explicit bounded-canary gate is fully satisfied."""
+    return bool(
+        config.mode == "LIVE"
+        and authenticated_read_passed
+        and implementation_enabled
+        and safety_checks_passed
+        and approval_token
+        and approval_token.strip()
+    )

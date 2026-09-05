@@ -8,6 +8,7 @@ import hmac
 import json
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -41,7 +42,7 @@ def redact(text: str) -> str:
 def canonical_query_string(params: dict[str, Any] | None) -> str:
     if not params:
         return ""
-    return "&".join(f"{k}={params[k]}" for k in sorted(params))
+    return urlencode(sorted(params.items()), doseq=True)
 
 
 def compact_body(payload: dict[str, Any] | None) -> str:
@@ -96,7 +97,15 @@ class BitgetRestClient:
             self._owns_client = False
         else:
             self._client = httpx.AsyncClient(
-                base_url=self._base_url, timeout=self._timeout, transport=transport
+                base_url=self._base_url,
+                timeout=httpx.Timeout(
+                    self._timeout,
+                    connect=self._timeout,
+                    read=self._timeout,
+                    write=self._timeout,
+                    pool=self._timeout,
+                ),
+                transport=transport,
             )
             self._owns_client = True
 
@@ -192,6 +201,19 @@ class BitgetRestClient:
             "/api/v2/mix/market/ticker", {"symbol": symbol, "productType": product_type}
         )
         return data if isinstance(data, dict) else {"data": data}
+
+    async def get_server_time_ms(self) -> int:
+        """Return Bitget server time in milliseconds for clock-skew checks."""
+        data = await self._get("/api/v2/public/time")
+        raw = data.get("serverTime") if isinstance(data, dict) else data
+        try:
+            return int(str(raw))
+        except (TypeError, ValueError) as exc:
+            raise BitgetApiError("Bitget server time response is invalid") from exc
+
+    async def get_clock_skew_ms(self) -> int:
+        """Return local-minus-server clock skew in milliseconds."""
+        return int(time.time() * 1000) - await self.get_server_time_ms()
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> Any:
         return await self._get("/api/v2/mix/market/contracts", {"productType": product_type})
