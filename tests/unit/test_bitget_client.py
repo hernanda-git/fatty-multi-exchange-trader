@@ -123,6 +123,57 @@ async def test_server_time_is_normalized_to_milliseconds() -> None:
     await client.aclose()
 
 
+async def test_place_entry_order_uses_open_side_semantics() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/mix/order/place-order"
+        body = json.loads(request.content.decode())
+        assert body == {
+            "clientOid": "live-bitget-BTCUSDT-0011223344556677",
+            "marginCoin": "USDT",
+            "marginMode": "isolated",
+            "orderType": "market",
+            "productType": "USDT-FUTURES",
+            "reduceOnly": "NO",
+            "side": "buy",
+            "size": "0.001",
+            "symbol": "BTCUSDT",
+            "tradeSide": "open",
+        }
+        return httpx.Response(
+            200, json=ok_envelope({"orderId": "provider-1", "clientOid": body["clientOid"]})
+        )
+
+    client, _ = make_client(handler)
+    result = await client.place_entry_order(
+        symbol="BTCUSDT",
+        side="BUY",
+        quantity="0.001",
+        client_oid="live-bitget-BTCUSDT-0011223344556677",
+    )
+    assert result["orderId"] == "provider-1"
+    await client.aclose()
+
+
+async def test_market_close_is_reduce_only_and_never_retried() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        assert body["side"] == "sell"
+        assert body["tradeSide"] == "close"
+        assert body["reduceOnly"] == "YES"
+        assert body["orderType"] == "market"
+        return httpx.Response(200, json=ok_envelope({"orderId": "close-1"}))
+
+    client, _ = make_client(handler)
+    result = await client.place_market_close(
+        symbol="BTCUSDT",
+        side="SELL",
+        quantity="0.001",
+        client_oid="live-bitget-BTCUSDT-close001",
+    )
+    assert result["orderId"] == "close-1"
+    await client.aclose()
+
+
 async def test_auth_headers_include_passphrase_and_signature() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["ACCESS-KEY"] == "my-key"

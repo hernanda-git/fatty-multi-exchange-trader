@@ -334,3 +334,78 @@ class BitgetRestClient:
             "/api/v2/mix/position/all-position",
             {"productType": product_type, "marginCoin": margin_coin},
         )
+
+    async def place_entry_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: str,
+        client_oid: str,
+        product_type: str = "USDT-FUTURES",
+        margin_coin: str = "USDT",
+        margin_mode: str = "isolated",
+        order_type: str = "market",
+        price: str | None = None,
+        trade_side: str = "open",
+    ) -> dict[str, Any]:
+        """Place one opening order; callers must persist intent before invoking."""
+        normalized_side = side.lower()
+        if normalized_side not in {"buy", "sell"}:
+            raise ValueError("Bitget order side must be BUY or SELL")
+        if order_type not in {"market", "limit"}:
+            raise ValueError("Bitget order type must be market or limit")
+        payload: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": product_type,
+            "marginMode": margin_mode,
+            "marginCoin": margin_coin,
+            "size": quantity,
+            "side": normalized_side,
+            "tradeSide": trade_side,
+            "orderType": order_type,
+            "reduceOnly": "NO",
+            "clientOid": client_oid,
+        }
+        if order_type == "limit":
+            if price is None:
+                raise ValueError("limit entry price is required")
+            payload["price"] = price
+            payload["force"] = "gtc"
+        data = await self._post("/api/v2/mix/order/place-order", payload)
+        if not isinstance(data, dict):
+            raise BitgetApiError("Bitget entry response is invalid")
+        return data
+
+    async def place_market_close(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: str,
+        client_oid: str,
+        product_type: str = "USDT-FUTURES",
+        margin_coin: str = "USDT",
+        margin_mode: str = "isolated",
+        trade_side: str = "close",
+    ) -> dict[str, Any]:
+        """Place one reduce-only market close; never retries an ambiguous POST."""
+        normalized_side = side.lower()
+        if normalized_side not in {"buy", "sell"}:
+            raise ValueError("Bitget close side must be BUY or SELL")
+        payload = {
+            "symbol": symbol.upper(),
+            "productType": product_type,
+            "marginMode": margin_mode,
+            "marginCoin": margin_coin,
+            "size": quantity,
+            "side": normalized_side,
+            "tradeSide": trade_side,
+            "orderType": "market",
+            "reduceOnly": "YES",
+            "clientOid": client_oid,
+        }
+        data = await self._post("/api/v2/mix/order/place-order", payload)
+        if not isinstance(data, dict):
+            raise BitgetApiError("Bitget close response is invalid")
+        return data
