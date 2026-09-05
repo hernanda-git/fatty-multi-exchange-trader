@@ -76,6 +76,8 @@ def test_backup_and_runtime_scripts_are_safe_compose_operational_tools() -> None
     assert "restore_postgres.sh" in backup
     assert "BITGET_API_SECRET" not in backup
     assert "docker compose ps" in verify
+    assert "completed_services=(migrate init)" in verify
+    assert "exited:0" in verify
     assert "schema_migrations" in verify
     assert "bitget_api_probe.py" in verify
     assert "BITGET_API_SECRET" not in verify
