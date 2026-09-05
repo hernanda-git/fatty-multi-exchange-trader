@@ -50,6 +50,42 @@ def test_bitget_dispatcher_starts_cutover_gated_without_constructing_execution_c
     assert service_config("dispatcher-bitget", {}).execution_enabled is False
 
 
+def test_bitget_execution_runtime_is_constructed_only_after_explicit_cutover() -> None:
+    from fatty_trader.service import build_bitget_execution_runtime
+
+    constructed: list[object] = []
+
+    class Client:
+        pass
+
+    def client_factory(*args: str) -> Client:
+        constructed.append(args)
+        return Client()
+
+    disabled = build_bitget_execution_runtime({}, client_factory=client_factory)
+    assert disabled is None
+    assert constructed == []
+
+    enabled = {
+        "TRADER_MODE": "PAPER",
+        "BITGET_MODE": "LIVE",
+        "BITGET_EXECUTION_ENABLED": "1",
+        "BITGET_API_KEY": "key",
+        "BITGET_API_SECRET": "secret",
+        "BITGET_API_PASSPHRASE": "passphrase",
+        "BITGET_CANARY_MAX_ORDERS": "1",
+        "BITGET_CANARY_SYMBOL": "BTCUSDT",
+        "BITGET_APPROVAL_REFERENCE": "operator-ticket-123",
+        "BITGET_MAX_CLOCK_SKEW_MS": "5000",
+    }
+    runtime = build_bitget_execution_runtime(
+        enabled, client_factory=client_factory, intent_store_factory=lambda: object()
+    )
+
+    assert runtime is not None
+    assert len(constructed) == 1
+
+
 def test_bitget_monitor_has_only_bitget_credentials_and_no_execution_toggle() -> None:
     config = service_config("monitor-bitget", {})
 

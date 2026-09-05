@@ -13,11 +13,14 @@ import re
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from fatty_trader.analyzer.codex_runner import CodexRunner
 from fatty_trader.analyzer.postgres_worker import process_received_batch
 from fatty_trader.config.telegram import TelegramSettings
+from fatty_trader.domain.enums import Exchange, MarginMode
+from fatty_trader.domain.models import InstrumentSpec, VenueRiskConfig
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
@@ -43,6 +46,15 @@ class ServiceConfig:
     execution_enabled: bool
     required_credentials: tuple[str, ...]
     allowed_environment: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class BitgetExecutionRuntime:
+    """Owned enabled-only dependencies for the live Bitget dispatcher."""
+
+    execution: object
+    preflight: Callable[[str], Any]
+    client: object
 
 
 _CREDENTIALS: dict[str, tuple[str, ...]] = {
@@ -127,34 +139,121 @@ def bitget_dispatcher_state(
     return "execution-enabled"
 
 
+def build_bitget_execution_runtime(
+    environ: Mapping[str, str],
+    *,
+    client_factory: Callable[[str, str, str], object] | None = None,
+    intent_store_factory: Callable[[], object] | None = None,
+) -> BitgetExecutionRuntime | None:
+    """Build the POST-capable graph only after every explicit cutover gate passes."""
+    config = service_config("dispatcher-bitget", environ)
+    if not config.execution_enabled:
+        return None
+    from fatty_trader.exchanges.bitget.async_execution import AsyncBitgetExecution
+    from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+    from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+    if client_factory is None:
+        client_factory = BitgetRestClient
+    if intent_store_factory is None:
+        import psycopg
+
+        def default_intent_store_factory() -> object:
+            return PostgresLiveIntentStore(psycopg.connect)
+
+        intent_store_factory = default_intent_store_factory
+    client = client_factory(
+        environ["BITGET_API_KEY"],
+        environ["BITGET_API_SECRET"],
+        environ["BITGET_API_PASSPHRASE"],
+    )
+    venue = AsyncBitgetVenue(client)  # type: ignore[arg-type]
+    execution = BitgetDispatchExecution(
+        AsyncBitgetExecution(client, venue),  # type: ignore[arg-type]
+        intent_store_factory(),  # type: ignore[arg-type]
+    )
+    return BitgetExecutionRuntime(
+        execution=execution,
+        preflight=_bitget_dispatch_preflight(venue, environ),
+        client=client,
+    )
+
+
+def _bitget_dispatch_preflight(venue: Any, environ: Mapping[str, str]) -> Callable[[str], Any]:
+    canary_symbol = environ["BITGET_CANARY_SYMBOL"]
+    allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
+    max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "50"))
+    default_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
+
+    async def preflight(symbol: str) -> tuple[InstrumentSpec, VenueRiskConfig]:
+        if symbol != canary_symbol:
+            raise ValueError("dispatch symbol is outside the approved Bitget canary")
+        snapshot = await venue.preflight(symbol)
+        metadata = snapshot.metadata
+        allocation = snapshot.available_balance * allocation_pct
+        return (
+            InstrumentSpec(
+                exchange=Exchange.BITGET,
+                symbol=metadata.symbol,
+                qty_step=metadata.size_step,
+                min_qty=metadata.min_order_qty,
+                min_notional=metadata.min_notional,
+                max_leverage=min(metadata.max_leverage, max_leverage),
+                contract_multiplier=metadata.contract_value,
+            ),
+            VenueRiskConfig(
+                exchange=Exchange.BITGET,
+                base_margin_usdt=allocation,
+                default_leverage=default_leverage,
+                max_leverage=min(metadata.max_leverage, max_leverage),
+                max_auto_margin_usdt=allocation,
+                free_margin_usdt=snapshot.available_balance,
+                free_margin_headroom_pct=allocation_pct,
+                max_position_notional_usdt=allocation * Decimal(max_leverage),
+                margin_mode=MarginMode.ISOLATED,
+            ),
+        )
+
+    return preflight
+
+
 async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
-    """Run the durable dispatcher in observe-only mode until human cutover wiring exists."""
+    """Run the durable dispatcher; its REST execution graph remains closed by default."""
     from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
     from fatty_trader.execution.bitget_dispatcher import BitgetDispatcher, DispatchGate
     from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
     config = service_config("dispatcher-bitget", environ)
-    state = bitget_dispatcher_state(environ)
-    if state != "cutover-gated":
-        raise RuntimeError("Bitget execution is not wired by this observe-only service")
     import psycopg
 
+    runtime = build_bitget_execution_runtime(environ)
     dispatcher = BitgetDispatcher(
         PostgresBitgetDispatchRepository(psycopg.connect),
-        gate=DispatchGate(execution_enabled=False),
-        preflight=lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed")),
+        gate=DispatchGate(execution_enabled=config.execution_enabled),
+        execution=runtime.execution if runtime is not None else None,  # type: ignore[arg-type]
+        preflight=(
+            runtime.preflight
+            if runtime is not None
+            else lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed"))
+        ),
         kill_switch=PostgresReconciliationRepository(psycopg.connect),
     )
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
-    while True:
-        cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
-        print(
-            f"service=dispatcher-bitget mode=PAPER venue_mode={config.venue_mode} "
-            f"state={cycle_state}",
-            flush=True,
-        )
-        await asyncio.sleep(interval)
+    try:
+        while True:
+            cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
+            print(
+                f"service=dispatcher-bitget mode=PAPER venue_mode={config.venue_mode} "
+                f"state={cycle_state}",
+                flush=True,
+            )
+            await asyncio.sleep(interval)
+    finally:
+        if runtime is not None:
+            await runtime.client.aclose()  # type: ignore[attr-defined]
 
 
 async def run_bitget_monitor(environ: Mapping[str, str]) -> None:

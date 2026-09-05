@@ -118,6 +118,7 @@ class BitgetDispatcher:
             "ACKNOWLEDGED": "ACKNOWLEDGED",
             "FILLED": "FILLED",
             "PARTIAL": "PARTIALLY_FILLED",
+            "REJECTED": "REJECTED",
         }.get(status)
         if target is None:
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")

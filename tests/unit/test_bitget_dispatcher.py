@@ -172,3 +172,23 @@ async def test_valid_dispatch_persists_only_the_explicit_state_order() -> None:
         ("VALIDATED", "SUBMITTING", None),
         ("SUBMITTING", "FILLED", None),
     ]
+
+
+@pytest.mark.asyncio
+async def test_provider_rejection_returns_rejected_dispatcher_status() -> None:
+    class RejectedExecution:
+        async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str:
+            return "REJECTED"
+
+    repository = Repository(_dispatch())
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=RejectedExecution(),
+        preflight=lambda _: (_spec(), _risk()),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert repository.transitions[-1] == ("SUBMITTING", "REJECTED", None)
