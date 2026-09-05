@@ -82,6 +82,12 @@ git diff --check
 docker compose config --quiet
 ```
 
+Execution is closed unless **all** server-side gates are intentionally set:
+`BITGET_EXECUTION_ENABLED=1`, a positive `BITGET_CANARY_MAX_ORDERS`, one
+uppercase `BITGET_CANARY_SYMBOL`, a non-secret `BITGET_APPROVAL_REFERENCE`, and
+a positive `BITGET_MAX_CLOCK_SKEW_MS`. These values are deployment metadata, not
+credentials; no approval token belongs in tracked configuration.
+
 Evidence to record **before** enabling mainnet:
 
 - [ ] Credentialed Bitget account read probe passes (balance + positions).
@@ -91,6 +97,22 @@ Evidence to record **before** enabling mainnet:
 - [ ] Emergency reduce-only close path tested.
 - [ ] Fresh Postgres backup taken (`scripts/backup_postgres.sh`).
 - [ ] Explicit human approval logged with timestamp.
+
+### Runtime evidence and backup
+
+With execution still disabled, collect the exact deployed SHA, Compose topology,
+migration ledger, kill-switch state, recent monitor/dispatcher cycles, and the
+sanitized authenticated GET probe:
+
+```bash
+scripts/verify_bitget_runtime.sh
+scripts/backup_postgres.sh
+```
+
+The backup command runs `pg_dump` inside the Compose PostgreSQL service, writes a
+timestamped custom dump outside Git, rejects an empty dump, and prints a restore
+command. Keep the reported path with the rollout record; do not paste secrets into
+terminal history or reports.
 
 ### Canary constraints
 

@@ -96,13 +96,15 @@ class OperatorCommandService:
         )
         return token
 
-    def _consume_confirmation(self, token: str) -> _PendingConfirmation:
+    def _consume_confirmation(self, token: str, expected_kind: str) -> _PendingConfirmation:
         if self._pending is None or self._pending.token != token:
             raise CommandError("invalid or expired confirmation token")
         if self._current_time() > self._pending.expires_at:
             self._pending = None
             raise CommandError("confirmation token expired")
         pending = self._pending
+        if pending.kind != expected_kind:
+            raise CommandError("confirmation token does not match requested action")
         self._pending = None
         return pending
 
@@ -192,7 +194,7 @@ class OperatorCommandService:
                 token = self._issue_confirmation("cancel_all", "all")
                 return f"CONFIRM cancel all? Re-send with confirm={token}"
             if command.confirm_token is not None:
-                self._consume_confirmation(command.confirm_token)
+                self._consume_confirmation(command.confirm_token, "cancel_all")
             result = self._gw.cancel_all()
             return f"CANCEL all count={result['count']}"
         result = self._gw.cancel_order(command.target)
@@ -204,10 +206,12 @@ class OperatorCommandService:
                 token = self._issue_confirmation("close_all", "all")
                 return f"CONFIRM close all? Re-send with confirm={token}"
             if command.confirm_token is not None:
-                self._consume_confirmation(command.confirm_token)
+                self._consume_confirmation(command.confirm_token, "close_all")
             result = self._gw.close_all()
             return f"CLOSE all count={result['count']}"
         result = self._gw.close_position(command.target)
+        if result.get("state") == "reconciliation-pending":
+            return f"CLOSE {result['closed']} state=reconciliation-pending"
         return f"CLOSE {result['closed']}"
 
     def _is_confirmed(self, target: str) -> bool:

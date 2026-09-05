@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}"
+# Compose-operated backup: credentials remain inside the postgres container.
 backup_dir="${BACKUP_DIR:-data/backups}"
-retention_days="${BACKUP_RETENTION_DAYS:-14}"
+compose_bin="${COMPOSE_BIN:-docker compose}"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+file="$backup_dir/fatty_trader_${timestamp}.dump"
+
 mkdir -p "$backup_dir"
-file="$backup_dir/fatty_trader_$(date -u +%Y%m%dT%H%M%SZ).dump"
+# Default invocation: docker compose exec -T postgres pg_dump (COMPOSE_BIN is a test override).
+$compose_bin exec -T postgres pg_dump --format=custom --no-owner --dbname=fatty_trader >"$file"
+if ! test -s "$file"; then
+  rm -f "$file"
+  printf 'backup_failed=empty_dump\n' >&2
+  exit 1
+fi
 
-PGHOST="${PGHOST:-127.0.0.1}" \
-PGPORT="${PGPORT:-5432}" \
-PGDATABASE="${PGDATABASE:-fatty_trader}" \
-PGUSER="${PGUSER:-fatty_app}" \
-PGPASSWORD="$POSTGRES_PASSWORD" \
-pg_dump --format=custom --no-owner --file="$file"
-
-find "$backup_dir" -type f -name 'fatty_trader_*.dump' -mtime "+$retention_days" -delete
-printf 'backup_created=%s\n' "$file"
+printf 'backup_created=%s bytes=%s\n' "$file" "$(wc -c <"$file")"
+printf 'restore_command=CONFIRM_RESTORE=YES scripts/restore_postgres.sh %s\n' "$file"

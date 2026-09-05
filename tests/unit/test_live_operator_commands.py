@@ -236,3 +236,50 @@ def test_secrets_never_in_alerts() -> None:
     assert "secret" not in lower
     assert "passphrase" not in lower
     assert "signature" not in lower
+
+
+def test_confirmation_token_cannot_authorize_a_different_emergency_action() -> None:
+    svc, gw = make_service()
+
+    svc.handle("/cancel all", sender_id=1, is_private=True, is_forwarded=False)
+    token = svc._pending.token if svc._pending else ""
+    with pytest.raises(CommandError, match="does not match"):
+        svc.handle(f"/close all confirm={token}", sender_id=1, is_private=True, is_forwarded=False)
+
+    assert gw.close_calls == []
+    assert gw.cancel_calls == []
+
+
+def test_confirmation_token_is_one_time_even_when_provider_fails() -> None:
+    svc, gw = make_service()
+    svc.handle("/cancel all", sender_id=1, is_private=True, is_forwarded=False)
+    token = svc._pending.token if svc._pending else ""
+
+    svc.handle(f"/cancel all confirm={token}", sender_id=1, is_private=True, is_forwarded=False)
+    with pytest.raises(CommandError, match="invalid or expired"):
+        svc.handle(f"/cancel all confirm={token}", sender_id=1, is_private=True, is_forwarded=False)
+
+    assert gw.cancel_calls == ["all"]
+
+
+def test_malformed_emergency_command_makes_no_provider_request() -> None:
+    svc, gw = make_service()
+
+    with pytest.raises(CommandError):
+        svc.handle("/close all unexpected=value", sender_id=1, is_private=True, is_forwarded=False)
+
+    assert gw.close_calls == []
+
+
+def test_close_reports_reconciliation_pending_not_closed_success() -> None:
+    svc, gw = make_service()
+
+    def pending_close(_: str) -> dict[str, Any]:
+        gw.close_calls.append("BTCUSDT")
+        return {"closed": "BTCUSDT", "state": "reconciliation-pending"}
+
+    gw.close_position = pending_close  # type: ignore[method-assign]
+    alert = svc.handle("/close BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
+
+    assert "reconciliation-pending" in alert
+    assert "success" not in alert.lower()

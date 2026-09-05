@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -80,6 +81,8 @@ def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
         if raw_execution not in {"0", "1"}:
             raise ValueError("BITGET_EXECUTION_ENABLED must be 0 or 1")
         execution_enabled = raw_execution == "1"
+        if execution_enabled:
+            _validate_bitget_cutover(environ)
     common = ("TRADER_MODE", "SERVICE_NAME", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")
     allowed_environment = common + credentials
     if name == "dispatcher-bitget":
@@ -87,6 +90,28 @@ def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
     return ServiceConfig(
         name, mode, venue_mode, execution_enabled, credentials, allowed_environment
     )
+
+
+def _validate_bitget_cutover(environ: Mapping[str, str]) -> None:
+    try:
+        canary_max_orders = int(environ.get("BITGET_CANARY_MAX_ORDERS", "0"))
+    except ValueError as exc:
+        raise ValueError("BITGET_CANARY_MAX_ORDERS must be a positive integer canary cap") from exc
+    if canary_max_orders < 1:
+        raise ValueError("positive Bitget canary cap is required when execution is enabled")
+    canary_symbol = environ.get("BITGET_CANARY_SYMBOL", "")
+    if not re.fullmatch(r"[A-Z0-9]+", canary_symbol):
+        raise ValueError(
+            "valid uppercase Bitget canary symbol is required when execution is enabled"
+        )
+    if not environ.get("BITGET_APPROVAL_REFERENCE", "").strip():
+        raise ValueError("Bitget approval reference is required when execution is enabled")
+    try:
+        max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "0"))
+    except ValueError as exc:
+        raise ValueError("Bitget clock skew limit must be a positive integer") from exc
+    if max_clock_skew_ms < 1:
+        raise ValueError("Bitget clock skew limit must be positive")
 
 
 def bitget_dispatcher_state(

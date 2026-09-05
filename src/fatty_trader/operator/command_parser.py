@@ -172,8 +172,11 @@ def parse_operator_command(
         confirm_token = None
         if len(parts) > 2:
             for part in parts[2:]:
-                if part.startswith("confirm="):
-                    confirm_token = part.split("=", 1)[1]
+                if not part.startswith("confirm="):
+                    raise CommandError(f"invalid /cancel argument: {part}")
+                confirm_token = part.split("=", 1)[1]
+                if not confirm_token:
+                    raise CommandError("confirmation token is required")
         _valid_symbol = (
             target == target.upper() and not target.startswith("order_id=")
         ) or target.startswith("order_id=")
@@ -188,8 +191,11 @@ def parse_operator_command(
         confirm_token = None
         if len(parts) > 2:
             for part in parts[2:]:
-                if part.startswith("confirm="):
-                    confirm_token = part.split("=", 1)[1]
+                if not part.startswith("confirm="):
+                    raise CommandError(f"invalid /close argument: {part}")
+                confirm_token = part.split("=", 1)[1]
+                if not confirm_token:
+                    raise CommandError("confirmation token is required")
         _valid_position = (
             target == target.upper() and not target.startswith("position_id=")
         ) or target.startswith("position_id=")
