@@ -62,3 +62,56 @@ def test_health_report_is_sanitized_and_exposes_component_states() -> None:
         "dispatcher-binance": "starting",
     }
     assert "API_SECRET" not in str(report)
+
+
+def test_apply_schema_runs_additive_live_migrations(monkeypatch: pytest.MonkeyPatch) -> None:
+    import psycopg
+
+    from fatty_trader import service
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement: str) -> None:
+            self.statements.append(statement)
+
+        def __enter__(self) -> "Cursor":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class Connection:
+        def __init__(self, cursor: Cursor) -> None:
+            self.cursor_value = cursor
+            self.committed = False
+
+        def cursor(self) -> Cursor:
+            return self.cursor_value
+
+        def commit(self) -> None:
+            self.committed = True
+
+        def __enter__(self) -> "Connection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    cursor = Cursor()
+    connection = Connection(cursor)
+    called = False
+
+    def fake_apply_migrations(value: Cursor) -> list[int]:
+        nonlocal called
+        called = value is cursor
+        return [1]
+
+    monkeypatch.setattr(psycopg, "connect", lambda: connection)
+    monkeypatch.setattr(service, "apply_migrations", fake_apply_migrations)
+
+    service.apply_schema()
+
+    assert called
+    assert connection.committed

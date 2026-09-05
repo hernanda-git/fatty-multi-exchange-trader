@@ -20,6 +20,7 @@ from fatty_trader.config.telegram import TelegramSettings
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
+from fatty_trader.storage.migrations import apply_migrations
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
 
 SUPPORTED_SERVICES = (
@@ -77,6 +78,7 @@ def apply_schema() -> None:
     with psycopg.connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute(INITIAL_SCHEMA_SQL)
+            apply_migrations(cursor)
         connection.commit()
 
 

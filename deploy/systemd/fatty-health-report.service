@@ -6,5 +6,5 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
-ExecStart=/usr/bin/flock -n /tmp/fatty-health-report.lock /home/valarion/apps/fatty-multi-exchange-trader/scripts/telegram_health_report.sh
+ExecStart=/usr/bin/flock -n /tmp/fatty-health-report.lock /bin/bash /home/valarion/apps/fatty-multi-exchange-trader/scripts/telegram_health_report.sh
 TimeoutStartSec=30

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline replay of the currently observed Telegram messages (PAPER only)."""
+
 from __future__ import annotations
 
 import json
@@ -16,14 +17,19 @@ def main() -> int:
     messages = observed_messages()
     for message in messages:
         pipeline.process(message)
-    print(json.dumps({
-        "mode": "PAPER",
-        "messages": len(messages),
-        "actionable": pipeline.canonical_signal_count,
-        "non_actionable": len(messages) - pipeline.canonical_signal_count,
-        "dispatches": pipeline.dispatch_repository.count,
-        "live_orders_sent": 0,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "mode": "PAPER",
+                "messages": len(messages),
+                "actionable": pipeline.canonical_signal_count,
+                "non_actionable": len(messages) - pipeline.canonical_signal_count,
+                "dispatches": pipeline.dispatch_repository.count,
+                "live_orders_sent": 0,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
