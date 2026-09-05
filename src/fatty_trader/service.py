@@ -145,7 +145,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         preflight=lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed")),
         kill_switch=PostgresReconciliationRepository(psycopg.connect),
     )
-    interval = float(environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+    interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
     while True:
         cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
@@ -170,8 +170,11 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         environ["BITGET_API_KEY"], environ["BITGET_API_SECRET"], environ["BITGET_API_PASSPHRASE"]
     )
     repository = PostgresReconciliationRepository(psycopg.connect)
-    monitor = BitgetMonitor(client, repository)
-    interval = float(environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
+    max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
+    if max_clock_skew_ms < 0:
+        raise ValueError("BITGET_MAX_CLOCK_SKEW_MS must not be negative")
+    monitor = BitgetMonitor(client, repository, max_clock_skew_ms=max_clock_skew_ms)
+    interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
     try:
         while True:
             report = await monitor.run_once()

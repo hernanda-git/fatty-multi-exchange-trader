@@ -89,6 +89,8 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
     assert "service_completed_successfully" in COMPOSE
     assert "TRADER_MODE: PAPER" in COMPOSE
     assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}" in COMPOSE
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY scripts ./scripts" in dockerfile
 
 
 def test_health_report_is_sanitized_and_exposes_component_states() -> None:
