@@ -1,10 +1,10 @@
 # Fatty Multi-Exchange Trader — Full Project Report
 
-**Report path:** `C:\Workspace\bots\fatty-bitget-live\docs\FULL-REPORT-fatty-multi-exchange-trader-20260906.md`  
-**Generated:** 2026-09-06T14:51:42Z  
-**Repository:** `fatty-multi-exchange-trader`  
-**Deployment target:** `fspmi-hostinger`  
-**Deployment path:** `/home/valarion/apps/fatty-multi-exchange-trader`  
+**Report path:** `C:\Workspace\bots\fatty-bitget-live\docs\FULL-REPORT-fatty-multi-exchange-trader-20260906.md`
+**Generated:** 2026-09-06T14:51:42Z
+**Repository:** `fatty-multi-exchange-trader`
+**Deployment target:** `fspmi-hostinger`
+**Deployment path:** `/home/valarion/apps/fatty-multi-exchange-trader`
 **Current repository head:** `e8838977c988ee5609572be41d2dd4fa4cf307c1` (`fix: restore rich heartbeat telegram cards`)
 
 > This is an evidence-based state report. Secrets, bot tokens, Telegram target IDs, API keys, passphrases, session files, and connection strings are intentionally omitted or represented as `[REDACTED]`.
