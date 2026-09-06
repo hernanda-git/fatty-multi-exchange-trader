@@ -2,6 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 RUN useradd --create-home --uid 10001 fatty
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && npm install --global @openai/codex@0.153.0 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=ghcr.io/astral-sh/uv:0.12.8 /uv /uvx /bin/
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src

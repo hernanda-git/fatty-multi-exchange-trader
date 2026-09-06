@@ -99,7 +99,7 @@ services:
       CODEX_HOME: /app/runtime/codex-home
       CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}
     volumes:
-      - ./data/codex-home:/app/runtime/codex-home
+      - ${CODEX_HOST_HOME:-/home/valarion/.codex}:/app/runtime/codex-home:ro
       - ./data/media:/app/runtime/media:ro
     depends_on:
       init:

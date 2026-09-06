@@ -127,6 +127,8 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
     assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}" in COMPOSE
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts ./scripts" in dockerfile
+    assert "npm install --global @openai/codex@0.153.0" in dockerfile
+    assert "${CODEX_HOST_HOME:-/home/valarion/.codex}:/app/runtime/codex-home:ro" in COMPOSE
 
 
 def test_health_report_is_sanitized_and_exposes_component_states() -> None:
