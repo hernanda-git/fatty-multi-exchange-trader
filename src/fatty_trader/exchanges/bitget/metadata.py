@@ -16,6 +16,14 @@ def _decimal(value: Any, field: str, *, positive: bool = True) -> Decimal:
     return result
 
 
+def _first_present(contract: dict[str, Any], *fields: str) -> Any:
+    for field in fields:
+        value = contract.get(field)
+        if value not in (None, ""):
+            return value
+    return None
+
+
 def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
     """Normalize one Bitget V2 contract record; never selects another symbol."""
     symbol = str(contract.get("symbol", "")).upper()
@@ -27,7 +35,16 @@ def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
     )
     size_step = _decimal(contract.get("sizeMultiplier"), "size multiplier")
     min_qty = _decimal(contract.get("minTradeNum"), "minimum order quantity")
-    max_qty = _decimal(contract.get("maxTradeNum"), "maximum order quantity")
+    max_qty = _decimal(
+        _first_present(
+            contract,
+            "maxTradeNum",
+            "maxOrderQty",
+            "maxMarketOrderQty",
+            "maxPositionNum",
+        ),
+        "maximum order quantity",
+    )
     min_notional = _decimal(contract.get("minTradeUSDT", "0"), "minimum notional", positive=False)
     max_leverage = int(_decimal(contract.get("maxLever"), "maximum leverage"))
     contract_value = _decimal(

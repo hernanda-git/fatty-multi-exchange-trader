@@ -10,6 +10,8 @@
 
 > This is an evidence-based state report. Secrets, bot tokens, Telegram target IDs, API keys, passphrases, session files, and connection strings are intentionally omitted or represented as `[REDACTED]`.
 
+> **Mode-contract update (local implementation, not yet deployed):** runtime mode values are now restricted to `DEMO` and `LIVE`; `PAPER` is rejected. The fillable demo template is `C:\Workspace\bots\fatty-bitget-live\fatty-bitget-demo.env`. This report's historical production evidence below predates that local change and must not be read as proof that the new mode contract is deployed.
+
 ---
 
 ## 1. Executive summary

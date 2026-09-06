@@ -41,5 +41,5 @@ async def test_dashboard_never_reports_live_execution_enabled() -> None:
         response = await client.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["mode"] == "PAPER"
+    assert response.json()["mode"] == "DEMO"
     assert response.json()["live_execution_enabled"] is False

@@ -1,4 +1,4 @@
-"""Credential-free Bitget PAPER execution adapter."""
+"""Credential-free Bitget DEMO execution adapter."""
 
 from __future__ import annotations
 
@@ -21,11 +21,11 @@ class BitgetPaperAdapter:
 
     @property
     def is_enabled(self) -> bool:
-        return self.state is BitgetVenueState.PAPER_READY
+        return self.state is BitgetVenueState.DEMO_READY
 
     def __call__(self, request: PaperOrderRequest) -> PaperOrderResult:
         if request.exchange is not Exchange.BITGET or not self.is_enabled:
-            raise ValueError("Bitget PAPER adapter is disabled")
+            raise ValueError("Bitget DEMO adapter is disabled")
         result = PaperOrderResult(
             request.client_order_id,
             f"paper-bitget-{request.client_order_id[-8:]}",

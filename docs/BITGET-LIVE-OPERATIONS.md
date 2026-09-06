@@ -15,8 +15,8 @@ never stored in source control.
 | `BITGET_API_KEY` | Bitget API management | readonly + trade + read-only orders initially |
 | `BITGET_API_SECRET` | Bitget API management | |
 | `BITGET_API_PASSPHRASE` | Bitget API management | distinct from account password |
-| `BITGET_MODE` | compose / env | must be `LIVE` for the Bitget lane |
-| `TRADER_MODE` | compose / env | global flag — **remains `PAPER`** for the rest of the topology |
+| `BITGET_MODE` | compose / env | must be `DEMO` or `LIVE`; DEMO adds `paptrading: 1` |
+| `TRADER_MODE` | compose / env | global flag — **remains `DEMO`** for the rest of the topology |
 
 Inject via `.env` on the deployment host **or** via the orchestrator secret mechanism
 (`fly secret set` / compose `environment:`). After rotating any credential, restart the
@@ -24,7 +24,7 @@ Inject via `.env` on the deployment host **or** via the orchestrator secret mech
 
 ### Runtime boundary (current implementation)
 
-`TRADER_MODE` is the global topology mode and remains `PAPER`. The Bitget lane
+`TRADER_MODE` is the global topology mode and remains `DEMO`. The Bitget lane
 has a separate `BITGET_MODE` value, so `BITGET_MODE=LIVE` identifies the
 intended venue without promoting Binance, intake, analyzer, or operator
 services. Until the real dispatcher and monitor lifecycle is wired and its

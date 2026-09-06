@@ -80,6 +80,7 @@ class BitgetRestClient:
         api_key: str,
         api_secret: str,
         passphrase: str,
+        mode: str = "LIVE",
         base_url: str = BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
         max_get_retries: int = DEFAULT_MAX_GET_RETRIES,
@@ -89,6 +90,9 @@ class BitgetRestClient:
         self._api_key = api_key
         self._api_secret = api_secret
         self._passphrase = passphrase
+        if mode not in {"DEMO", "LIVE"}:
+            raise ValueError("Bitget mode must be DEMO or LIVE")
+        self._mode = mode
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_get_retries = max_get_retries
@@ -117,8 +121,10 @@ class BitgetRestClient:
         if self._owns_client:
             await self._client.aclose()
 
-    def _signed_headers(self, timestamp: str, signature: str) -> dict[str, str]:
-        return {
+    def _signed_headers(
+        self, timestamp: str, signature: str, *, include_demo_header: bool
+    ) -> dict[str, str]:
+        headers = {
             "ACCESS-KEY": self._api_key,
             "ACCESS-SIGN": signature,
             "ACCESS-TIMESTAMP": timestamp,
@@ -126,6 +132,9 @@ class BitgetRestClient:
             "Content-Type": "application/json",
             "locale": "en-US",
         }
+        if self._mode == "DEMO" and include_demo_header:
+            headers["paptrading"] = "1"
+        return headers
 
     async def _request(
         self,
@@ -138,7 +147,11 @@ class BitgetRestClient:
         body = compact_body(payload) if method.upper() != "GET" else ""
         timestamp = str(int(time.time() * 1000))
         signature = build_signature(self._api_secret, timestamp, method, path, query, body)
-        headers = self._signed_headers(timestamp, signature)
+        headers = self._signed_headers(
+            timestamp,
+            signature,
+            include_demo_header=not path.startswith("/api/v2/public/"),
+        )
         url = path if not query else f"{path}?{query}"
         content = body.encode("utf-8") if body else None
         retryable = method.upper() == "GET"

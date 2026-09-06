@@ -27,6 +27,41 @@ def test_metadata_is_resolved_from_requested_contract_fields() -> None:
     assert meta.max_leverage == 50
 
 
+def test_metadata_accepts_current_bitget_v2_max_order_fields() -> None:
+    meta = metadata_from_contract(
+        {
+            "symbol": "BTCUSDT",
+            "pricePlace": "1",
+            "priceEndStep": "1",
+            "sizeMultiplier": "0.0001",
+            "minTradeNum": "0.0001",
+            "maxOrderQty": "1000",
+            "maxMarketOrderQty": "500",
+            "minTradeUSDT": "5",
+            "maxLever": "125",
+        }
+    )
+    assert meta.max_order_qty == Decimal("1000")
+
+
+def test_metadata_uses_non_empty_position_limit_when_order_limit_is_blank() -> None:
+    meta = metadata_from_contract(
+        {
+            "symbol": "BTCUSDT",
+            "pricePlace": "1",
+            "priceEndStep": "1",
+            "sizeMultiplier": "0.0001",
+            "minTradeNum": "0.0001",
+            "maxOrderQty": "",
+            "maxMarketOrderQty": "",
+            "maxPositionNum": "150",
+            "minTradeUSDT": "5",
+            "maxLever": "125",
+        }
+    )
+    assert meta.max_order_qty == Decimal("150")
+
+
 def test_validation_rejects_wrong_symbol_precision_and_notional() -> None:
     meta = metadata_from_contract(
         {

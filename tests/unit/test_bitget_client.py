@@ -224,6 +224,26 @@ async def test_auth_headers_include_passphrase_and_signature() -> None:
     await client.aclose()
 
 
+async def test_demo_private_headers_include_official_paptrading_flag() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["paptrading"] == "1"
+        return httpx.Response(200, json=ok_envelope({"available": "1"}))
+
+    client, _ = make_client(handler, mode="DEMO")
+    await client.get_account()
+    await client.aclose()
+
+
+async def test_demo_public_headers_do_not_include_demo_flag() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "paptrading" not in request.headers
+        return httpx.Response(200, json=ok_envelope({"serverTime": "1693830000123"}))
+
+    client, _ = make_client(handler, mode="DEMO")
+    await client.get_server_time_ms()
+    await client.aclose()
+
+
 async def test_get_retries_on_5xx_then_succeeds() -> None:
     calls = {"n": 0}
 

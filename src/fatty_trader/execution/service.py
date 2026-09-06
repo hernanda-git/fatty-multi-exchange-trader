@@ -48,7 +48,7 @@ class PaperExecutor(Protocol):
 
 
 class DurableExecutionService:
-    """Small durable-worker seam: claim, persist every transition, execute PAPER only."""
+    """Small durable-worker seam: claim, persist every transition, execute DEMO only."""
 
     def __init__(
         self, repository: InMemoryDispatchRepository, adapters: dict[Exchange, PaperExecutor]
@@ -66,7 +66,7 @@ class DurableExecutionService:
         pending = self._repository.pending_exchanges()
         missing = pending - self._adapters.keys()
         if missing:
-            raise ValueError(f"missing PAPER adapter for {next(iter(missing)).value}")
+            raise ValueError(f"missing DEMO adapter for {next(iter(missing)).value}")
         claimed = self._repository.claim(worker_id, now=now, lease_seconds=60)
         if claimed is None:
             raise LookupError("no dispatch available")
@@ -116,7 +116,7 @@ def submit_live_entry(
 ) -> LiveEntryResult:
     """LIVE entry seam: delegates to the intent-first live workflow.
 
-    The PAPER path above is untouched; this is the only entry point the
+    The DEMO path above is untouched; this is the only entry point the
     live operator lane calls for real order submission.
     """
     from fatty_trader.exchanges.bitget.live import enter_live_position

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from html import escape
 from typing import Any
 
-from telethon import events  # type: ignore[import-untyped]
+from telethon import events
 
 from fatty_trader.config.telegram import TelegramSettings
 from fatty_trader.intake.persistence import (

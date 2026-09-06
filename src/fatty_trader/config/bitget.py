@@ -1,4 +1,4 @@
-"""Fail-closed configuration for Bitget PAPER and LIVE venues."""
+"""Fail-closed configuration for Bitget DEMO and LIVE venues."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, m
 
 
 class BitgetVenueState(StrEnum):
-    """Whether the PAPER adapter may be selected by the application."""
+    """Whether the DEMO adapter may be selected by the application."""
 
     DISABLED = "disabled"
-    PAPER_READY = "paper_ready"
+    DEMO_READY = "demo_ready"
 
 
 class BitgetVenueConfig(BaseModel):
-    """Credentials and mode gate for a future Bitget PAPER integration.
+    """Credentials and mode gate for a Bitget DEMO integration.
 
     Credentials are deliberately optional: incomplete or blank credentials leave the venue
     disabled instead of attempting a partial integration.
@@ -25,7 +25,7 @@ class BitgetVenueConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    mode: Literal["PAPER"] = "PAPER"
+    mode: Literal["DEMO"] = "DEMO"
     api_key: SecretStr | None = None
     api_secret: SecretStr | None = None
     passphrase: SecretStr | None = None
@@ -40,9 +40,9 @@ class BitgetVenueConfig(BaseModel):
 
     @property
     def state(self) -> BitgetVenueState:
-        """Return PAPER_READY only when every required credential is present."""
+        """Return DEMO_READY only when every required credential is present."""
         if all((self.api_key, self.api_secret, self.passphrase)):
-            return BitgetVenueState.PAPER_READY
+            return BitgetVenueState.DEMO_READY
         return BitgetVenueState.DISABLED
 
 

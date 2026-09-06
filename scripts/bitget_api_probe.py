@@ -28,6 +28,7 @@ async def main() -> int:
         api_key=os.environ["BITGET_API_KEY"],
         api_secret=os.environ["BITGET_API_SECRET"],
         passphrase=os.environ["BITGET_API_PASSPHRASE"],
+        mode=os.environ.get("BITGET_MODE", "DEMO").upper(),
     )
     try:
         result = await run_read_only_probe(client)

@@ -10,7 +10,7 @@ from fatty_trader.execution.service import PaperOrderRequest, PaperOrderResult
 
 @dataclass(frozen=True)
 class BinancePaperConfig:
-    mode: Literal["PAPER"] = "PAPER"
+    mode: Literal["DEMO"] = "DEMO"
     enabled: bool = True
 
 
@@ -23,11 +23,11 @@ class BinancePaperAdapter:
 
     @property
     def is_enabled(self) -> bool:
-        return self._config.mode == "PAPER" and self._config.enabled
+        return self._config.mode == "DEMO" and self._config.enabled
 
     def __call__(self, request: PaperOrderRequest) -> PaperOrderResult:
         if request.exchange is not Exchange.BINANCE or not self.is_enabled:
-            raise ValueError("Binance PAPER adapter is disabled")
+            raise ValueError("Binance DEMO adapter is disabled")
         result = PaperOrderResult(
             request.client_order_id,
             f"paper-binance-{request.client_order_id[-8:]}",

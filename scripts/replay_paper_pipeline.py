@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline replay of the currently observed Telegram messages (PAPER only)."""
+"""Offline replay of the currently observed Telegram messages (DEMO only)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "mode": "PAPER",
+                "mode": "DEMO",
                 "messages": len(messages),
                 "actionable": pipeline.canonical_signal_count,
                 "non_actionable": len(messages) - pipeline.canonical_signal_count,

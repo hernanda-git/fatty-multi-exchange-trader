@@ -12,14 +12,14 @@ uv run mypy src
 
 ## Compose topology
 
-The local topology is PAPER-only and binds the web service to loopback. `postgres` is the durable state store; `migrate` must complete before `init`, and all intake/analyzer/venue/operator services wait for `init`. Venue services are separate processes: Binance services receive only Binance credentials, Bitget services receive only Bitget credentials, and the analyzer receives no exchange credentials. `WEB_HOST_PORT` defaults to `18081`.
+The local topology is DEMO-only and binds the web service to loopback. `postgres` is the durable state store; `migrate` must complete before `init`, and all intake/analyzer/venue/operator services wait for `init`. Venue services are separate processes: Binance services receive only Binance credentials, Bitget services receive only Bitget credentials, and the analyzer receives no exchange credentials. `WEB_HOST_PORT` defaults to `18081`.
 
 ```bash
 POSTGRES_PASSWORD='use-a-local-secret-manager-value' docker compose up -d --build
 curl http://127.0.0.1:18081/health/telemetry
 ```
 
-The health payload is sanitized and reports PAPER mode plus configured component states. It never returns environment values or credentials. The worker commands are deliberately queue-safe stubs until their domain consumers are implemented; they provide independent restart/health boundaries without placing orders.
+The health payload is sanitized and reports DEMO mode plus configured component states. It never returns environment values or credentials. The worker commands are deliberately queue-safe stubs until their domain consumers are implemented; they provide independent restart/health boundaries without placing orders.
 
 ## PostgreSQL backup and restore
 
@@ -35,4 +35,4 @@ Restore is intentionally an explicit destructive action. Stop application worker
 
 ## Deployment boundary
 
-Deployment to the production host, Telegram listener authorization, Codex OAuth setup, exchange metadata probes, credentials, and all exchange/PAPER execution are deliberately not run from this workstation. A live order is explicitly out of scope until the independent go-live gates in the implementation plan are satisfied and a human operator approves a venue.
+Deployment to the production host, Telegram listener authorization, Codex OAuth setup, exchange metadata probes, credentials, and all exchange/DEMO execution are deliberately not run from this workstation. A live order is explicitly out of scope until the independent go-live gates in the implementation plan are satisfied and a human operator approves a venue.

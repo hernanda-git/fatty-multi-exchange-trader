@@ -39,7 +39,7 @@ class EntryExecution(Protocol):
 
 @dataclass(frozen=True)
 class DispatchGate:
-    """Per-venue gate. Defaults closed and is separate from global PAPER mode."""
+    """Per-venue gate. Defaults closed and is separate from global DEMO mode."""
 
     execution_enabled: bool = False
 

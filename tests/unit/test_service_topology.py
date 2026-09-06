@@ -9,24 +9,24 @@ REPO_ROOT = Path(__file__).parents[2]
 COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
 
-def test_service_config_defaults_to_paper_and_exposes_only_role_credentials() -> None:
+def test_service_config_defaults_to_demo_and_exposes_only_role_credentials() -> None:
     binance = service_config("dispatcher-binance", {})
-    assert binance.mode == "PAPER"
+    assert binance.mode == "DEMO"
     assert binance.required_credentials == ("BINANCE_API_KEY", "BINANCE_API_SECRET")
     assert "BITGET_API_KEY" not in binance.allowed_environment
 
     analyzer = service_config("analyzer", {})
-    assert analyzer.mode == "PAPER"
+    assert analyzer.mode == "DEMO"
     assert "BINANCE_API_SECRET" not in analyzer.allowed_environment
     assert "BITGET_API_SECRET" not in analyzer.allowed_environment
 
 
-def test_bitget_mode_is_isolated_from_global_paper_mode() -> None:
+def test_bitget_mode_is_isolated_from_global_demo_mode() -> None:
     config = service_config(
         "dispatcher-bitget",
-        {"TRADER_MODE": "PAPER", "BITGET_MODE": "LIVE"},
+        {"TRADER_MODE": "DEMO", "BITGET_MODE": "LIVE"},
     )
-    assert config.mode == "PAPER"
+    assert config.mode == "DEMO"
     assert config.venue_mode == "LIVE"
 
 
@@ -41,7 +41,7 @@ def test_bitget_dispatcher_starts_cutover_gated_without_constructing_execution_c
         return object()
 
     state = bitget_dispatcher_state(
-        {"TRADER_MODE": "PAPER", "BITGET_MODE": "LIVE"},
+        {"TRADER_MODE": "DEMO", "BITGET_MODE": "LIVE"},
         execution_client_factory=execution_client_factory,
     )
 
@@ -67,7 +67,7 @@ def test_bitget_execution_runtime_is_constructed_only_after_explicit_cutover() -
     assert constructed == []
 
     enabled = {
-        "TRADER_MODE": "PAPER",
+        "TRADER_MODE": "DEMO",
         "BITGET_MODE": "LIVE",
         "BITGET_EXECUTION_ENABLED": "1",
         "BITGET_API_KEY": "key",
@@ -97,9 +97,9 @@ def test_bitget_monitor_has_only_bitget_credentials_and_no_execution_toggle() ->
     assert "BITGET_EXECUTION_ENABLED" not in config.allowed_environment
 
 
-def test_non_bitget_live_mode_is_rejected() -> None:
-    with pytest.raises(ValueError, match="only PAPER mode"):
-        service_config("dispatcher-binance", {"TRADER_MODE": "LIVE"})
+def test_invalid_global_mode_is_rejected() -> None:
+    with pytest.raises(ValueError, match="DEMO or LIVE"):
+        service_config("dispatcher-binance", {"TRADER_MODE": "PAPER"})
 
 
 def test_unknown_service_is_rejected() -> None:
@@ -123,7 +123,7 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
         )
         assert command in COMPOSE
     assert "service_completed_successfully" in COMPOSE
-    assert "TRADER_MODE: PAPER" in COMPOSE
+    assert "TRADER_MODE: DEMO" in COMPOSE
     assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}" in COMPOSE
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts ./scripts" in dockerfile
@@ -133,12 +133,12 @@ def test_health_report_is_sanitized_and_exposes_component_states() -> None:
     report = build_health_report(
         {
             "SERVICE_NAME": "web",
-            "TRADER_MODE": "PAPER",
+            "TRADER_MODE": "DEMO",
             "SERVICE_COMPONENTS": "postgres=ready,dispatcher-binance=starting",
         }
     )
     assert report["status"] == "degraded"
-    assert report["mode"] == "PAPER"
+    assert report["mode"] == "DEMO"
     assert report["live_execution_enabled"] is False
     assert report["components"] == {
         "postgres": "ready",

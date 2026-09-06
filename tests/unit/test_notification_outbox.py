@@ -59,7 +59,7 @@ def test_heartbeat_uses_rich_report_layout() -> None:
     text = format_notification_html(
         {
             "kind": "heartbeat",
-            "mode": "PAPER",
+            "mode": "DEMO",
             "venue_mode": "LIVE",
             "host": "fspmi-hostinger",
             "source": "@fattyfatclub",

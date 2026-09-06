@@ -1,6 +1,6 @@
 # Fatty Multi-Exchange Trader
 
-PAPER-first Telegram signal intake, one canonical interpretation, and isolated Binance USDⓈ-M / Bitget USDT futures dispatches.
+DEMO-first Telegram signal intake, one canonical interpretation, and isolated Binance USDⓈ-M / Bitget USDT futures dispatches.
 
 ## Safety
 

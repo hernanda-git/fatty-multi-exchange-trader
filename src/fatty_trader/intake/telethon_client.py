@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from telethon import TelegramClient  # type: ignore[import-untyped]
-from telethon.sessions import StringSession  # type: ignore[import-untyped]
+from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 from fatty_trader.config.telegram import TelegramSettings
 

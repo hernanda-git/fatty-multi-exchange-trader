@@ -9,7 +9,7 @@ COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
 
 def test_compose_keeps_bitget_execution_closed_by_default() -> None:
-    assert "TRADER_MODE: PAPER" in COMPOSE
+    assert "TRADER_MODE: DEMO" in COMPOSE
     assert "BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}" in COMPOSE
     assert "BITGET_CANARY_MAX_ORDERS: ${BITGET_CANARY_MAX_ORDERS:-0}" in COMPOSE
     assert "BITGET_APPROVAL_REFERENCE: ${BITGET_APPROVAL_REFERENCE:-}" in COMPOSE
@@ -17,7 +17,7 @@ def test_compose_keeps_bitget_execution_closed_by_default() -> None:
 
 def test_dispatcher_check_rejects_live_execution_without_all_explicit_gates() -> None:
     enabled = {
-        "TRADER_MODE": "PAPER",
+        "TRADER_MODE": "DEMO",
         "BITGET_MODE": "LIVE",
         "BITGET_EXECUTION_ENABLED": "1",
         "BITGET_API_KEY": "key",
@@ -51,7 +51,7 @@ def test_dispatcher_check_rejects_invalid_cutover_values(
     name: str, value: str, message: str
 ) -> None:
     environment = {
-        "TRADER_MODE": "PAPER",
+        "TRADER_MODE": "DEMO",
         "BITGET_MODE": "LIVE",
         "BITGET_EXECUTION_ENABLED": "1",
         "BITGET_API_KEY": "key",

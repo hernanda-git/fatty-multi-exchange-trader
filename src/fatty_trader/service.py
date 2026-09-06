@@ -1,7 +1,7 @@
 """Small, isolated process entry points used by Docker Compose.
 
 The worker implementations are intentionally conservative until their domain queues
-are implemented: they expose a stable command boundary and stay PAPER-only.
+are implemented: they expose a stable command boundary and stay closed by default.
 """
 
 from __future__ import annotations
@@ -77,17 +77,17 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
 
 
 def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
-    """Return a paper-first config with an isolated Bitget venue mode."""
+    """Return a DEMO-first config with an isolated Bitget venue mode."""
     if name not in SUPPORTED_SERVICES:
         raise ValueError(f"unsupported service: {name}")
-    mode = environ.get("TRADER_MODE", "PAPER").upper()
-    if mode != "PAPER":
-        raise ValueError("only PAPER mode is enabled by this local topology")
-    venue_mode = "PAPER"
+    mode = environ.get("TRADER_MODE", "DEMO").upper()
+    if mode not in {"DEMO", "LIVE"}:
+        raise ValueError("TRADER_MODE must be DEMO or LIVE")
+    venue_mode = mode
     if name in {"dispatcher-bitget", "monitor-bitget"}:
-        venue_mode = environ.get("BITGET_MODE", "PAPER").upper()
-        if venue_mode not in {"PAPER", "LIVE"}:
-            raise ValueError("BITGET_MODE must be PAPER or LIVE")
+        venue_mode = environ.get("BITGET_MODE", "DEMO").upper()
+        if venue_mode not in {"DEMO", "LIVE"}:
+            raise ValueError("BITGET_MODE must be DEMO or LIVE")
     credentials = _CREDENTIALS[name]
     execution_enabled = False
     if name == "dispatcher-bitget":
@@ -145,7 +145,7 @@ def bitget_dispatcher_state(
 def build_bitget_execution_runtime(
     environ: Mapping[str, str],
     *,
-    client_factory: Callable[[str, str, str], object] | None = None,
+    client_factory: Callable[..., object] | None = None,
     intent_store_factory: Callable[[], object] | None = None,
 ) -> BitgetExecutionRuntime | None:
     """Build the POST-capable graph only after every explicit cutover gate passes."""
@@ -171,6 +171,7 @@ def build_bitget_execution_runtime(
         environ["BITGET_API_KEY"],
         environ["BITGET_API_SECRET"],
         environ["BITGET_API_PASSPHRASE"],
+        config.venue_mode,
     )
     venue = AsyncBitgetVenue(client)  # type: ignore[arg-type]
     execution = BitgetDispatchExecution(
@@ -248,7 +249,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         while True:
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
             print(
-                f"service=dispatcher-bitget mode=PAPER venue_mode={config.venue_mode} "
+                f"service=dispatcher-bitget mode={config.mode} venue_mode={config.venue_mode} "
                 f"state={cycle_state}",
                 flush=True,
             )
@@ -268,7 +269,10 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
 
     config = service_config("monitor-bitget", environ)
     client = BitgetRestClient(
-        environ["BITGET_API_KEY"], environ["BITGET_API_SECRET"], environ["BITGET_API_PASSPHRASE"]
+        environ["BITGET_API_KEY"],
+        environ["BITGET_API_SECRET"],
+        environ["BITGET_API_PASSPHRASE"],
+        mode=config.venue_mode,
     )
     repository = PostgresReconciliationRepository(psycopg.connect)
     max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
@@ -330,7 +334,7 @@ async def run_worker(name: str) -> None:
 
 
 async def run_analyzer(environ: Mapping[str, str]) -> None:
-    """Continuously analyze durable RECEIVED rows and enqueue PAPER intents."""
+    """Continuously analyze durable RECEIVED rows and enqueue DEMO intents."""
     import psycopg
 
     runner = CodexRunner()
@@ -344,8 +348,9 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             runner=runner,
             limit=batch_size,
         )
+        mode = environ.get("TRADER_MODE", "DEMO").upper()
         print(
-            f"service=analyzer mode=PAPER state=ready processed={processed} "
+            f"service=analyzer mode={mode} state=ready processed={processed} "
             f"codex_cli={codex_cli} codex_account={account_label}",
             flush=True,
         )
@@ -399,8 +404,8 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         payload = {
             "kind": "heartbeat",
             "host": "fspmi-hostinger",
-            "mode": "PAPER",
-            "venue_mode": environ.get("BITGET_MODE", "PAPER").upper(),
+            "mode": environ.get("TRADER_MODE", "DEMO").upper(),
+            "venue_mode": environ.get("BITGET_MODE", "DEMO").upper(),
             "execution_enabled": environ.get("BITGET_EXECUTION_ENABLED", "0"),
             "source": environ.get("TELEGRAM_SOURCE_CHANNELS", "configured"),
             "raw_messages": raw_total,
@@ -447,7 +452,7 @@ async def run_intake(
     """Run the real Telethon intake, or remain inert when config is absent."""
     settings = intake_settings(environ)
     if settings is None:
-        print("service=intake mode=PAPER state=disabled reason=missing-telegram-config", flush=True)
+        print("service=intake mode=DEMO state=disabled reason=missing-telegram-config", flush=True)
         while True:
             await asyncio.sleep(float(environ.get("WORKER_HEARTBEAT_SECONDS", "30")))
     client = client_factory(settings)
@@ -458,7 +463,7 @@ async def run_intake(
     forwarder = TelegramForwarder(client, settings, repository)
     await forwarder.attach()
     await client.start()
-    print("service=intake mode=PAPER state=ready", flush=True)
+    print("service=intake mode=DEMO state=ready", flush=True)
     await client.run_until_disconnected()
 
 

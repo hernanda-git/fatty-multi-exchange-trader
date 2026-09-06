@@ -1,4 +1,4 @@
-"""Durable analyzer worker: RECEIVED messages become ANALYZED + PAPER fan-out."""
+"""Durable analyzer worker: RECEIVED messages become ANALYZED + DEMO fan-out."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def process_received_batch(
     runner: Callable[[str], CodexRunResult] | CodexRunner | None = None,
     limit: int = 10,
 ) -> int:
-    """Process one bounded transaction. Dispatch rows are PAPER intents only."""
+    """Process one bounded transaction. Dispatch rows are DEMO intents only."""
     if limit < 1:
         raise ValueError("limit must be positive")
     analysis_runner = runner or CodexRunner()

@@ -32,7 +32,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "init"]
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: init
     depends_on:
       migrate:
@@ -42,7 +42,7 @@ services:
   web:
     build: .
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: web
       SERVICE_COMPONENTS: postgres=ready,migrate=ready
       PGHOST: postgres
@@ -66,7 +66,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "intake"]
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: intake
       PGHOST: postgres
       PGPORT: "5432"
@@ -89,7 +89,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer"]
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: analyzer
       PGHOST: postgres
       PGPORT: "5432"
@@ -113,7 +113,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: dispatcher-binance
       PGHOST: postgres
       PGPORT: "5432"
@@ -133,7 +133,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: dispatcher-bitget
       PGHOST: postgres
       PGPORT: "5432"
@@ -186,7 +186,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
-      TRADER_MODE: PAPER
+      TRADER_MODE: DEMO
       SERVICE_NAME: operator-bot
       PGHOST: postgres
       PGPORT: "5432"
@@ -196,7 +196,7 @@ services:
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TG_OPERATOR_ID: ${TG_OPERATOR_ID:-}
       TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
-      BITGET_MODE: ${BITGET_MODE:-LIVE}
+      BITGET_MODE: ${BITGET_MODE:-DEMO}
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}
       TELEGRAM_HEARTBEAT_SECONDS: ${TELEGRAM_HEARTBEAT_SECONDS:-21600}
     depends_on:

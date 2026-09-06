@@ -13,7 +13,7 @@ from fatty_trader.storage.memory import Dispatch, InMemoryDispatchRepository
 
 
 class PaperPipeline:
-    """Idempotent RECEIVED -> analysis -> PAPER dispatch seam; never submits orders."""
+    """Idempotent RECEIVED -> analysis -> DEMO dispatch seam; never submits orders."""
 
     def __init__(
         self,
