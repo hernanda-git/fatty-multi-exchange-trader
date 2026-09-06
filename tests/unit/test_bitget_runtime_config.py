@@ -9,8 +9,10 @@ COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
 
 def test_compose_keeps_bitget_execution_closed_by_default() -> None:
-    assert "TRADER_MODE: DEMO" in COMPOSE
-    assert "BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}" in COMPOSE
+    dispatcher = COMPOSE.split("  dispatcher-bitget:", 1)[1].split("  monitor-binance:", 1)[0]
+    assert "TRADER_MODE: DEMO" in dispatcher
+    assert "BITGET_MODE: ${BITGET_MODE:-DEMO}" in dispatcher
+    assert "BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}" in dispatcher
     assert "BITGET_CANARY_MAX_ORDERS: ${BITGET_CANARY_MAX_ORDERS:-0}" in COMPOSE
     assert "BITGET_APPROVAL_REFERENCE: ${BITGET_APPROVAL_REFERENCE:-}" in COMPOSE
 
