@@ -9,6 +9,7 @@ __pycache__/
 data/postgres/
 data/media/
 data/codex-home/
+runtime/codex-home/
 data/backups/
 data/logs/
 *.py[cod]

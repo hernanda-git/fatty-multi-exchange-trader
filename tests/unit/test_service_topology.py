@@ -129,7 +129,10 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
     assert "COPY scripts ./scripts" in dockerfile
     assert "npm install --global @openai/codex@0.153.0" in dockerfile
     assert 'user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"' in COMPOSE
-    assert "${CODEX_HOST_HOME:-/home/valarion/.codex}:/app/runtime/codex-home:ro" in COMPOSE
+    assert "./runtime/codex-home:/app/runtime/codex-home" in COMPOSE
+    assert (
+        "${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json:/app/runtime/codex-home/auth.json:ro"
+    ) in COMPOSE
 
 
 def test_health_report_is_sanitized_and_exposes_component_states() -> None:
