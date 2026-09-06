@@ -356,7 +356,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     """Publish a durable, DB-backed heartbeat to the configured operator chat."""
     import psycopg
 
-    interval = float(environ.get("TELEGRAM_HEARTBEAT_SECONDS", "60"))
+    interval = float(environ.get("TELEGRAM_HEARTBEAT_SECONDS", "21600"))
     while True:
         connection = psycopg.connect()
         try:
