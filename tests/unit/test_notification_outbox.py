@@ -55,6 +55,36 @@ def test_notification_html_escapes_and_redacts_untrusted_payload() -> None:
     assert "<br>" not in text
 
 
+def test_heartbeat_uses_rich_report_layout() -> None:
+    text = format_notification_html(
+        {
+            "kind": "heartbeat",
+            "mode": "PAPER",
+            "venue_mode": "LIVE",
+            "host": "fspmi-hostinger",
+            "source": "@fattyfatclub",
+            "latest_source_message_id": 16096,
+            "latest_source_received_at": "2026-09-06 13:55 UTC",
+            "raw_messages": 4,
+            "received": 0,
+            "analyzed": 4,
+            "failed": 0,
+            "canonical_signals": 1,
+            "dispatches": 2,
+            "live_order_intents": 0,
+            "notification_pending": 0,
+            "notification_failed": 0,
+            "execution_enabled": 0,
+            "codex": "UNCONFIGURED",
+        }
+    )
+
+    assert "<b>Fatty Signal Relay</b>" in text
+    assert "<b>Database</b>" in text
+    assert "Signals           1" in text
+    assert "<br>" not in text
+
+
 class FakeOutbox:
     def __init__(self, notification: OutboxNotification | None) -> None:
         self.notification = notification

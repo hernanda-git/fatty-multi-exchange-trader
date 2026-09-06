@@ -247,6 +247,8 @@ class NotificationWorker:
 
 def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
+    if payload.get("kind") == "heartbeat":
+        return _format_heartbeat_html(payload)
     title = _safe_text(payload.get("kind", "Operator alert"), limit=100)
     lines = [f"<b>Fatty Trader: {escape(title)}</b>"]
     for key in sorted(payload):
@@ -257,6 +259,42 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
     # Telegram's HTML subset does not support <br>; literal newlines preserve
     # card readability without causing a permanent Bot API parse failure.
     return "\n".join(lines)[:4000]
+
+
+def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
+    """Render heartbeat cards in the established rich Telegram report layout."""
+
+    def value(key: str, default: str = "N/A") -> str:
+        return escape(_safe_value(payload.get(key, default)))
+
+    report = (
+        "<b>Fatty Signal Relay</b>  <i>Paper Ops</i>\n\n"
+        "<b>Status</b>\n"
+        "<pre>Overall  🟢 ONLINE\n"
+        f"Mode     {value('mode')}\n"
+        f"Venue    {value('venue_mode')}\n"
+        f"Host     {value('host')}\n"
+        f"Source   {value('source')}</pre>\n\n"
+        "<b>Latest Signal</b>\n"
+        f"Message  <code>{value('latest_source_message_id')}</code>\n"
+        f"Received <code>{value('latest_source_received_at')}</code>\n\n"
+        "<b>Database</b>\n"
+        f"<pre>Messages          {value('raw_messages')}\n"
+        f"Received          {value('received')}\n"
+        f"Analyzed          {value('analyzed')}\n"
+        f"Failed            {value('failed')}\n"
+        f"Signals           {value('canonical_signals')}\n"
+        f"Dispatches        {value('dispatches')}\n"
+        f"Live intents      {value('live_order_intents')}</pre>\n\n"
+        "<b>Notifications</b>\n"
+        f"<pre>Pending           {value('notification_pending')}\n"
+        f"Failed            {value('notification_failed')}</pre>\n\n"
+        "<b>Safety</b>\n"
+        f"<pre>Mode              {value('mode')}\n"
+        f"Execution enabled {value('execution_enabled')}\n"
+        f"Codex account     {value('codex')}</pre>"
+    )
+    return report[:4000]
 
 
 def _safe_value(value: Any) -> str:
