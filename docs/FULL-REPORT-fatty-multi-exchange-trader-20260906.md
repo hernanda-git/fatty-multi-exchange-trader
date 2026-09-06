@@ -1,7 +1,7 @@
 # Fatty Multi-Exchange Trader — Full Project Report
 
 **Report path:** `C:\Workspace\bots\fatty-bitget-live\docs\FULL-REPORT-fatty-multi-exchange-trader-20260906.md`
-**Generated:** 2026-09-06T14:51:42Z
+**Generated / refreshed:** 2026-09-06T14:57:42Z
 **Repository:** `fatty-multi-exchange-trader`
 **Deployment target:** `fspmi-hostinger`
 **Deployment path:** `/home/valarion/apps/fatty-multi-exchange-trader`
@@ -899,3 +899,233 @@ Live cutover:                    BLOCKED BY DESIGN
 ```
 
 This report is the current full-context baseline for future work. Any future change should update the relevant evidence sections, preserve the safety constraints, and record a new commit, backup, deployment SHA, and post-deployment readback.
+
+---
+
+## 19. Live readiness status refresh — 2026-09-06T14:57:42Z
+
+This section is the current go-live decision snapshot, refreshed from the running `fspmi-hostinger` deployment after the original report was written.
+
+### Fresh production readback
+
+| Check | Current result | Interpretation |
+|---|---|---|
+| Production source SHA | `e8838977c988ee5609572be41d2dd4fa4cf307c1` | Rich-card deployment is running; later report commits are docs-only and were not deployed |
+| Compose services | 8/8 running and healthy | Container topology is alive |
+| Running global mode | `PAPER` | Correct closed operating mode |
+| Running Bitget venue mode | `LIVE` | Read-only venue context; not mutation authorization |
+| Running Bitget execution gate | `0` | No Bitget POST-capable execution |
+| Running heartbeat interval | `21600` seconds | Six hours |
+| Schema migrations | `1, 2, 3, 4, 5` | Deployed schema ledger complete |
+| `telegram_messages` | 4 | Four source messages persisted |
+| `canonical_signals` | 1 | One actionable canonical signal exists |
+| `dispatches` | 2 | Independent Binance and Bitget dispatch rows exist |
+| Dispatch state | 1 `QUEUED`, 1 `REJECTED` | Bitget is rejected by the kill switch; Binance row remains queued |
+| `live_order_intents` | 0 | No live order intent was created |
+| `fills` | 0 | No provider fill exists |
+| `positions` | 0 | No bot-tracked open position exists |
+| `balance_snapshots` | 0 | No persisted balance snapshot exists |
+| `position_snapshots` | 0 | No persisted position snapshot exists |
+| Notification outbox | 16 total, 16 sent, 0 failed | Durable delivery path currently clear |
+| Kill switch | active: `provider-orders-invalid` | Fail-closed state remains active |
+| Analyzer Codex | `codex_cli=unavailable`, `codex_account=UNCONFIGURED` | Deterministic fallback is active; container Codex is not ready |
+
+### Current decision
+
+```text
+READY FOR LIVE ORDER SUBMISSION: NO
+READY FOR PAPER / READ-ONLY OPERATIONS: YES
+READY FOR TELEMETRY: YES
+READY FOR DEMO MUTATION TEST: NO
+READY FOR BOUNDED LIVE CANARY: NO
+```
+
+The system is stable in its intended **observe-only / PAPER** posture. It is not currently a go-live candidate because the safety gate and kill switch are correctly closed, the demo environment has not been proven, no provider-mutating lifecycle has been verified, and analyzer Codex remains unavailable inside the image.
+
+### Important configuration interpretation
+
+The host `.env` file is not the only source of effective configuration because Compose interpolation and service-specific environment blocks are involved. The authoritative current values were read from the running `operator-bot` container:
+
+```text
+TRADER_MODE=PAPER
+BITGET_MODE=LIVE
+BITGET_EXECUTION_ENABLED=0
+TELEGRAM_HEARTBEAT_SECONDS=21600
+```
+
+The absence of a live execution value in a simple host `.env` grep must not be interpreted as an accidental enablement. The running container explicitly reports `BITGET_EXECUTION_ENABLED=0`, and the dispatcher runtime check completed successfully without opening the gate.
+
+### Heartbeat interpretation
+
+The active process is configured for a six-hour heartbeat. The database still contains old one-minute heartbeat rows from before the cadence rollout. They have the old time-bucketed dedup-key shape and are retained as audit history. They do not prove that the current process is publishing every minute.
+
+If Telegram history is reviewed manually, distinguish:
+
+```text
+old rows:     heartbeat:<one-minute bucket>
+current rows: heartbeat:<six-hour bucket>
+```
+
+Do not bulk-delete the old rows merely to make the display look clean. Any history cleanup must be an explicit retention decision with a backup and an audit record.
+
+---
+
+## 20. Pending work for “ready to go live”
+
+The following list is ordered by gating importance. Items marked **BLOCKING** must be complete before any live Bitget execution flag is changed.
+
+### P0 — mandatory safety and authorization blockers
+
+| ID | Work | Current state | Required acceptance evidence |
+|---|---|---|---|
+| P0-1 | Keep execution closed during remediation | PASS / active | Running container continues to show `BITGET_EXECUTION_ENABLED=0` |
+| P0-2 | Resolve the Bitget kill switch | BLOCKING | Root cause of `provider-orders-invalid` documented, read-only reconciliation clean, authorized recovery action, and post-recovery readback |
+| P0-3 | Rotate exposed Telegram bot token | BLOCKING | BotFather rotation completed, replacement `getMe` returns the intended bot, old token invalid, no token in logs/repo |
+| P0-4 | Record explicit live approval | BLOCKING | Human operator, UTC timestamp, venue, bounded canary policy, maximum order count, rollback SHA, and approval reference recorded |
+| P0-5 | Preserve rollback point | PASS but repeat before cutover | Fresh PostgreSQL dump is non-empty and stored with the exact pre-cutover SHA |
+
+### P1 — exchange readiness
+
+| ID | Work | Current state | Required acceptance evidence |
+|---|---|---|---|
+| P1-1 | Fix Bitget demo environment mismatch | BLOCKING | Correct demo endpoint/credentials return authenticated account, contracts, orders, fills, and positions reads; no `40099` |
+| P1-2 | Complete demo entry lifecycle | BLOCKING | Smallest permitted demo entry receives provider ID and fill read-back |
+| P1-3 | Verify native SL/TP protection | BLOCKING | SL and TP are confirmed by provider read-back with exact symbol, side, quantity, and margin mode |
+| P1-4 | Verify partial-fill protection | BLOCKING | Protection quantity follows the confirmed filled quantity, not merely requested quantity |
+| P1-5 | Verify restart recovery | BLOCKING | Restart during/after submit reconciles the existing durable intent and never duplicates the provider order |
+| P1-6 | Verify unknown-submit handling | BLOCKING | Ambiguous POST result produces GET/read-back reconciliation and no automatic duplicate POST |
+| P1-7 | Verify emergency containment | BLOCKING | Missing protection, unexpected venue state, and stale data latch safety and exercise at-most-once reduce-only containment |
+| P1-8 | Verify close lifecycle | BLOCKING | Demo position closes, provider shows zero position, local snapshots reconcile, and no orphan protection remains |
+
+### P1 — analyzer and signal-path readiness
+
+| ID | Work | Current state | Required acceptance evidence |
+|---|---|---|---|
+| P1-9 | Decide Codex container strategy | BLOCKING for Codex-assisted operation; not required for deterministic fallback | Either explicitly approve deterministic-only operation, or package/wire Codex safely and prove executable plus auth inside analyzer container |
+| P1-10 | Exercise dynamic pair matrix | PARTIAL | Real metadata preflight and sizing evidence for high-price, mid-price, low-price, sub-cent, and unusual contract-multiplier symbols |
+| P1-11 | Validate source revision behavior | PARTIAL | New message, edited revision, duplicate delivery, commentary, malformed target, and non-actionable update each produce the expected state and telemetry |
+| P1-12 | Prove no false-green analyzer outcomes | PASS for known PUMP regression; expand coverage | Every consumed source revision has analysis telemetry with status, fallback reason, canonical-signal boolean, and dispatch count |
+
+### P1 — risk, sizing, and protection gates
+
+| ID | Work | Current state | Required acceptance evidence |
+|---|---|---|---|
+| P1-13 | Verify symbol-specific exchange filters | Implemented, demo evidence pending | Quantity step, min quantity, min notional, contract multiplier, price rules, and leverage are read for the actual symbol |
+| P1-14 | Verify decimal sizing and margin caps | Implemented, provider evidence pending | Rounded exposure remains within margin and notional limits; invalid sizing is rejected before POST |
+| P1-15 | Verify isolated margin and leverage | Implemented, provider evidence pending | Provider read-back confirms isolated mode and accepted leverage for the actual contract |
+| P1-16 | Verify clock-skew gate | Implemented, runtime evidence pending | Server time offset is within configured `BITGET_MAX_CLOCK_SKEW_MS` |
+| P1-17 | Verify kill-switch recovery policy | Designed, authorization pending | Recovery cannot silently clear the latch and must emit an operator event |
+
+### P2 — telemetry and operational completeness
+
+| ID | Work | Current state | Required acceptance evidence |
+|---|---|---|---|
+| P2-1 | Maintain rich Telegram HTML cards | PASS in deployed source | Live Telegram message uses HTML parse mode, safe tags, escaped source text, and no `<br>` |
+| P2-2 | Confirm immediate event delivery | PASS for existing outbox evidence; repeat after any runtime change | Raw source, analyzer, dispatch, kill-switch, protection, and failure events have sent outbox rows |
+| P2-3 | Keep heartbeat low-noise | PASS in running env | Current bucket is six hours; old minute rows are labeled historical during review |
+| P2-4 | Expand heartbeat snapshot fields | PARTIAL | Add balance, positions, orders, PNL, service-by-service health, database counters, and Codex usage only when backed by real snapshots; use `N/A` otherwise |
+| P2-5 | Add a sanitized one-command evidence report | PENDING | One command prints deployment SHA, service health, effective gates, migrations, counts, kill switch, backups, and outbox delivery without secrets |
+| P2-6 | Reconcile stale documentation | PENDING | Scaffold-era `IMPLEMENTATION-STATUS.md` and `OPERATIONS.md` are marked historical or updated to current production truth |
+
+### P2 — soak and governance gates
+
+| ID | Work | Current state | Required acceptance evidence |
+|---|---|---|---|
+| P2-7 | PAPER soak | NOT RECORDED COMPLETE | Seven days of stable intake/analyzer/dispatch/monitor telemetry with no unexplained failures |
+| P2-8 | Dispatch soak | NOT RECORDED COMPLETE | At least 200 representative dispatch decisions with zero duplicate intents and expected rejection/acceptance classifications |
+| P2-9 | Alert-failure drill | PARTIAL | Telegram outage, retry, lease expiry, terminal failure, and recovery are demonstrated with no lost audit event |
+| P2-10 | Rollback drill | NOT RECORDED COMPLETE | Restore procedure is tested against a non-production target or verified backup workflow without touching production data |
+| P2-11 | Operator runbook handoff | PENDING | Human operator has the exact enable, disable, kill, close, rollback, and evidence commands |
+
+---
+
+## 21. Go-live gate sequence
+
+Do not set the execution flag before the following sequence is complete.
+
+### Gate A — source and code integrity
+
+- [ ] Local branch is clean and pushed.
+- [ ] Production source ancestry is understood.
+- [ ] Full test suite passes with no failures.
+- [ ] Ruff, format, mypy, Compose validation, and `git diff --check` pass.
+- [ ] Docker image contains every runtime script used by Compose.
+- [ ] No secrets or session files are tracked.
+
+### Gate B — deployment and database integrity
+
+- [ ] Fresh PostgreSQL backup created and non-empty.
+- [ ] Backup path and byte size recorded.
+- [ ] Exact deployed SHA recorded.
+- [ ] Migrations complete and read back from `schema_migrations`.
+- [ ] All eight services healthy.
+- [ ] No unexpected host working-tree changes.
+
+### Gate C — provider read-only integrity
+
+- [ ] Bitget account read passes.
+- [ ] Contract metadata read passes for every canary symbol.
+- [ ] Orders, fills, positions, and server-time reads pass.
+- [ ] Clock skew is within policy.
+- [ ] Kill-switch reason is understood and authorized for recovery.
+
+### Gate D — demo mutation integrity
+
+- [ ] Correct Bitget demo environment is proven; no `40099`.
+- [ ] Entry submit/read-back works with minimum permitted size.
+- [ ] Partial fill is handled.
+- [ ] Native SL/TP are confirmed.
+- [ ] Restart recovery does not duplicate.
+- [ ] Unknown result reconciliation works.
+- [ ] Emergency reduce-only containment works.
+- [ ] Close and zero-position read-back works.
+
+### Gate E — telemetry integrity
+
+- [ ] Source relay appears in the operator destination.
+- [ ] Analyzer outcome appears for every processed message.
+- [ ] Dispatch transitions appear for every transition.
+- [ ] Protection/reconciliation/kill-switch events appear.
+- [ ] Rich HTML card renders without Telegram `400`.
+- [ ] Notification outbox has `sent_at` and zero unexplained terminal failures.
+- [ ] Heartbeat cadence is six hours, with historical minute rows distinguished.
+
+### Gate F — human cutover
+
+- [ ] Fresh backup taken immediately before cutover.
+- [ ] One venue selected.
+- [ ] One bounded canary policy selected.
+- [ ] Dynamic-pair policy reviewed.
+- [ ] Positive `BITGET_CANARY_MAX_ORDERS` selected.
+- [ ] Valid uppercase canary symbol selected.
+- [ ] Non-secret approval reference recorded.
+- [ ] Human approval recorded.
+- [ ] Only then may `BITGET_EXECUTION_ENABLED=1` be considered.
+
+### Gate G — first canary monitoring
+
+- [ ] Watch dispatcher, monitor, notification-sender, and PostgreSQL logs together.
+- [ ] Confirm exactly one durable intent per intended order.
+- [ ] Confirm provider order ID and fill IDs.
+- [ ] Confirm protection before accepting another signal.
+- [ ] Confirm reconciliation snapshots.
+- [ ] Stop immediately on any mismatch, missing protection, duplicate, unknown submit, or Telegram delivery failure.
+
+---
+
+## 22. Current recommendation
+
+**Do not go live yet.**
+
+The correct next work is not to flip the flag. The correct next work is:
+
+1. rotate the exposed Telegram token;
+2. resolve the Bitget demo environment mismatch;
+3. complete the provider-mutating demo lifecycle;
+4. decide whether Codex is required in the analyzer or deterministic fallback is the approved production mode;
+5. run the soak and rollback gates;
+6. clear the kill switch only through an authorized, evidence-backed procedure;
+7. obtain explicit human approval;
+8. perform a bounded canary only after all gates are green.
+
+The current production deployment is **ready to continue readiness work**, but it is not **ready to submit live orders**.
