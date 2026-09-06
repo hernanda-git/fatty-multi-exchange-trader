@@ -111,12 +111,13 @@ def _validate_bitget_cutover(environ: Mapping[str, str]) -> None:
         raise ValueError("BITGET_CANARY_MAX_ORDERS must be a positive integer canary cap") from exc
     if canary_max_orders < 1:
         raise ValueError("positive Bitget canary cap is required when execution is enabled")
-    canary_symbol = environ.get("BITGET_CANARY_SYMBOL", "")
-    if not re.fullmatch(r"[A-Z0-9]+", canary_symbol):
+    canary_symbol = environ.get("BITGET_CANARY_SYMBOL", "").strip()
+    if not canary_symbol or not re.fullmatch(r"^[A-Z0-9]{2,20}$", canary_symbol):
         raise ValueError(
             "valid uppercase Bitget canary symbol is required when execution is enabled"
         )
-    if not environ.get("BITGET_APPROVAL_REFERENCE", "").strip():
+    approval_reference = environ.get("BITGET_APPROVAL_REFERENCE", "").strip()
+    if not approval_reference:
         raise ValueError("Bitget approval reference is required when execution is enabled")
     try:
         max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "0"))
@@ -182,14 +183,13 @@ def build_bitget_execution_runtime(
 
 
 def _bitget_dispatch_preflight(venue: Any, environ: Mapping[str, str]) -> Callable[[str], Any]:
-    canary_symbol = environ["BITGET_CANARY_SYMBOL"]
     allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
     max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "50"))
     default_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
 
     async def preflight(symbol: str) -> tuple[InstrumentSpec, VenueRiskConfig]:
-        if symbol != canary_symbol:
-            raise ValueError("dispatch symbol is outside the approved Bitget canary")
+        if not re.fullmatch(r"^[A-Z0-9]{2,20}$", symbol):
+            raise ValueError("dispatch symbol failed Bitget symbol validation")
         snapshot = await venue.preflight(symbol)
         metadata = snapshot.metadata
         allocation = snapshot.available_balance * allocation_pct
