@@ -30,6 +30,7 @@ class ReconciliationRepository(Protocol):
     def expected_position_symbols(self, exchange: str) -> set[str]: ...
     def kill_switch_active(self, scope: str) -> bool: ...
     def latch_kill_switch(self, scope: str, reason: str) -> None: ...
+    def release_kill_switch(self, scope: str, approval_reference: str) -> None: ...
 
 
 class KillSwitch(Protocol):
@@ -81,6 +82,11 @@ class InMemoryReconciliationRepository:
         if key not in self._alert_keys:
             self._alert_keys.add(key)
             self.alerts.append(reason)
+
+    def release_kill_switch(self, scope: str, approval_reference: str) -> None:
+        if not approval_reference.strip():
+            raise ValueError("approval reference is required")
+        self._kill_switches.discard(scope)
 
     def is_active(self, scope: str) -> bool:
         return self.kill_switch_active(scope)
@@ -175,6 +181,41 @@ class PostgresReconciliationRepository:
                             "kind": "kill-switch",
                             "scope": scope,
                             "reason": reason,
+                        }
+                    ),
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def release_kill_switch(self, scope: str, approval_reference: str) -> None:
+        """Record an approved release and enqueue a durable operator event."""
+        if not approval_reference.strip():
+            raise ValueError("approval reference is required")
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """UPDATE venue_kill_switches
+                   SET active = FALSE, reason = %s, updated_at = CURRENT_TIMESTAMP
+                   WHERE scope = %s""",
+                (f"released:{approval_reference.strip()}", scope),
+            )
+            if getattr(cursor, "rowcount", 1) == 0:
+                raise LookupError(f"kill switch not found: {scope}")
+            cursor.execute(
+                """INSERT INTO notifications_outbox (id, dedup_key, payload)
+                   VALUES (%s, %s, %s::jsonb) ON CONFLICT (dedup_key) DO NOTHING""",
+                (
+                    uuid4(),
+                    f"kill-switch-release:{scope}:{approval_reference.strip()}",
+                    json.dumps(
+                        {
+                            "kind": "kill-switch-release",
+                            "scope": scope,
+                            "approval_reference": approval_reference.strip(),
                         }
                     ),
                 ),
