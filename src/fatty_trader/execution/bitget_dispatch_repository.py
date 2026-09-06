@@ -79,6 +79,16 @@ class PostgresBitgetDispatchRepository:
             raise
         return _dispatch_from_row(row) if row is not None else None
 
+    def canary_entry_count(self, exchange: str) -> int:
+        connection = self._connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT count(*) FROM live_order_intents WHERE exchange = %s AND role = 'entry'",
+            (exchange,),
+        )
+        row = cursor.fetchone()
+        return int(row[0] if not isinstance(row, dict) else row["count"])
+
     def transition(
         self,
         dispatch_id: UUID,

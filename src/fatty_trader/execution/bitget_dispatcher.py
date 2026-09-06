@@ -27,6 +27,7 @@ class DispatchRepository(Protocol):
     ) -> None: ...
 
     def alert(self, dispatch_id: UUID, reason: str) -> None: ...
+    def canary_entry_count(self, exchange: str) -> int: ...
 
 
 class KillSwitch(Protocol):
@@ -42,6 +43,8 @@ class DispatchGate:
     """Per-venue gate. Defaults closed and is separate from global DEMO mode."""
 
     execution_enabled: bool = False
+    canary_symbol: str | None = None
+    canary_max_orders: int = 0
 
 
 Preflight = (
@@ -78,6 +81,15 @@ class BitgetDispatcher:
         if not self._gate.execution_enabled:
             self._reject(dispatch, "cutover-gated")
             return "cutover-gated"
+        if self._gate.canary_symbol and dispatch.pair_token != self._gate.canary_symbol:
+            self._reject(dispatch, "canary-symbol-mismatch")
+            return "rejected"
+        if (
+            self._gate.canary_max_orders > 0
+            and self._repository.canary_entry_count("bitget") >= self._gate.canary_max_orders
+        ):
+            self._reject(dispatch, "canary-order-cap-reached")
+            return "rejected"
         try:
             signal = CanonicalSignal(
                 source_message_id=1,

@@ -234,7 +234,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     runtime = build_bitget_execution_runtime(environ)
     dispatcher = BitgetDispatcher(
         PostgresBitgetDispatchRepository(psycopg.connect),
-        gate=DispatchGate(execution_enabled=config.execution_enabled),
+        gate=DispatchGate(
+            execution_enabled=config.execution_enabled,
+            canary_symbol=environ.get("BITGET_CANARY_SYMBOL", "").strip() or None,
+            canary_max_orders=int(environ.get("BITGET_CANARY_MAX_ORDERS", "0")),
+        ),
         execution=runtime.execution if runtime is not None else None,  # type: ignore[arg-type]
         preflight=(
             runtime.preflight
