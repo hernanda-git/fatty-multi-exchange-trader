@@ -128,6 +128,7 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts ./scripts" in dockerfile
     assert "npm install --global @openai/codex@0.153.0" in dockerfile
+    assert 'user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"' in COMPOSE
     assert "${CODEX_HOST_HOME:-/home/valarion/.codex}:/app/runtime/codex-home:ro" in COMPOSE
 
 

@@ -87,6 +87,7 @@ services:
 
   analyzer:
     build: .
+    user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer"]
     environment:
       TRADER_MODE: DEMO

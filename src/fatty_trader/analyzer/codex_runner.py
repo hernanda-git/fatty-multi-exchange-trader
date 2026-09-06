@@ -86,6 +86,7 @@ class CodexRunner:
                 [
                     self._config.executable,
                     "exec",
+                    "--skip-git-repo-check",
                     "--model",
                     self._config.model,
                     "-c",

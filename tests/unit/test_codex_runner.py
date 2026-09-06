@@ -62,6 +62,7 @@ def test_runner_uses_literal_codex_exec_argv_without_a_shell() -> None:
             [
                 "codex",
                 "exec",
+                "--skip-git-repo-check",
                 "--model",
                 "gpt-5.6-luna",
                 "-c",
