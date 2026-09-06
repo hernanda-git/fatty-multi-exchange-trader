@@ -5,12 +5,27 @@ from decimal import Decimal
 
 from fatty_trader.analyzer.classifier import classify_json
 from fatty_trader.analyzer.codex_runner import CodexRunResult
+from fatty_trader.analyzer.deterministic_parser import parse_explicit_signal
 from fatty_trader.analyzer.integration import AnalysisStatus, analyze_with_fallback
 from fatty_trader.domain.enums import Direction
 
 
 def run_result(payload: dict) -> CodexRunResult:
     return CodexRunResult(True, False, False, 0, None, json.dumps(payload), "")
+
+
+def test_parser_accepts_plural_targets_and_preserves_all_targets() -> None:
+    signal = parse_explicit_signal(
+        "#PUMP $PUMP LONG TRADE ENTRY: 0.00427 TARGETS: 0.004438 - 0.004915 STOPLOSS: 0.00416",
+        message_id=16090,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "PUMP"
+    assert signal.direction is Direction.LONG
+    assert signal.entry_price == Decimal("0.00427")
+    assert signal.stop_loss == Decimal("0.00416")
+    assert signal.take_profits == (Decimal("0.004438"), Decimal("0.004915"))
 
 
 def test_classifier_preserves_only_values_present_in_json() -> None:

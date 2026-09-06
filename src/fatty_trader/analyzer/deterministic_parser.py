@@ -8,7 +8,7 @@ from fatty_trader.domain.models import CanonicalSignal
 _CHANNEL = re.compile(
     r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{2,20})(?:\s+\$?(?P<pair2>[A-Z0-9]{2,20}))?\s+"
     r"(?P<direction>LONG|SHORT).*?(?:ENTRY\s*:\s*|MARKET\s+)(?P<entry>\d+(?:\.\d+)?).*?"
-    r"(?:TARGET|TP)\s*:?\s*(?P<tp>\d+(?:\.\d+)?).*?"
+    r"(?:TARGETS?|TPS?)\s*:?\s*(?P<tps>\d+(?:\.\d+)?(?:\s*(?:-|,|/)\s*\d+(?:\.\d+)?){0,4}).*?"
     r"(?:STOPLOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
@@ -27,7 +27,10 @@ def parse_explicit_signal(text: str, *, message_id: int) -> CanonicalSignal | No
     try:
         direction = Direction(match["direction"].upper())
         stop_loss = Decimal(match["sl"])
-        take_profits = (Decimal(match["tp"]),)
+        target_text = match.groupdict().get("tps") or match.groupdict().get("tp")
+        if not target_text:
+            return None
+        take_profits = tuple(Decimal(value) for value in re.findall(r"\d+(?:\.\d+)?", target_text))
         entry = (
             Decimal(match["entry"])
             if match.groupdict().get("entry")
