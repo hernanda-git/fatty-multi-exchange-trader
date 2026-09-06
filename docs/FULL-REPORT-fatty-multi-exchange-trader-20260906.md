@@ -5,7 +5,8 @@
 **Repository:** `fatty-multi-exchange-trader`
 **Deployment target:** `fspmi-hostinger`
 **Deployment path:** `/home/valarion/apps/fatty-multi-exchange-trader`
-**Current repository head:** `e8838977c988ee5609572be41d2dd4fa4cf307c1` (`fix: restore rich heartbeat telegram cards`)
+**Production source head at evidence capture:** `e8838977c988ee5609572be41d2dd4fa4cf307c1` (`fix: restore rich heartbeat telegram cards`)
+**Report commits:** `be3cc03`, followed by whitespace cleanup `da13e70`
 
 > This is an evidence-based state report. Secrets, bot tokens, Telegram target IDs, API keys, passphrases, session files, and connection strings are intentionally omitted or represented as `[REDACTED]`.
 
