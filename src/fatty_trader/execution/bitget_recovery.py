@@ -32,7 +32,7 @@ def release_after_clean_monitor(
     """
     if not approval_reference.strip():
         raise ValueError("non-empty approval reference is required")
-    if monitor_report.status != "ok" or monitor_report.reasons:
+    if monitor_report.reasons or monitor_report.status not in {"ok", "kill-switch-latched"}:
         return RecoveryReport(False, "monitor-not-clean")
     repository.release_kill_switch(scope, approval_reference.strip())
     return RecoveryReport(True, "released-after-clean-reconciliation")

@@ -43,7 +43,10 @@ async def main() -> int:
             scope="bitget",
             approval_reference=args.approval_reference,
         )
-        print(f"released={str(recovery.released).lower()} reason={recovery.reason}")
+        print(
+            f"released={str(recovery.released).lower()} reason={recovery.reason} "
+            f"monitor_reasons={','.join(report.reasons) or 'none'}"
+        )
         return 0 if recovery.released else 2
     finally:
         await client.aclose()
