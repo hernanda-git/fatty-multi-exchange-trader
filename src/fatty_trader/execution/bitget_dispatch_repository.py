@@ -108,6 +108,26 @@ class PostgresBitgetDispatchRepository:
                 """,
                 (uuid4(), dispatch_id, expected_state, target_state, reason),
             )
+            cursor.execute(
+                """
+                INSERT INTO notifications_outbox (id, dedup_key, payload)
+                VALUES (%s, %s, %s::jsonb)
+                ON CONFLICT (dedup_key) DO NOTHING
+                """,
+                (
+                    uuid4(),
+                    f"dispatch-transition:{dispatch_id}:{expected_state}:{target_state}",
+                    json.dumps(
+                        {
+                            "kind": "execution-event",
+                            "dispatch_id": str(dispatch_id),
+                            "from_state": expected_state,
+                            "to_state": target_state,
+                            "reason": reason or "none",
+                        }
+                    ),
+                ),
+            )
             connection.commit()
         except Exception:
             connection.rollback()

@@ -33,6 +33,11 @@ INSERT INTO dispatches
 VALUES (%s, 'canonical_signal', %s, %s, %s, 'QUEUED')
 ON CONFLICT (source_type, source_id, revision, exchange) DO NOTHING
 """
+_ANALYSIS_NOTIFICATION_INSERT = """
+INSERT INTO notifications_outbox (id, dedup_key, payload)
+VALUES (%s, %s, %s::jsonb)
+ON CONFLICT (dedup_key) DO NOTHING
+"""
 
 
 def process_received_batch(
@@ -65,6 +70,7 @@ def process_received_batch(
                         message_id=message.message_id,
                         codex_runner=_runner_callable(analysis_runner),
                     )
+                    signal_id = None
                     if result.signal is not None:
                         signal = result.signal.model_copy(update={"source_revision": revision})
                         signal_id = uuid4()
@@ -86,6 +92,37 @@ def process_received_batch(
                                 _DISPATCH_INSERT,
                                 (uuid4(), signal_id, revision, exchange),
                             )
+                    cursor.execute(
+                        _ANALYSIS_NOTIFICATION_INSERT,
+                        (
+                            uuid4(),
+                            f"analysis:{message_uuid}:{revision}",
+                            json.dumps(
+                                {
+                                    "kind": "signal-analysis",
+                                    "source_message_id": message_id,
+                                    "source_revision": revision,
+                                    "status": result.status.value,
+                                    "failure_class": result.failure_class or "none",
+                                    "canonical_signal": signal_id is not None,
+                                    "pair": result.signal.pair_token if result.signal else "none",
+                                    "direction": result.signal.direction.value
+                                    if result.signal
+                                    else "none",
+                                    "entry": str(result.signal.entry_price)
+                                    if result.signal
+                                    else "none",
+                                    "stop_loss": str(result.signal.stop_loss)
+                                    if result.signal
+                                    else "none",
+                                    "take_profits": [str(v) for v in result.signal.take_profits]
+                                    if result.signal
+                                    else [],
+                                    "dispatches": 2 if signal_id is not None else 0,
+                                }
+                            ),
+                        ),
+                    )
                     cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
                 except Exception:
                     cursor.execute(_UPDATE_STATE, ("FAILED", message_uuid))

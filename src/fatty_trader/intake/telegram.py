@@ -47,10 +47,15 @@ class TelegramIntake:
         return self._repository.save_if_new(item)
 
 
-def format_forward_html(raw_text: str) -> str:
+def format_forward_html(
+    raw_text: str, *, channel_id: int | None = None, message_id: int | None = None
+) -> str:
     """Wrap source text as safe, consistently branded Telegram HTML."""
-    body = escape(raw_text.strip() or "(media attachment)").replace("\n", "<br>")
-    return f"<b>Fatty Signal Relay</b><br><i>Source channel update</i><br><br>{body}"
+    body = escape(raw_text.strip() or "(media attachment)")
+    reference = ""
+    if channel_id is not None and message_id is not None:
+        reference = f"\nSource ID: <code>{channel_id}:{message_id}</code>"
+    return f"<b>Fatty Signal Relay</b> · <i>Source channel update</i>{reference}\n\n{body}"
 
 
 class TelegramForwarder:
@@ -72,19 +77,23 @@ class TelegramForwarder:
         if key in self._seen:
             return
         self._seen.add(key)
-        caption = format_forward_html(item.raw_text)
+        caption = format_forward_html(
+            item.raw_text, channel_id=item.channel_id, message_id=item.message_id
+        )
         media = getattr(message, "media", None)
         if media is not None:
             await self._client.send_file(
-                self._settings.target_chat_id,
-                media,
-                caption=caption,
-                parse_mode="html",
+                self._settings.target_chat_id, media, caption=caption, parse_mode="html"
             )
         else:
             await self._client.send_message(
                 self._settings.target_chat_id, caption, parse_mode="html", link_preview=False
             )
+        print(
+            f"service=intake event=source-forwarded channel_id={item.channel_id} "
+            f"message_id={item.message_id} revision={item.revision_hash[:12]}",
+            flush=True,
+        )
 
     async def attach(self) -> None:
         async def handle(event: Any) -> None:

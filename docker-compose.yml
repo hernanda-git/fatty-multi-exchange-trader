@@ -195,6 +195,10 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TG_OPERATOR_ID: ${TG_OPERATOR_ID:-}
+      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
+      BITGET_MODE: ${BITGET_MODE:-LIVE}
+      BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}
+      TELEGRAM_HEARTBEAT_SECONDS: ${TELEGRAM_HEARTBEAT_SECONDS:-60}
     depends_on:
       init:
         condition: service_completed_successfully

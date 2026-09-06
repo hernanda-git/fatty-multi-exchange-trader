@@ -6,12 +6,13 @@ bot tokens, payloads, Telegram response bodies, or transport exception text.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -181,6 +182,27 @@ class PostgresNotificationOutbox:
         except Exception:
             connection.rollback()
             raise
+
+
+def enqueue_notification(
+    connection_factory: Callable[[], Any], *, dedup_key: str, payload: Mapping[str, Any]
+) -> None:
+    """Persist one operator event for the independent Telegram sender."""
+    connection = connection_factory()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO notifications_outbox (id, dedup_key, payload)
+            VALUES (%s, %s, %s::jsonb)
+            ON CONFLICT (dedup_key) DO NOTHING
+            """,
+            (uuid4(), dedup_key, json.dumps(dict(payload))),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
 
 
 class NotificationWorker:

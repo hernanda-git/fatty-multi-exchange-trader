@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 import shutil
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -24,6 +25,7 @@ from fatty_trader.domain.models import InstrumentSpec, VenueRiskConfig
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
+from fatty_trader.notifications import enqueue_notification
 from fatty_trader.storage.migrations import apply_migrations
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
 
@@ -312,6 +314,9 @@ async def run_worker(name: str) -> None:
     if name == "monitor-bitget":
         await run_bitget_monitor(os.environ)
         return
+    if name == "operator-bot":
+        await run_operator_bot(os.environ)
+        return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:
         # Keep this boundary observable without writing secrets or business payloads.
@@ -345,6 +350,84 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             flush=True,
         )
         await asyncio.sleep(poll_seconds if processed == 0 else 0)
+
+
+async def run_operator_bot(environ: Mapping[str, str]) -> None:
+    """Publish a durable, DB-backed heartbeat to the configured operator chat."""
+    import psycopg
+
+    interval = float(environ.get("TELEGRAM_HEARTBEAT_SECONDS", "60"))
+    while True:
+        connection = psycopg.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                      (SELECT count(*) FROM telegram_messages),
+                      (SELECT count(*) FROM telegram_messages WHERE intake_state = 'RECEIVED'),
+                      (SELECT count(*) FROM telegram_messages WHERE intake_state = 'ANALYZED'),
+                      (SELECT count(*) FROM telegram_messages WHERE intake_state = 'FAILED'),
+                      (SELECT count(*) FROM canonical_signals),
+                      (SELECT count(*) FROM dispatches),
+                      (SELECT count(*) FROM live_order_intents),
+                      (SELECT message_id FROM telegram_messages ORDER BY received_at DESC LIMIT 1),
+                      (SELECT received_at FROM telegram_messages ORDER BY received_at DESC LIMIT 1),
+                      (SELECT count(*) FROM notifications_outbox
+                       WHERE sent_at IS NULL AND failed_at IS NULL),
+                      (SELECT count(*) FROM notifications_outbox WHERE failed_at IS NOT NULL)
+                    """
+                )
+                row = cursor.fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise RuntimeError("heartbeat query returned no row")
+        (
+            raw_total,
+            received,
+            analyzed,
+            failed,
+            signals,
+            dispatches,
+            intents,
+            latest_message_id,
+            latest_received_at,
+            pending_notifications,
+            failed_notifications,
+        ) = row
+        payload = {
+            "kind": "heartbeat",
+            "host": "fspmi-hostinger",
+            "mode": "PAPER",
+            "venue_mode": environ.get("BITGET_MODE", "PAPER").upper(),
+            "execution_enabled": environ.get("BITGET_EXECUTION_ENABLED", "0"),
+            "source": environ.get("TELEGRAM_SOURCE_CHANNELS", "configured"),
+            "raw_messages": raw_total,
+            "received": received,
+            "analyzed": analyzed,
+            "failed": failed,
+            "canonical_signals": signals,
+            "dispatches": dispatches,
+            "live_order_intents": intents,
+            "latest_source_message_id": latest_message_id or "none",
+            "latest_source_received_at": str(latest_received_at or "none"),
+            "notification_pending": pending_notifications,
+            "notification_failed": failed_notifications,
+            "codex": environ.get("CODEX_ACCOUNT_LABEL", "UNCONFIGURED"),
+        }
+        enqueue_notification(
+            psycopg.connect,
+            dedup_key=f"heartbeat:{int(time.time() // interval)}",
+            payload=payload,
+        )
+        print(
+            "service=operator-bot state=heartbeat-published "
+            f"latest_message_id={latest_message_id or 'none'} raw={raw_total} "
+            f"signals={signals} dispatches={dispatches} intents={intents}",
+            flush=True,
+        )
+        await asyncio.sleep(interval)
 
 
 def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:

@@ -7,7 +7,7 @@ from fatty_trader.analyzer.codex_runner import CodexRunResult
 from fatty_trader.analyzer.integration import AnalysisStatus, analyze_with_fallback
 from fatty_trader.config.telegram import TelegramSettings
 from fatty_trader.intake.persistence import InMemoryRawMessageRepository
-from fatty_trader.intake.telegram import TelegramIntake
+from fatty_trader.intake.telegram import TelegramIntake, format_forward_html
 from fatty_trader.intake.telethon_client import build_telethon_client
 
 
@@ -43,6 +43,15 @@ def test_intake_persists_raw_message_idempotently_by_revision() -> None:
     assert repository.count == 1
     assert first.raw_text.startswith("BTCUSDT LONG")
     assert first.reply_to_message_id == 7
+
+
+def test_forward_includes_traceable_source_id_and_telegram_safe_newlines() -> None:
+    rendered = format_forward_html("#PUMP LONG\nENTRY: 1", channel_id=-1001, message_id=42)
+
+    assert "Source ID:" in rendered
+    assert "-1001:42" in rendered
+    assert "<br>" not in rendered
+    assert "#PUMP LONG\nENTRY: 1" in rendered
 
 
 def test_fallback_accepts_explicit_signal_when_codex_fails() -> None:
