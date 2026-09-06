@@ -64,6 +64,22 @@ async def test_clean_flat_account_is_ok_without_latching_kill_switch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_bitget_pending_order_envelope_is_normalized() -> None:
+    venue = ReadOnlyVenue()
+    venue.get_pending_orders = lambda: _empty_order_envelope()  # type: ignore[method-assign]
+    repository = InMemoryReconciliationRepository()
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.status == "ok"
+    assert repository.kill_switch_active("bitget") is False
+
+
+async def _empty_order_envelope() -> dict[str, object]:
+    return {"entrustedList": None, "endId": None}
+
+
+@pytest.mark.asyncio
 async def test_unknown_intent_is_reconciled_by_get_only_without_latching_kill_switch() -> None:
     intent = LiveIntentRecord(
         exchange="bitget",

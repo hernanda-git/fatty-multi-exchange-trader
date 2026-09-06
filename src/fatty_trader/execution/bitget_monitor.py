@@ -99,6 +99,8 @@ class BitgetMonitor:
         except Exception:
             reasons.append(invalid_reason)
             return []
+        if isinstance(result, dict) and set(result) <= {"entrustedList", "endId"}:
+            result = result.get("entrustedList") or []
         if not isinstance(result, list) or not all(isinstance(row, dict) for row in result):
             reasons.append(invalid_reason)
             return []
