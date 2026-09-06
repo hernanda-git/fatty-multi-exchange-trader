@@ -5,3 +5,4 @@
 - Static `BITGET_CANARY_SYMBOL` removed from service/graph construction; `docker-compose.yml` env var retained only as a no-op placeholder pending a cleaner removal review.
 - Deployed: `82263f6` fast-forwarded to `main`; `fspmi-hostinger` rebuilt `dispatcher-bitget`; all services running.
 - Live remains closed: `BITGET_EXECUTION_ENABLED=0`; kill switch latched; no canary symbol/approval values provided by user yet.
+
