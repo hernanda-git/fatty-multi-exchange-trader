@@ -166,15 +166,18 @@ If either mode is wrong, stop and report the exact blocker. Do not silently muta
 
 ## Safe remote probe pattern
 
-Run from the remote application directory. Use `.env` only for Compose interpolation and `.env.bitget-demo` for DEMO values. Never print env values.
+Run from the remote application directory. Compose service environment entries from `.env` are not overridden reliably by a second `--env-file`, so source `.env.bitget-demo` only for this one-shot process and pass the four values explicitly. Never print env values.
 
 After the updated image is deployed, use the image's probe:
 
 ```bash
 cd /home/valarion/apps/fatty-multi-exchange-trader
 
-docker compose --env-file .env --env-file .env.bitget-demo \
-  run --rm --no-deps \
+set -a
+. ./.env.bitget-demo
+set +a
+docker compose --env-file .env run --rm --no-deps \
+  -e BITGET_MODE -e BITGET_API_KEY -e BITGET_API_SECRET -e BITGET_API_PASSPHRASE \
   --entrypoint /app/.venv/bin/python dispatcher-bitget \
   /app/scripts/bitget_api_probe.py --json
 ```

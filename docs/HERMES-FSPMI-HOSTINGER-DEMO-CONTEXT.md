@@ -124,18 +124,21 @@ Representative local metadata was resolved for `BTCUSDT`, `ETHUSDT`, and `XRPUSD
 
 ### A. Re-read account mode after the user changes it
 
-Run from the remote application directory with the demo env layered after the production env only for Compose interpolation:
+Run from the remote application directory. Compose service environment entries from `.env` are not overridden reliably by a second `--env-file`, so source the demo file only for this one-shot process and pass the four values explicitly. Never use this pattern for the long-running production services.
 
 ```bash
 cd /home/valarion/apps/fatty-multi-exchange-trader
 
-docker compose --env-file .env --env-file .env.bitget-demo \
-  run --rm --no-deps \
+set -a
+. ./.env.bitget-demo
+set +a
+docker compose --env-file .env run --rm --no-deps \
+  -e BITGET_MODE -e BITGET_API_KEY -e BITGET_API_SECRET -e BITGET_API_PASSPHRASE \
   --entrypoint /app/.venv/bin/python dispatcher-bitget \
   /app/scripts/bitget_api_probe.py --json
 ```
 
-The shipped remote probe is stale until the new source is deployed. Before deployment, do not treat it as proof of DEMO mode. For a temporary account read only, use the current image with the official `paptrading: 1` header; do not use this workaround for orders.
+The shipped remote probe was stale before the `4668e08` rollout; after deployment it supports the explicit `DEMO`/`LIVE` contract. Before deployment, do not treat the old image as proof of DEMO mode. For a temporary account read only, use the current image with the official `paptrading: 1` header; do not use this workaround for orders.
 
 Acceptance before mutation:
 
