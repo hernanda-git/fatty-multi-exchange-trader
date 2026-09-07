@@ -27,7 +27,7 @@ class DispatchRepository(Protocol):
     ) -> None: ...
 
     def alert(self, dispatch_id: UUID, reason: str) -> None: ...
-    def canary_entry_count(self, exchange: str) -> int: ...
+    def reserve_canary_entry(self, dispatch_id: UUID, exchange: str, max_orders: int) -> bool: ...
 
 
 class KillSwitch(Protocol):
@@ -44,6 +44,7 @@ class DispatchGate:
 
     execution_enabled: bool = False
     canary_max_orders: int = 0
+    canary_symbol: str | None = None
 
 
 Preflight = (
@@ -81,11 +82,8 @@ class BitgetDispatcher:
         if not self._gate.execution_enabled:
             self._reject(dispatch, "cutover-gated")
             return "cutover-gated"
-        if (
-            self._gate.canary_max_orders > 0
-            and self._repository.canary_entry_count("bitget") >= self._gate.canary_max_orders
-        ):
-            self._reject(dispatch, "canary-order-cap-reached")
+        if self._gate.canary_max_orders > 0 and dispatch.pair_token != self._gate.canary_symbol:
+            self._reject(dispatch, "canary-symbol-mismatch")
             return "rejected"
         try:
             signal = CanonicalSignal(
@@ -116,6 +114,11 @@ class BitgetDispatcher:
         self._transition(dispatch, "SIZED", "VALIDATED")
         if self._execution is None:
             self._reject_from(dispatch, "VALIDATED", "missing-execution-client")
+            return "rejected"
+        if self._gate.canary_max_orders > 0 and not self._repository.reserve_canary_entry(
+            dispatch.id, "bitget", self._gate.canary_max_orders
+        ):
+            self._reject_from(dispatch, "VALIDATED", "canary-order-cap-reached")
             return "rejected"
         self._transition(dispatch, "VALIDATED", "SUBMITTING")
         try:

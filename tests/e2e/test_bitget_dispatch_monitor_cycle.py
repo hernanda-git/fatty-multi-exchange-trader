@@ -31,6 +31,9 @@ class DispatchRepository:
     def alert(self, dispatch_id: object, reason: str) -> None:
         return None
 
+    def reserve_canary_entry(self, dispatch_id: object, exchange: str, max_orders: int) -> bool:
+        return True
+
 
 class MutationCounter:
     calls = 0

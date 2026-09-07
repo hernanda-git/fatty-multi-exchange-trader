@@ -27,6 +27,12 @@ class Repository:
         assert exchange == "bitget"
         return 0
 
+    def reserve_canary_entry(self, dispatch_id: object, exchange: str, max_orders: int) -> bool:
+        assert self.dispatch is not None and dispatch_id == self.dispatch.id
+        assert exchange == "bitget"
+        assert max_orders > 0
+        return True
+
     def transition(
         self,
         dispatch_id: object,
@@ -203,3 +209,50 @@ async def test_provider_rejection_returns_rejected_dispatcher_status() -> None:
 
     assert result == "rejected"
     assert repository.transitions[-1] == ("SUBMITTING", "REJECTED", None)
+
+
+@pytest.mark.asyncio
+async def test_explicit_bounded_canary_rejects_non_canary_symbol_before_preflight_or_post() -> None:
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(
+            execution_enabled=True, canary_max_orders=1, canary_symbol="ETHUSDT"
+        ),
+        execution=execution,
+        preflight=lambda _: (_ for _ in ()).throw(AssertionError("must not preflight")),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert execution.post_count == 0
+    assert repository.transitions == [("QUEUED", "REJECTED", "canary-symbol-mismatch")]
+
+
+@pytest.mark.asyncio
+async def test_atomic_canary_reservation_rejects_at_cap_before_provider_post() -> None:
+    class CappedRepository(Repository):
+        def reserve_canary_entry(
+            self, dispatch_id: object, exchange: str, max_orders: int
+        ) -> bool:
+            super().reserve_canary_entry(dispatch_id, exchange, max_orders)
+            return False
+
+    repository = CappedRepository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(
+            execution_enabled=True, canary_max_orders=1, canary_symbol="BTCUSDT"
+        ),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert execution.post_count == 0
+    assert repository.transitions[-1] == ("VALIDATED", "REJECTED", "canary-order-cap-reached")

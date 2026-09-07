@@ -239,6 +239,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         gate=DispatchGate(
             execution_enabled=config.execution_enabled,
             canary_max_orders=int(environ.get("BITGET_CANARY_MAX_ORDERS", "0")),
+            canary_symbol=environ.get("BITGET_CANARY_SYMBOL", "").strip() or None,
         ),
         execution=runtime.execution if runtime is not None else None,  # type: ignore[arg-type]
         preflight=(

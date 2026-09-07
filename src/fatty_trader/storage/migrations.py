@@ -91,6 +91,18 @@ MIGRATIONS: Final = [
         );
         """,
     ),
+    (
+        7,
+        """
+        CREATE TABLE IF NOT EXISTS canary_entry_reservations (
+            dispatch_id UUID PRIMARY KEY REFERENCES dispatches(id),
+            exchange TEXT NOT NULL CHECK (exchange IN ('binance', 'bitget')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS canary_entry_reservations_exchange
+        ON canary_entry_reservations (exchange);
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

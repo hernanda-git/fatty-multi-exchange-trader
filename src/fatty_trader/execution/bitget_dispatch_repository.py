@@ -56,6 +56,25 @@ RETURNING d.id, d.state, d.claimed_by, d.attempts, s.pair_token, s.direction,
           s.entry_price, s.stop_loss, s.take_profits;
 """
 
+_RESERVE_CANARY_ENTRY_SQL = """
+WITH canary_lock AS (
+    SELECT pg_advisory_xact_lock(hashtext(%s))
+), reservation AS (
+    INSERT INTO canary_entry_reservations (dispatch_id, exchange)
+    SELECT %s, %s FROM canary_lock
+    WHERE (
+        SELECT count(*) FROM live_order_intents
+        WHERE exchange = %s AND role = 'ENTRY'
+    ) + (
+        SELECT count(*) FROM canary_entry_reservations
+        WHERE exchange = %s
+    ) < %s
+    ON CONFLICT (dispatch_id) DO NOTHING
+    RETURNING dispatch_id
+)
+SELECT dispatch_id FROM reservation;
+"""
+
 
 class PostgresBitgetDispatchRepository:
     """Lease-safe dispatch repository; every mutation is transactional and auditable."""
@@ -79,15 +98,24 @@ class PostgresBitgetDispatchRepository:
             raise
         return _dispatch_from_row(row) if row is not None else None
 
-    def canary_entry_count(self, exchange: str) -> int:
+    def reserve_canary_entry(self, dispatch_id: UUID, exchange: str, max_orders: int) -> bool:
+        if not exchange:
+            raise ValueError("exchange is required")
+        if max_orders < 1:
+            raise ValueError("canary cap must be positive")
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            "SELECT count(*) FROM live_order_intents WHERE exchange = %s AND role = 'entry'",
-            (exchange,),
-        )
-        row = cursor.fetchone()
-        return int(row[0] if not isinstance(row, dict) else row["count"])
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                _RESERVE_CANARY_ENTRY_SQL,
+                (exchange, dispatch_id, exchange, exchange, exchange, max_orders),
+            )
+            reserved = cursor.fetchone() is not None
+            connection.commit()
+            return reserved
+        except Exception:
+            connection.rollback()
+            raise
 
     def transition(
         self,

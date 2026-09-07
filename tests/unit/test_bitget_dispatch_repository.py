@@ -82,3 +82,21 @@ def test_claim_recovers_only_expired_lease_and_never_steals_active_lease() -> No
     assert "claimed_by IS NULL OR lease_until <= now()" in sql
     assert "attempts = attempts + 1" in sql
     assert active_connection.commits == recovered_connection.commits == 1
+
+
+def test_canary_reservation_uses_uppercase_entry_roles_and_a_transactional_exchange_lock() -> None:
+    dispatch_id = uuid4()
+    cursor = Cursor([{"dispatch_id": dispatch_id}])
+    connection = Connection(cursor)
+
+    reserved = PostgresBitgetDispatchRepository(lambda: connection).reserve_canary_entry(
+        dispatch_id, "bitget", 1
+    )
+
+    assert reserved is True
+    statement, params = cursor.statements[0]
+    assert "pg_advisory_xact_lock" in statement
+    assert "role = 'ENTRY'" in statement
+    assert "canary_entry_reservations" in statement
+    assert params == ("bitget", dispatch_id, "bitget", "bitget", "bitget", 1)
+    assert connection.commits == 1
