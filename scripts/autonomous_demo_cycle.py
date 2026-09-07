@@ -60,6 +60,11 @@ def run_cycle() -> dict[str, object]:
         timeout=30,
     )
     replay = json.loads(result.stdout)
+    enqueue_notification(
+        _connection_factory,
+        dedup_key=f"autonomous-demo-cycle:{cycle_id}",
+        payload={"kind": "autonomous-demo-cycle", "cycle_id": cycle_id, **replay},
+    )
     state.update(
         {
             "cycle_count": int(state.get("cycle_count", 0)) + 1,
@@ -70,11 +75,6 @@ def run_cycle() -> dict[str, object]:
         }
     )
     _write_state(state)
-    enqueue_notification(
-        _connection_factory,
-        dedup_key=f"autonomous-demo-cycle:{cycle_id}",
-        payload={"kind": "autonomous-demo-cycle", "cycle_id": cycle_id, **replay},
-    )
     return state
 
 
