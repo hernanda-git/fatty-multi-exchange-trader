@@ -12,8 +12,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fatty_trader.notifications import enqueue_notification
-
 ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = ROOT / "runtime" / "autonomous-demo-cycle-state.json"
 
@@ -41,12 +39,6 @@ def _assert_demo_only() -> None:
         raise RuntimeError("autonomous worker requires BITGET_EXECUTION_ENABLED=0")
 
 
-def _connection_factory():
-    import psycopg
-
-    return psycopg.connect()
-
-
 def run_cycle() -> dict[str, object]:
     _assert_demo_only()
     state = _state()
@@ -62,11 +54,6 @@ def run_cycle() -> dict[str, object]:
         timeout=30,
     )
     replay = json.loads(result.stdout)
-    enqueue_notification(
-        _connection_factory,
-        dedup_key=f"autonomous-demo-cycle:{cycle_id}",
-        payload={"kind": "autonomous-demo-cycle", "cycle_id": cycle_id, **replay},
-    )
     state.update(
         {
             "cycle_count": int(state.get("cycle_count", 0)) + 1,

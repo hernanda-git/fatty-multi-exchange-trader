@@ -1,9 +1,9 @@
 [Unit]
-Description=Run Fatty Telegram health report every two hours
+Description=Run Fatty Telegram health report every six hours
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=2h
+OnUnitActiveSec=6h
 Persistent=true
 Unit=fatty-health-report.service
 

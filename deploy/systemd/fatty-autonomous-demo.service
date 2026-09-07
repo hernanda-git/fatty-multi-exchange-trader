@@ -1,5 +1,5 @@
 [Unit]
-Description=Fatty supervised DEMO replay maintenance worker
+Description=Fatty supervised DEMO replay maintenance worker (Telegram-silent)
 Wants=network-online.target
 After=network-online.target docker.service
 
