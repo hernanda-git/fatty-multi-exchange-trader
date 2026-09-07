@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from inspect import isawaitable
 from typing import Protocol
@@ -12,7 +12,7 @@ from uuid import UUID
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal, InstrumentSpec, VenueRiskConfig
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
-from fatty_trader.risk.sizing import SizingError, minimum_safe_plan
+from fatty_trader.risk.sizing import minimum_safe_plan
 
 
 class DispatchRepository(Protocol):
@@ -74,6 +74,7 @@ class BitgetDispatcher:
         dispatch = self._repository.claim(worker_id, lease_seconds)
         if dispatch is None:
             return "idle"
+        dispatch = replace(dispatch, pair_token=_bitget_symbol(dispatch.pair_token))
         if self._kill_switch is not None and self._kill_switch.is_active("bitget"):
             self._reject(dispatch, "kill-switch-latched")
             return "kill-switch-latched"
@@ -108,7 +109,7 @@ class BitgetDispatcher:
         try:
             spec, risk = await _resolve_preflight(self._preflight, dispatch.pair_token)
             plan = minimum_safe_plan(spec=spec, config=risk, reference_price=dispatch.entry_price)
-        except (SizingError, ValueError) as exc:
+        except Exception as exc:
             self._reject_from(dispatch, "PREFLIGHT", _reason(exc))
             return "rejected"
         self._transition(dispatch, "PREFLIGHT", "SIZED")
@@ -163,7 +164,14 @@ async def _resolve_preflight(
     return result
 
 
-def _reason(exc: ValueError) -> str:
+def _bitget_symbol(pair_token: str) -> str:
+    symbol = pair_token.upper().strip()
+    if not symbol:
+        raise ValueError("dispatch symbol is required")
+    return symbol if symbol.endswith("USDT") else f"{symbol}USDT"
+
+
+def _reason(exc: Exception) -> str:
     message = str(exc)
     if "take_profits" in message:
         return "missing-take-profits"

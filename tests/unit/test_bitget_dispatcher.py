@@ -93,6 +93,13 @@ def _risk() -> VenueRiskConfig:
     )
 
 
+def test_pair_token_is_normalized_to_bitget_usdt_symbol() -> None:
+    from fatty_trader.execution.bitget_dispatcher import _bitget_symbol
+
+    assert _bitget_symbol("pump") == "PUMPUSDT"
+    assert _bitget_symbol("SUSHIUSDT") == "SUSHIUSDT"
+
+
 @pytest.mark.asyncio
 async def test_closed_gate_blocks_invalid_dispatch_without_provider_post() -> None:
     repository = Repository(_dispatch(take_profits=()))
