@@ -66,11 +66,15 @@ class PaperPipeline:
 
 def observed_messages() -> tuple[RawTelegramMessage, ...]:
     texts = (
-        (16084, "$ETH 6% up"),
-        (16083, "#PYTH $PYTH LONG TRADE ENTRY: 0.0568 TARGET: 0.0708 STOPLOSS: 0.05462"),
-        (16082, "$GIGGLE tp1 booked"),
-        (16081, "#GIGGLE $GIGGLE LONG TRADE ENTRY: 36.85 TARGET: 43 STOPLOSS: 35.45"),
-        (16080, "$BTC todays move https://x.com/learnernoearner/status/2095142987630047675?s=46"),
+        (16098, "$SUSHI more than 1R up, tp1 booked"),
+        (16097, "#SUSHI $SUSHI LONG TRADE ENTRY: 0.2512 TARGET: 0.2835 STOPLOSS: 0.2428"),
+        (16096, "$AIXBT showing no movement so will be closing it here for small profit"),
+        (16093, "$BTC possible weekend move Retest around Fridays lows then back to 81k"),
+        (16091, "book profits on $APE & $PUMP sl hit"),
+        (
+            16090,
+            "#PUMP $PUMP LONG TRADE ENTRY: 0.00427 TARGETS: 0.004438 - 0.004915 STOPLOSS: 0.00416",
+        ),
     )
     now = datetime.now(UTC)
     return tuple(

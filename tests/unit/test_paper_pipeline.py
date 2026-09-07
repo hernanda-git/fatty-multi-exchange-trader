@@ -4,7 +4,7 @@ from fatty_trader.analyzer.codex_runner import CodexRunResult
 from fatty_trader.analyzer.paper_pipeline import PaperPipeline, observed_messages
 
 
-def test_observed_replay_has_two_actionable_and_three_non_actionable() -> None:
+def test_observed_replay_has_two_actionable_and_four_non_actionable() -> None:
     pipeline = PaperPipeline(
         runner=lambda _: CodexRunResult(False, True, False, 1, "offline", "", "")
     )
@@ -12,7 +12,7 @@ def test_observed_replay_has_two_actionable_and_three_non_actionable() -> None:
     results = [pipeline.process(message) for message in messages]
     assert sum(bool(result) for result in results) == 2
     assert pipeline.canonical_signal_count == 2
-    assert [pipeline.state(message) for message in messages].count("ANALYZED") == 5
+    assert [pipeline.state(message) for message in messages].count("ANALYZED") == 6
     assert sum(len(result) for result in results) == 4
 
 
