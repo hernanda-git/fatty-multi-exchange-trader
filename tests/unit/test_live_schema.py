@@ -26,6 +26,12 @@ class SqliteCursorAdapter:
 
     def execute(self, statement: str) -> object:
         script = statement.replace("DEFAULT now()", "DEFAULT CURRENT_TIMESTAMP")
+        # PostgreSQL can replace named CHECK constraints in-place. SQLite has
+        # no ALTER CONSTRAINT syntax; fresh v1 DDL already carries the widened
+        # constraints, so this test-only adapter can safely model those DDLs
+        # as no-ops while exercising migration bookkeeping and row retention.
+        if script.lstrip().startswith("ALTER TABLE live_order_intents") and "CONSTRAINT" in script:
+            return None
         parts = [part.strip() for part in script.split(";") if part.strip()]
         if len(parts) > 1:
             self._conn.executescript(script)
@@ -100,6 +106,8 @@ def test_live_order_intents_columns_and_constraints() -> None:
     for state in (
         "requested",
         "acknowledged",
+        "submitted",
+        "partially_filled",
         "filled",
         "cancelled",
         "rejected",
@@ -172,6 +180,8 @@ def test_order_intent_state_validator() -> None:
     assert {
         "requested",
         "acknowledged",
+        "submitted",
+        "partially_filled",
         "filled",
         "cancelled",
         "rejected",
@@ -186,6 +196,32 @@ def test_order_intent_state_validator() -> None:
         except ValueError:
             continue
         raise AssertionError(f"expected ValueError for {bad!r}")
+
+
+def test_live_schema_accepts_every_state_and_role_written_by_runtime() -> None:
+    """Durable storage must accept the exact values runtime persists."""
+    from fatty_trader.storage.schema import (
+        ORDER_INTENT_ROLES,
+        ORDER_INTENT_STATES,
+        apply_live_schema,
+    )
+
+    assert {"partially_filled", "submitted"} <= ORDER_INTENT_STATES
+    assert "EMERGENCY_CLOSE" in ORDER_INTENT_ROLES
+
+    conn, cur = make_db()
+    try:
+        apply_live_schema(cur)
+        for index, state in enumerate(ORDER_INTENT_STATES):
+            for role in ORDER_INTENT_ROLES:
+                conn.execute(
+                    "INSERT INTO live_order_intents (id, exchange, client_order_id, symbol, "
+                    "side, role, state, requested_qty) VALUES (?, 'bitget', ?, 'BTCUSDT', "
+                    "'BUY', ?, ?, 1)",
+                    (f"{index}-{role}", f"intent-{index}-{role}", role, state),
+                )
+    finally:
+        conn.close()
 
 
 def test_unique_client_order_id_per_exchange_enforced() -> None:

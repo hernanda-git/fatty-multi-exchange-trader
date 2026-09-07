@@ -123,6 +123,8 @@ ORDER_INTENT_STATES: Final = frozenset(
     {
         "requested",
         "acknowledged",
+        "submitted",
+        "partially_filled",
         "filled",
         "cancelled",
         "rejected",
@@ -131,7 +133,7 @@ ORDER_INTENT_STATES: Final = frozenset(
     }
 )
 
-ORDER_INTENT_ROLES: Final = frozenset({"ENTRY", "SL", "TP", "CLOSE"})
+ORDER_INTENT_ROLES: Final = frozenset({"ENTRY", "SL", "TP", "CLOSE", "EMERGENCY_CLOSE"})
 
 
 def validate_order_intent_state(state: str) -> str:
@@ -167,9 +169,11 @@ CREATE TABLE IF NOT EXISTS live_order_intents (
     provider_order_id TEXT,
     symbol TEXT NOT NULL,
     side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
-    role TEXT NOT NULL CHECK (role IN ('ENTRY', 'SL', 'TP', 'CLOSE')),
-    state TEXT NOT NULL CHECK (state IN (
-        'requested', 'acknowledged', 'filled', 'cancelled',
+    role TEXT NOT NULL CONSTRAINT live_order_intents_role_check CHECK (
+        role IN ('ENTRY', 'SL', 'TP', 'CLOSE', 'EMERGENCY_CLOSE')
+    ),
+    state TEXT NOT NULL CONSTRAINT live_order_intents_state_check CHECK (state IN (
+        'requested', 'acknowledged', 'submitted', 'partially_filled', 'filled', 'cancelled',
         'rejected', 'unknown', 'reconciled'
     )),
     requested_qty NUMERIC NOT NULL CHECK (requested_qty > 0),

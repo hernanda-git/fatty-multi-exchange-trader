@@ -71,6 +71,26 @@ MIGRATIONS: Final = [
         WHERE sent_at IS NULL AND failed_at IS NULL;
         """,
     ),
+    (
+        6,
+        """
+        ALTER TABLE live_order_intents
+        DROP CONSTRAINT IF EXISTS live_order_intents_role_check;
+        ALTER TABLE live_order_intents
+        ADD CONSTRAINT live_order_intents_role_check CHECK (
+            role IN ('ENTRY', 'SL', 'TP', 'CLOSE', 'EMERGENCY_CLOSE')
+        );
+        ALTER TABLE live_order_intents
+        DROP CONSTRAINT IF EXISTS live_order_intents_state_check;
+        ALTER TABLE live_order_intents
+        ADD CONSTRAINT live_order_intents_state_check CHECK (
+            state IN (
+                'requested', 'acknowledged', 'submitted', 'partially_filled', 'filled',
+                'cancelled', 'rejected', 'unknown', 'reconciled'
+            )
+        );
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
