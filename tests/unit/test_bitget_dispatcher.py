@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from uuid import uuid4
 
@@ -227,6 +227,33 @@ async def test_explicit_bounded_canary_rejects_non_canary_symbol_before_prefligh
     assert result == "rejected"
     assert execution.post_count == 0
     assert repository.transitions == [("QUEUED", "REJECTED", "canary-symbol-mismatch")]
+
+
+@pytest.mark.asyncio
+async def test_bounded_demo_cap_without_symbol_allows_dynamic_contract() -> None:
+    repository = Repository(replace(_dispatch(), pair_token="NOT"))
+
+    @dataclass
+    class DynamicExecution:
+        post_count: int = 0
+
+        async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str:
+            self.post_count += 1
+            assert dispatch.pair_token == "NOTUSDT"
+            return "FILLED"
+
+    execution = DynamicExecution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True, canary_max_orders=100, canary_symbol=None),
+        execution=execution,
+        preflight=lambda _: (_spec().model_copy(update={"symbol": "NOTUSDT"}), _risk()),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "filled"
+    assert execution.post_count == 1
 
 
 @pytest.mark.asyncio

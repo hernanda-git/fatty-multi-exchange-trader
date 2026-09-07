@@ -105,6 +105,19 @@ async def test_unknown_intent_is_reconciled_by_get_only_without_latching_kill_sw
 
 
 @pytest.mark.asyncio
+async def test_demo_monitor_reports_but_never_latches_kill_switch() -> None:
+    venue = ReadOnlyVenue(orders=[{"clientOid": "foreign-demo-order"}])
+    repository = InMemoryReconciliationRepository()
+
+    report = await BitgetMonitor(venue, repository, enforce_kill_switch=False).run_once()
+
+    assert report.status == "degraded"
+    assert report.reasons == ("unexpected-order:foreign-demo-order",)
+    assert repository.kill_switch_active("bitget") is False
+    assert repository.alerts == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("positions", "orders", "plans", "clock_skew_ms", "reason"),
     [

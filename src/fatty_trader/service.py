@@ -116,10 +116,11 @@ def _validate_bitget_cutover(environ: Mapping[str, str]) -> None:
     if canary_max_orders < 1:
         raise ValueError("positive Bitget canary cap is required when execution is enabled")
     canary_symbol = environ.get("BITGET_CANARY_SYMBOL", "").strip()
-    if not canary_symbol or not re.fullmatch(r"^[A-Z0-9]{2,20}$", canary_symbol):
-        raise ValueError(
-            "valid uppercase Bitget canary symbol is required when execution is enabled"
-        )
+    if canary_symbol and not re.fullmatch(r"^[A-Z0-9]{2,20}$", canary_symbol):
+        raise ValueError("Bitget canary symbol must be uppercase when provided")
+    mode = environ.get("TRADER_MODE", "DEMO").upper()
+    if mode == "LIVE" and not canary_symbol:
+        raise ValueError("valid uppercase Bitget canary symbol is required for LIVE execution")
     approval_reference = environ.get("BITGET_APPROVAL_REFERENCE", "").strip()
     if not approval_reference:
         raise ValueError("Bitget approval reference is required when execution is enabled")
@@ -247,7 +248,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             if runtime is not None
             else lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed"))
         ),
-        kill_switch=PostgresReconciliationRepository(psycopg.connect),
+        kill_switch=(
+            PostgresReconciliationRepository(psycopg.connect)
+            if bitget_kill_switch_enforced(environ)
+            else None
+        ),
     )
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
@@ -284,7 +289,12 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
     max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
     if max_clock_skew_ms < 0:
         raise ValueError("BITGET_MAX_CLOCK_SKEW_MS must not be negative")
-    monitor = BitgetMonitor(client, repository, max_clock_skew_ms=max_clock_skew_ms)
+    monitor = BitgetMonitor(
+        client,
+        repository,
+        max_clock_skew_ms=max_clock_skew_ms,
+        enforce_kill_switch=bitget_kill_switch_enforced(environ),
+    )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
     try:
         while True:
@@ -339,6 +349,25 @@ async def run_worker(name: str) -> None:
         await asyncio.sleep(interval)
 
 
+def bitget_kill_switch_enforced(environ: Mapping[str, str]) -> bool:
+    """DEMO reports safety findings without blocking; LIVE remains fail-closed."""
+    return (
+        environ.get("TRADER_MODE", "DEMO").upper() == "LIVE"
+        and environ.get("BITGET_MODE", "DEMO").upper() == "LIVE"
+    )
+
+
+def enabled_dispatch_exchanges(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Return the configured engines that can actually consume analyzer dispatches."""
+    raw = environ.get("DISPATCH_EXCHANGES", "binance,bitget")
+    exchanges = tuple(
+        dict.fromkeys(part.strip().lower() for part in raw.split(",") if part.strip())
+    )
+    if not exchanges or any(exchange not in {"binance", "bitget"} for exchange in exchanges):
+        raise ValueError("DISPATCH_EXCHANGES must contain supported engines")
+    return exchanges
+
+
 async def run_analyzer(environ: Mapping[str, str]) -> None:
     """Continuously analyze durable RECEIVED rows and enqueue DEMO intents."""
     import psycopg
@@ -353,6 +382,7 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             psycopg.connect,
             runner=runner,
             limit=batch_size,
+            exchanges=enabled_dispatch_exchanges(environ),
         )
         mode = environ.get("TRADER_MODE", "DEMO").upper()
         print(

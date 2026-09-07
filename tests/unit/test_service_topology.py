@@ -2,11 +2,32 @@ from pathlib import Path
 
 import pytest
 
-from fatty_trader.service import SUPPORTED_SERVICES, service_config
+from fatty_trader.service import (
+    SUPPORTED_SERVICES,
+    bitget_kill_switch_enforced,
+    enabled_dispatch_exchanges,
+    service_config,
+)
 from fatty_trader.web.health import build_health_report
 
 REPO_ROOT = Path(__file__).parents[2]
 COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+
+
+def test_demo_never_enforces_bitget_kill_switch() -> None:
+    assert bitget_kill_switch_enforced({"TRADER_MODE": "DEMO", "BITGET_MODE": "DEMO"}) is False
+    assert bitget_kill_switch_enforced({"TRADER_MODE": "LIVE", "BITGET_MODE": "LIVE"}) is True
+
+
+def test_enabled_dispatch_exchanges_matches_deployed_engines() -> None:
+    assert "DISPATCH_EXCHANGES: bitget" in COMPOSE
+    assert enabled_dispatch_exchanges({"DISPATCH_EXCHANGES": "bitget"}) == ("bitget",)
+    assert enabled_dispatch_exchanges({"DISPATCH_EXCHANGES": "bitget,binance"}) == (
+        "bitget",
+        "binance",
+    )
+    with pytest.raises(ValueError, match="supported"):
+        enabled_dispatch_exchanges({"DISPATCH_EXCHANGES": "bitget,unknown"})
 
 
 def test_service_config_defaults_to_demo_and_exposes_only_role_credentials() -> None:

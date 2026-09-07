@@ -14,6 +14,20 @@ def run_result(payload: dict) -> CodexRunResult:
     return CodexRunResult(True, False, False, 0, None, json.dumps(payload), "")
 
 
+def test_parser_accepts_exact_not_signal_without_symbol_corruption() -> None:
+    signal = parse_explicit_signal(
+        "#NOT $NOT LONG TRADE\n\nENTRY: 0.0004715\n\nTARGET: 0.00058\n\nSTOPLOSS: 0.000458",
+        message_id=16100,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "NOT"
+    assert signal.direction is Direction.LONG
+    assert signal.entry_price == Decimal("0.0004715")
+    assert signal.stop_loss == Decimal("0.000458")
+    assert signal.take_profits == (Decimal("0.00058"),)
+
+
 def test_parser_accepts_plural_targets_and_preserves_all_targets() -> None:
     signal = parse_explicit_signal(
         "#PUMP $PUMP LONG TRADE ENTRY: 0.00427 TARGETS: 0.004438 - 0.004915 STOPLOSS: 0.00416",

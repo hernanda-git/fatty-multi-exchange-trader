@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 from fatty_trader.analyzer.codex_runner import CodexRunResult
@@ -10,7 +11,7 @@ from fatty_trader.analyzer.postgres_worker import process_received_batch
 class Cursor:
     def __init__(self) -> None:
         self.executed: list[tuple[str, object]] = []
-        self.rows = [
+        self.rows: list[tuple[object, ...]] = [
             (
                 uuid4(),
                 7,
@@ -70,3 +71,21 @@ def test_process_received_batch_persists_analysis_and_two_paper_dispatches() -> 
     assert "INSERT INTO canonical_signals" in statements
     assert "UPDATE telegram_messages" in statements
     assert connection.commits == 1
+
+
+def test_process_received_batch_dispatches_only_to_enabled_engine() -> None:
+    cursor = Cursor()
+    connection = Connection(cursor)
+
+    result = process_received_batch(
+        lambda: connection,
+        runner=lambda _: CodexRunResult(False, True, False, 1, "unavailable", "", ""),
+        exchanges=("bitget",),
+    )
+
+    assert result == 1
+    dispatch_params = [
+        params for statement, params in cursor.executed if "INSERT INTO dispatches" in statement
+    ]
+    assert len(dispatch_params) == 1
+    assert cast(tuple[Any, ...], dispatch_params[0])[-1] == "bitget"

@@ -92,6 +92,7 @@ services:
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: analyzer
+      DISPATCH_EXCHANGES: bitget
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader

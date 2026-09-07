@@ -45,10 +45,13 @@ def process_received_batch(
     *,
     runner: Callable[[str], CodexRunResult] | CodexRunner | None = None,
     limit: int = 10,
+    exchanges: tuple[str, ...] = ("binance", "bitget"),
 ) -> int:
-    """Process one bounded transaction. Dispatch rows are DEMO intents only."""
+    """Process one bounded transaction and fan out only to enabled engines."""
     if limit < 1:
         raise ValueError("limit must be positive")
+    if not exchanges or any(exchange not in {"binance", "bitget"} for exchange in exchanges):
+        raise ValueError("exchanges must contain enabled supported engines")
     analysis_runner = runner or CodexRunner()
     processed = 0
     with closing(connection_factory()) as connection:
@@ -87,7 +90,7 @@ def process_received_batch(
                                 json.dumps([str(target) for target in signal.take_profits]),
                             ),
                         )
-                        for exchange in ("binance", "bitget"):
+                        for exchange in exchanges:
                             cursor.execute(
                                 _DISPATCH_INSERT,
                                 (uuid4(), signal_id, revision, exchange),

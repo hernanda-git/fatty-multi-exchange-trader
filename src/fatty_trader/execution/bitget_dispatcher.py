@@ -82,7 +82,11 @@ class BitgetDispatcher:
         if not self._gate.execution_enabled:
             self._reject(dispatch, "cutover-gated")
             return "cutover-gated"
-        if self._gate.canary_max_orders > 0 and dispatch.pair_token != self._gate.canary_symbol:
+        if (
+            self._gate.canary_max_orders > 0
+            and self._gate.canary_symbol is not None
+            and dispatch.pair_token != self._gate.canary_symbol
+        ):
             self._reject(dispatch, "canary-symbol-mismatch")
             return "rejected"
         try:

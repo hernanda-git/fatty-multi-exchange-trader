@@ -39,6 +39,7 @@ class BitgetMonitor:
         *,
         scope: str = "bitget",
         max_clock_skew_ms: int = 10_000,
+        enforce_kill_switch: bool = True,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")
@@ -46,6 +47,7 @@ class BitgetMonitor:
         self._repository = repository
         self._scope = scope
         self._max_clock_skew_ms = max_clock_skew_ms
+        self._enforce_kill_switch = enforce_kill_switch
 
     async def run_once(self) -> MonitorReport:
         reasons: list[str] = []
@@ -67,10 +69,12 @@ class BitgetMonitor:
                 reasons.append("clock-skew-exceeded")
         unique_reasons = tuple(dict.fromkeys(reasons))
         if unique_reasons:
+            if not self._enforce_kill_switch:
+                return MonitorReport("degraded", unique_reasons)
             for reason in unique_reasons:
                 self._repository.latch_kill_switch(self._scope, reason)
             return MonitorReport("kill-switch-latched", unique_reasons)
-        if self._repository.kill_switch_active(self._scope):
+        if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
             return MonitorReport("kill-switch-latched")
         return MonitorReport("ok")
 
