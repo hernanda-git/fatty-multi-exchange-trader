@@ -23,6 +23,10 @@ class Repository:
         assert lease_seconds == 30
         return self.dispatch
 
+    def canary_entry_count(self, exchange: str) -> int:
+        assert exchange == "bitget"
+        return 0
+
     def transition(
         self,
         dispatch_id: object,

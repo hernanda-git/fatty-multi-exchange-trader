@@ -43,7 +43,6 @@ class DispatchGate:
     """Per-venue gate. Defaults closed and is separate from global DEMO mode."""
 
     execution_enabled: bool = False
-    canary_symbol: str | None = None
     canary_max_orders: int = 0
 
 
@@ -81,9 +80,6 @@ class BitgetDispatcher:
         if not self._gate.execution_enabled:
             self._reject(dispatch, "cutover-gated")
             return "cutover-gated"
-        if self._gate.canary_symbol and dispatch.pair_token != self._gate.canary_symbol:
-            self._reject(dispatch, "canary-symbol-mismatch")
-            return "rejected"
         if (
             self._gate.canary_max_orders > 0
             and self._repository.canary_entry_count("bitget") >= self._gate.canary_max_orders
