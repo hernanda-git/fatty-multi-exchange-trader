@@ -268,7 +268,7 @@ def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
         return escape(_safe_value(payload.get(key, default)))
 
     report = (
-        "<b>Fatty Signal Relay</b>  <i>Paper Ops</i>\n\n"
+        "<b>Fatty Signal Relay</b>  <i>DEMO Ops</i>\n\n"
         "<b>Status</b>\n"
         "<pre>Overall  🟢 ONLINE\n"
         f"Mode     {value('mode')}\n"

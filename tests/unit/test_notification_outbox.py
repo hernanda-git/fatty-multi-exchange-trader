@@ -80,6 +80,8 @@ def test_heartbeat_uses_rich_report_layout() -> None:
     )
 
     assert "<b>Fatty Signal Relay</b>" in text
+    assert "<i>DEMO Ops</i>" in text
+    assert "Paper Ops" not in text
     assert "<b>Database</b>" in text
     assert "Signals           1" in text
     assert "<br>" not in text
