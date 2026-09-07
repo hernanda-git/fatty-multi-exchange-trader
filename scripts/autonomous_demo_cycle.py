@@ -50,7 +50,9 @@ def _connection_factory():
 def run_cycle() -> dict[str, object]:
     _assert_demo_only()
     state = _state()
-    cycle_id = str(uuid4())
+    cycle_id = str(state.get("pending_cycle_id") or uuid4())
+    state["pending_cycle_id"] = cycle_id
+    _write_state(state)
     result = subprocess.run(
         [sys.executable, str(ROOT / "scripts" / "replay_paper_pipeline.py")],
         cwd=ROOT,
@@ -74,6 +76,7 @@ def run_cycle() -> dict[str, object]:
             "replay": replay,
         }
     )
+    state.pop("pending_cycle_id", None)
     _write_state(state)
     return state
 
