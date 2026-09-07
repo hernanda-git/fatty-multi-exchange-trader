@@ -33,6 +33,7 @@ class OutboxNotification:
     id: UUID
     payload: Mapping[str, Any]
     attempts: int
+    claim_token: str = ""
 
 
 class NotificationOutbox(Protocol):
@@ -101,6 +102,7 @@ class PostgresNotificationOutbox:
             raise ValueError("worker_id is required")
         if lease_seconds < 1:
             raise ValueError("lease_seconds must be positive")
+        claim_token = f"{worker_id}:{uuid4()}"
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
@@ -125,7 +127,7 @@ class PostgresNotificationOutbox:
                 WHERE outbox.id = next.id
                 RETURNING outbox.id, outbox.payload, outbox.attempts
                 """,
-                (worker_id, lease_seconds),
+                (claim_token, lease_seconds),
             )
             row = cursor.fetchone()
             connection.commit()
@@ -140,7 +142,9 @@ class PostgresNotificationOutbox:
         payload = values["payload"]
         if not isinstance(payload, Mapping):
             raise ValueError("notification payload must be an object")
-        return OutboxNotification(UUID(str(values["id"])), payload, int(values["attempts"]))
+        return OutboxNotification(
+            UUID(str(values["id"])), payload, int(values["attempts"]), claim_token
+        )
 
     def mark_sent(self, notification_id: UUID, worker_id: str) -> None:
         self._update_claimed(
@@ -229,19 +233,20 @@ class NotificationWorker:
         notification = self._outbox.claim(worker_id, lease_seconds)
         if notification is None:
             return "idle"
+        claim_token = notification.claim_token or worker_id
         try:
             await self._sender.send(format_notification_html(notification.payload))
         except NotificationDeliveryError as exc:
             if not exc.retryable or notification.attempts >= self._max_attempts:
-                self._outbox.mark_failed(notification.id, worker_id)
+                self._outbox.mark_failed(notification.id, claim_token)
                 return "failed"
             self._outbox.mark_retry(
                 notification.id,
-                worker_id,
+                claim_token,
                 self._retry_seconds * min(notification.attempts, self._max_attempts),
             )
             return "retry"
-        self._outbox.mark_sent(notification.id, worker_id)
+        self._outbox.mark_sent(notification.id, claim_token)
         return "sent"
 
 
@@ -249,6 +254,8 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
     if payload.get("kind") == "heartbeat":
         return _format_heartbeat_html(payload)
+    if payload.get("kind") == "source-forward":
+        return format_source_forward_html(payload)
     title = _safe_text(payload.get("kind", "Operator alert"), limit=100)
     lines = [f"<b>Fatty Trader: {escape(title)}</b>"]
     for key in sorted(payload):
@@ -259,6 +266,23 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
     # Telegram's HTML subset does not support <br>; literal newlines preserve
     # card readability without causing a permanent Bot API parse failure.
     return "\n".join(lines)[:4000]
+
+
+def format_source_forward_html(payload: Mapping[str, Any]) -> str:
+    """Render a durable source relay without attempting provider-side media mutation."""
+    channel_id = payload.get("source_channel_id")
+    message_id = payload.get("source_message_id")
+    text = _safe_text(payload.get("raw_text", ""), limit=3500)
+    suffix = (
+        "\n\n<i>Source included media; retained as metadata only.</i>"
+        if payload.get("has_media")
+        else ""
+    )
+    return (
+        f"<b>Fatty Signal Relay</b> · <i>Source channel update</i>\n"
+        f"Source ID: <code>{escape(str(channel_id))}:{escape(str(message_id))}</code>\n\n"
+        f"{escape(text)}{suffix}"
+    )[:4000]
 
 
 def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:

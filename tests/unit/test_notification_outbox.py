@@ -190,3 +190,45 @@ def test_postgres_outbox_claim_is_lease_safe_and_updates_are_worker_bound() -> N
     assert "attempts = attempts + 1" in claim_sql
     assert "claimed_by = %s" in retry_sql
     assert connection.commits == 2
+
+
+def test_postgres_outbox_uses_unique_claim_tokens_for_overlapping_worker_instances() -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.statements: list[tuple[str, tuple[Any, ...]]] = []
+            self.rows: list[dict[str, object] | None] = [
+                {"id": str(uuid4()), "payload": {"reason": "first"}, "attempts": 1},
+                {"id": str(uuid4()), "payload": {"reason": "second"}, "attempts": 1},
+            ]
+
+        def execute(self, statement: str, params: tuple[Any, ...] = ()) -> None:
+            self.statements.append((statement, params))
+
+        def fetchone(self) -> dict[str, object] | None:
+            return self.rows.pop(0) if self.rows else None
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cursor_value = Cursor()
+
+        def cursor(self) -> Cursor:
+            return self.cursor_value
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    connection = Connection()
+    outbox = PostgresNotificationOutbox(lambda: connection)
+    first = outbox.claim("notification-sender", 30)
+    second = outbox.claim("notification-sender", 30)
+
+    assert first is not None and second is not None
+    assert first.claim_token != second.claim_token
+    outbox.mark_sent(first.id, first.claim_token)
+    claim_owners = [params[0] for _, params in connection.cursor_value.statements[:2]]
+    sent_params = connection.cursor_value.statements[2][1]
+    assert claim_owners == [first.claim_token, second.claim_token]
+    assert sent_params[-1] == first.claim_token

@@ -29,11 +29,15 @@ class TelegramIntake:
         client.add_event_handler(handle, events.NewMessage(chats=list(channels)))
 
     def ingest(self, *, channel_id: int, message: Any) -> RawTelegramMessage:
+        item = self._build_message(channel_id=channel_id, message=message)
+        return self._repository.save_if_new(item)
+
+    def _build_message(self, *, channel_id: int, message: Any) -> RawTelegramMessage:
         raw_text = str(getattr(message, "message", "") or "")
         reply = getattr(message, "reply_to", None)
         reply_id = getattr(reply, "reply_to_msg_id", None)
         has_media = getattr(message, "media", None) is not None
-        item = RawTelegramMessage(
+        return RawTelegramMessage(
             channel_id=channel_id,
             message_id=int(message.id),
             revision_hash=revision_hash(
@@ -44,7 +48,6 @@ class TelegramIntake:
             reply_to_message_id=reply_id,
             has_media=has_media,
         )
-        return self._repository.save_if_new(item)
 
 
 def format_forward_html(
@@ -59,7 +62,7 @@ def format_forward_html(
 
 
 class TelegramForwarder:
-    """Persist and relay source updates, with process-local idempotency."""
+    """Persist source updates and defer relay delivery to the durable bot outbox."""
 
     def __init__(
         self, client: Any, settings: TelegramSettings, repository: RawMessageRepository
@@ -69,31 +72,16 @@ class TelegramForwarder:
         self._client = client
         self._settings = settings
         self._intake = TelegramIntake(repository)
-        self._seen: set[tuple[int, int, str]] = set()
 
     async def handle_message(self, channel_id: int, message: Any) -> None:
-        item = self._intake.ingest(channel_id=channel_id, message=message)
-        key = (item.channel_id, item.message_id, item.revision_hash)
-        if key in self._seen:
-            return
-        self._seen.add(key)
-        caption = format_forward_html(
-            item.raw_text, channel_id=item.channel_id, message_id=item.message_id
-        )
-        media = getattr(message, "media", None)
-        if media is not None:
-            await self._client.send_file(
-                self._settings.target_chat_id, media, caption=caption, parse_mode="html"
+        item = self._intake._build_message(channel_id=channel_id, message=message)
+        enqueued = self._intake._repository.save_and_enqueue_forward(item)
+        if enqueued:
+            print(
+                f"service=intake event=source-forward-enqueued channel_id={item.channel_id} "
+                f"message_id={item.message_id} revision={item.revision_hash[:12]}",
+                flush=True,
             )
-        else:
-            await self._client.send_message(
-                self._settings.target_chat_id, caption, parse_mode="html", link_preview=False
-            )
-        print(
-            f"service=intake event=source-forwarded channel_id={item.channel_id} "
-            f"message_id={item.message_id} revision={item.revision_hash[:12]}",
-            flush=True,
-        )
 
     async def attach(self) -> None:
         async def handle(event: Any) -> None:

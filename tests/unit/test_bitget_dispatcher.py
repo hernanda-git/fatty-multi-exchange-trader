@@ -217,9 +217,7 @@ async def test_explicit_bounded_canary_rejects_non_canary_symbol_before_prefligh
     execution = Execution()
     dispatcher = BitgetDispatcher(
         repository,
-        gate=DispatchGate(
-            execution_enabled=True, canary_max_orders=1, canary_symbol="ETHUSDT"
-        ),
+        gate=DispatchGate(execution_enabled=True, canary_max_orders=1, canary_symbol="ETHUSDT"),
         execution=execution,
         preflight=lambda _: (_ for _ in ()).throw(AssertionError("must not preflight")),
     )
@@ -234,9 +232,7 @@ async def test_explicit_bounded_canary_rejects_non_canary_symbol_before_prefligh
 @pytest.mark.asyncio
 async def test_atomic_canary_reservation_rejects_at_cap_before_provider_post() -> None:
     class CappedRepository(Repository):
-        def reserve_canary_entry(
-            self, dispatch_id: object, exchange: str, max_orders: int
-        ) -> bool:
+        def reserve_canary_entry(self, dispatch_id: object, exchange: str, max_orders: int) -> bool:
             super().reserve_canary_entry(dispatch_id, exchange, max_orders)
             return False
 
@@ -244,9 +240,7 @@ async def test_atomic_canary_reservation_rejects_at_cap_before_provider_post() -
     execution = Execution()
     dispatcher = BitgetDispatcher(
         repository,
-        gate=DispatchGate(
-            execution_enabled=True, canary_max_orders=1, canary_symbol="BTCUSDT"
-        ),
+        gate=DispatchGate(execution_enabled=True, canary_max_orders=1, canary_symbol="BTCUSDT"),
         execution=execution,
         preflight=lambda _: (_spec(), _risk()),
     )
