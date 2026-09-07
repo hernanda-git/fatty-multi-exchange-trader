@@ -34,6 +34,17 @@ IFS='|' read -r trader_mode bitget_mode execution_enabled <<<"$runtime_modes"
 trader_mode="${trader_mode:-UNKNOWN}"
 bitget_mode="${bitget_mode:-UNKNOWN}"
 execution_enabled="${execution_enabled:-UNKNOWN}"
+
+demo_telemetry="$(docker compose --env-file .env --env-file .env.bitget-demo run --rm --no-deps -e BITGET_MODE=DEMO --entrypoint /app/.venv/bin/python dispatcher-bitget /app/scripts/bitget_demo_telemetry.py 2>/dev/null || true)"
+demo_status="$(printf '%s' "$demo_telemetry" | jq -r '.status // "BLOCKED"' 2>/dev/null || printf '%s' 'BLOCKED')"
+demo_available="$(printf '%s' "$demo_telemetry" | jq -r '.account.available // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
+demo_equity="$(printf '%s' "$demo_telemetry" | jq -r '.account.equity // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
+demo_coin="$(printf '%s' "$demo_telemetry" | jq -r '.account.margin_coin // "USDT"' 2>/dev/null || printf '%s' 'USDT')"
+demo_margin_mode="$(printf '%s' "$demo_telemetry" | jq -r '.account.margin_mode // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
+demo_position_mode="$(printf '%s' "$demo_telemetry" | jq -r '.account.position_mode // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
+demo_positions="$(printf '%s' "$demo_telemetry" | jq -r '.positions // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
+demo_orders="$(printf '%s' "$demo_telemetry" | jq -r '.open_orders // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
+demo_fills="$(printf '%s' "$demo_telemetry" | jq -r '.fills // "N/A"' 2>/dev/null || printf '%s' 'N/A')"
 intake_id="$(docker compose ps -q intake)"
 started="$(docker inspect -f '{{.State.StartedAt}}' "$intake_id" 2>/dev/null || true)"
 uptime='N/A'
@@ -187,6 +198,10 @@ else
   balance_block='N/A (no balance_snapshots for bitget)'
 fi
 
+if [[ "$demo_status" == 'PASS' ]]; then
+  balance_block="Total      $(esc "$demo_equity") $(esc "$demo_coin") [DEMO READ-ONLY]\nAvailable  $(esc "$demo_available") $(esc "$demo_coin")\nEquity     $(esc "$demo_equity") $(esc "$demo_coin")\nMargin     $(esc "$demo_margin_mode")\nPosition   $(esc "$demo_position_mode")"
+fi
+
 missing_sl=''
 if [[ -n "$live_positions" ]]; then
   positions_block='SYMBOL       SIDE  SIZE       ENTRY      MARK       LIQ        LEV  MARGIN   SL   TP   UPNL'
@@ -261,8 +276,14 @@ Updated  $codex_refreshed</pre>
 <b>Latest Signal</b>
 $last_signal
 
-<b>Balance</b> <code>bitget</code>
+<b>Balance</b> <code>bitget DEMO read-only</code>
 <pre>$balance_block</pre>
+
+<b>DEMO Provider Read-back</b>
+<pre>Status     $demo_status
+Positions  $demo_positions
+Orders     $demo_orders
+Fills      $demo_fills</pre>
 
 <b>Positions</b> <code>open · bitget</code>
 <pre>$positions_block</pre>
