@@ -29,6 +29,11 @@ health="$(curl --max-time 3 --silent --show-error --fail "http://127.0.0.1:${WEB
 if [[ "$health" == *'"status":"ok"'* ]]; then overall='🟢 ONLINE'; else overall='⚠️ DEGRADED'; fi
 
 services="$(docker compose ps --format '{{.Service}}|{{.State}}|{{.Health}}' | sort)"
+runtime_modes="$(docker compose exec -T dispatcher-bitget sh -lc 'printf "%s|%s|%s" "$TRADER_MODE" "$BITGET_MODE" "$BITGET_EXECUTION_ENABLED"' 2>/dev/null || true)"
+IFS='|' read -r trader_mode bitget_mode execution_enabled <<<"$runtime_modes"
+trader_mode="${trader_mode:-UNKNOWN}"
+bitget_mode="${bitget_mode:-UNKNOWN}"
+execution_enabled="${execution_enabled:-UNKNOWN}"
 intake_id="$(docker compose ps -q intake)"
 started="$(docker inspect -f '{{.State.StartedAt}}' "$intake_id" 2>/dev/null || true)"
 uptime='N/A'
@@ -258,11 +263,11 @@ else
 Leverage     N/A
 SL-before-liq N/A (no position snapshots)'
 fi
-report="<b>Fatty Signal Relay</b>  <i>Paper Ops</i>
+report="<b>Fatty Signal Relay</b>  <i>DEMO Ops</i>
 
 <b>Status</b>
 <pre>Overall  $overall
-Mode     PAPER
+Mode     $trader_mode · Bitget $bitget_mode
 Host     fspmi-hostinger
 Uptime   $uptime</pre>
 
@@ -297,7 +302,7 @@ $last_signal
 Signals  $signal_count
 Orders   $total_orders</pre>
 
-<b>Safety</b> <code>PAPER · LIVE DISABLED · REAL ORDERS DISABLED</code>
+<b>Safety</b> <code>$trader_mode · Bitget $bitget_mode · EXECUTION $execution_enabled · LIVE DISABLED</code>
 <pre>$safety_block</pre>"
 
 # Telegram Bot API text limit is 4096 chars; truncate with notice, never split.
