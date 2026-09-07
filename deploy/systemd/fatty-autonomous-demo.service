@@ -6,7 +6,8 @@ After=network-online.target docker.service
 [Service]
 Type=simple
 WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
-ExecStart=/usr/bin/flock -n /tmp/fatty-autonomous-demo.lock /usr/bin/docker compose --env-file /home/valarion/apps/fatty-multi-exchange-trader/.env --env-file /home/valarion/apps/fatty-multi-exchange-trader/.env.bitget-demo run --rm --no-deps --user 5013:5013 -v /home/valarion/apps/fatty-multi-exchange-trader/runtime:/app/runtime --entrypoint /app/.venv/bin/python dispatcher-bitget /app/scripts/autonomous_demo_cycle.py
+ExecStart=/usr/bin/flock -n /tmp/fatty-autonomous-demo.lock /usr/bin/docker compose --env-file /home/valarion/apps/fatty-multi-exchange-trader/.env --env-file /home/valarion/apps/fatty-multi-exchange-trader/.env.bitget-demo run --name fatty-autonomous-demo-worker --rm --no-deps --user 5013:5013 -v /home/valarion/apps/fatty-multi-exchange-trader/runtime:/app/runtime --entrypoint /app/.venv/bin/python dispatcher-bitget /app/scripts/autonomous_demo_cycle.py
+ExecStop=/usr/bin/docker rm -f fatty-autonomous-demo-worker
 Environment=AUTONOMOUS_DEMO_CYCLE_SECONDS=60
 Restart=always
 RestartSec=10
