@@ -17,9 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from telethon import TelegramClient  # type: ignore[import-untyped]
-from telethon.errors import SessionPasswordNeededError  # type: ignore[import-untyped]
-from telethon.sessions import StringSession  # type: ignore[import-untyped]
+from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
+from telethon.sessions import StringSession
 
 
 @dataclass(frozen=True)

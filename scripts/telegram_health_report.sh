@@ -66,22 +66,6 @@ cache_path = sys.argv[1]
 def emit(status, five, seven, reset, plan, refreshed):
     print("|".join((status, five, seven, reset, plan, refreshed)))
 
-def fmt_reset(value):
-    if value is None:
-        return "N/A"
-    try:
-        seconds = max(0, int(value))
-    except (TypeError, ValueError):
-        return "N/A"
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes = rem // 60
-    if days:
-        return f"{days}d {hours}h"
-    if hours:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
-
 def auth_candidates():
     for path in (os.path.expanduser("~/.pi/agent/auth.json"), os.path.expanduser("~/.codex/auth.json")):
         try:
@@ -163,14 +147,6 @@ signal_count="$(lookup_metric canonical_signals)"
 open_positions="$(lookup_metric open_positions)"
 pending_orders="$(lookup_metric pending_orders)"
 total_orders="$(lookup_metric total_orders)"
-
-service_rows=''
-while IFS='|' read -r service state health_state; do
-  [[ -z "$service" ]] && continue
-  icon='✅'
-  [[ "$state" == 'running' && "$health_state" == 'healthy' ]] || icon='⚠️'
-  service_rows+="$icon <code>$service</code>  $state / ${health_state:-n/a}"$'\n'
-done <<<"$services"
 
 if [[ -n "$latest" ]]; then
   IFS='|' read -r source_channel source_message received encoded_text <<<"$latest"

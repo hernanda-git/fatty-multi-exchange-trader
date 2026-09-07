@@ -88,6 +88,8 @@ def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
         venue_mode = environ.get("BITGET_MODE", "DEMO").upper()
         if venue_mode not in {"DEMO", "LIVE"}:
             raise ValueError("BITGET_MODE must be DEMO or LIVE")
+        if venue_mode != mode:
+            raise ValueError("TRADER_MODE and BITGET_MODE must match")
     credentials = _CREDENTIALS[name]
     execution_enabled = False
     if name == "dispatcher-bitget":

@@ -18,9 +18,12 @@ STATE_PATH = ROOT / "runtime" / "autonomous-demo-cycle-state.json"
 
 def _state() -> dict[str, object]:
     try:
-        return json.loads(STATE_PATH.read_text())
-    except FileNotFoundError:
+        state = json.loads(STATE_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
         return {"cycle_count": 0, "failure_count": 0}
+    if not isinstance(state, dict):
+        return {"cycle_count": 0, "failure_count": 0}
+    return state
 
 
 def _write_state(state: dict[str, object]) -> None:
@@ -54,9 +57,12 @@ def run_cycle() -> dict[str, object]:
         timeout=30,
     )
     replay = json.loads(result.stdout)
+    cycle_count = state.get("cycle_count", 0)
+    if not isinstance(cycle_count, int) or isinstance(cycle_count, bool):
+        cycle_count = 0
     state.update(
         {
-            "cycle_count": int(state.get("cycle_count", 0)) + 1,
+            "cycle_count": cycle_count + 1,
             "cycle_id": cycle_id,
             "last_success_at": datetime.now(UTC).isoformat(),
             "failure_count": 0,

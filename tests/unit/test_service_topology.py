@@ -21,13 +21,12 @@ def test_service_config_defaults_to_demo_and_exposes_only_role_credentials() -> 
     assert "BITGET_API_SECRET" not in analyzer.allowed_environment
 
 
-def test_bitget_mode_is_isolated_from_global_demo_mode() -> None:
-    config = service_config(
-        "dispatcher-bitget",
-        {"TRADER_MODE": "DEMO", "BITGET_MODE": "LIVE"},
-    )
-    assert config.mode == "DEMO"
-    assert config.venue_mode == "LIVE"
+def test_bitget_mode_must_match_global_mode() -> None:
+    with pytest.raises(ValueError, match="must match"):
+        service_config(
+            "dispatcher-bitget",
+            {"TRADER_MODE": "DEMO", "BITGET_MODE": "LIVE"},
+        )
 
 
 def test_bitget_dispatcher_starts_cutover_gated_without_constructing_execution_client() -> None:
@@ -41,13 +40,33 @@ def test_bitget_dispatcher_starts_cutover_gated_without_constructing_execution_c
         return object()
 
     state = bitget_dispatcher_state(
-        {"TRADER_MODE": "DEMO", "BITGET_MODE": "LIVE"},
+        {"TRADER_MODE": "DEMO", "BITGET_MODE": "DEMO"},
         execution_client_factory=execution_client_factory,
     )
 
     assert state == "cutover-gated"
     assert not constructed
     assert service_config("dispatcher-bitget", {}).execution_enabled is False
+
+
+def test_bitget_execution_rejects_mismatched_global_and_venue_modes() -> None:
+    from fatty_trader.service import build_bitget_execution_runtime
+
+    enabled = {
+        "TRADER_MODE": "DEMO",
+        "BITGET_MODE": "LIVE",
+        "BITGET_EXECUTION_ENABLED": "1",
+        "BITGET_API_KEY": "key",
+        "BITGET_API_SECRET": "secret",
+        "BITGET_API_PASSPHRASE": "passphrase",
+        "BITGET_CANARY_MAX_ORDERS": "1",
+        "BITGET_CANARY_SYMBOL": "BTCUSDT",
+        "BITGET_APPROVAL_REFERENCE": "operator-ticket-123",
+        "BITGET_MAX_CLOCK_SKEW_MS": "5000",
+    }
+
+    with pytest.raises(ValueError, match="must match"):
+        build_bitget_execution_runtime(enabled)
 
 
 def test_bitget_execution_runtime_is_constructed_only_after_explicit_cutover() -> None:
@@ -68,7 +87,7 @@ def test_bitget_execution_runtime_is_constructed_only_after_explicit_cutover() -
 
     enabled = {
         "TRADER_MODE": "DEMO",
-        "BITGET_MODE": "LIVE",
+        "BITGET_MODE": "DEMO",
         "BITGET_EXECUTION_ENABLED": "1",
         "BITGET_API_KEY": "key",
         "BITGET_API_SECRET": "secret",

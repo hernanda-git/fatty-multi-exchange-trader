@@ -20,7 +20,7 @@ def test_compose_keeps_bitget_execution_closed_by_default() -> None:
 def test_dispatcher_check_rejects_live_execution_without_all_explicit_gates() -> None:
     enabled = {
         "TRADER_MODE": "DEMO",
-        "BITGET_MODE": "LIVE",
+        "BITGET_MODE": "DEMO",
         "BITGET_EXECUTION_ENABLED": "1",
         "BITGET_API_KEY": "key",
         "BITGET_API_SECRET": "secret",
@@ -54,7 +54,7 @@ def test_dispatcher_check_rejects_invalid_cutover_values(
 ) -> None:
     environment = {
         "TRADER_MODE": "DEMO",
-        "BITGET_MODE": "LIVE",
+        "BITGET_MODE": "DEMO",
         "BITGET_EXECUTION_ENABLED": "1",
         "BITGET_API_KEY": "key",
         "BITGET_API_SECRET": "secret",
