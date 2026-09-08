@@ -58,7 +58,15 @@ class FakeAsyncClient:
         return {"status": "filled", "requestedQty": "0.001", "orderId": "provider-1"}
 
     async def get_fills(self, symbol: str) -> list[dict[str, str]]:
-        return [{"fillId": "fill-1", "price": "50000", "size": "0.001", "fee": "0.2"}]
+        return [
+            {
+                "fillId": "fill-1",
+                "orderId": "provider-1",
+                "price": "50000",
+                "size": "0.001",
+                "fee": "0.2",
+            }
+        ]
 
     async def aclose(self) -> None:
         self.closed = True

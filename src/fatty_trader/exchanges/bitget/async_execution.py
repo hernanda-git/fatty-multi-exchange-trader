@@ -74,6 +74,21 @@ class AsyncProtectionResult:
     emergency_close_oid: str | None = None
 
 
+def _matching_fills(
+    fills: list[dict[str, Any]], *, client_oid: str, provider_order_id: str | None
+) -> list[dict[str, Any]]:
+    """Use only fills explicitly tied to this durable entry intent."""
+    matching: list[dict[str, Any]] = []
+    for fill in fills:
+        fill_client_oid = fill.get("clientOid", fill.get("client_oid"))
+        fill_order_id = fill.get("orderId", fill.get("order_id"))
+        if fill_client_oid == client_oid or (
+            provider_order_id is not None and str(fill_order_id) == provider_order_id
+        ):
+            matching.append(fill)
+    return matching
+
+
 class AsyncBitgetExecution:
     """Production async execution adapter; POST is followed only by read-back GETs."""
 
@@ -132,16 +147,22 @@ class AsyncBitgetExecution:
             raise ValueError("Bitget order detail response must be an object")
         if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
             raise ValueError("Bitget fills response must be a list of objects")
-        typed_fills = [dict(fill) for fill in fills]
-        filled_qty, avg_price, fee, fill_ids = summarize_fills(typed_fills)
         provider_order_id = detail.get("orderId")
         if provider_order_id is None and submitted is not None:
             provider_order_id = submitted.get("orderId")
-        if not detail and not typed_fills and submitted is not None:
+        typed_fills = _matching_fills(
+            [dict(fill) for fill in fills],
+            client_oid=intent.client_oid,
+            provider_order_id=str(provider_order_id) if provider_order_id is not None else None,
+        )
+        filled_qty, avg_price, fee, fill_ids = summarize_fills(typed_fills)
+        if not detail:
             return AsyncExecutionResult(
                 client_oid=intent.client_oid,
-                status=LiveOrderStatus.FILLED,
-                filled_qty=intent.requested_qty,
+                status=(
+                    LiveOrderStatus.ACCEPTED if submitted is not None else LiveOrderStatus.UNKNOWN
+                ),
+                filled_qty=Decimal("0"),
                 avg_price=None,
                 fee=Decimal("0"),
                 provider_order_id=str(provider_order_id) if provider_order_id else None,

@@ -254,6 +254,8 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
     if payload.get("kind") == "heartbeat":
         return _format_heartbeat_html(payload)
+    if payload.get("kind") == "source-forward":
+        return format_source_forward_html(payload)
     if payload.get("kind") == "signal-analysis":
         return _format_signal_analysis_html(payload)
     if payload.get("kind") == "execution-event":
@@ -291,9 +293,11 @@ def format_source_forward_html(payload: Mapping[str, Any]) -> str:
 def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
     source_id = escape(_safe_value(payload.get("source_message_id", "?")))
     if payload.get("canonical_signal") is not True:
+        source_text = escape(_safe_text(payload.get("source_text", ""), limit=1000))
         return (
-            "<b>Update sinyal</b>\n\n"
-            "Bukan setup baru · tidak ada order dibuat\n"
+            "<b>Update sumber</b>\n\n"
+            f"{source_text}\n\n"
+            "Tidak ada order dibuat · bukan setup baru\n"
             f"Pesan sumber: <code>#{source_id}</code>"
         )
     pair = escape(_safe_value(payload.get("pair", "?")))

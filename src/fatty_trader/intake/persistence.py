@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -47,11 +46,11 @@ class InMemoryRawMessageRepository:
         return len(self.forwards)
 
     def save_and_enqueue_forward(self, message: RawTelegramMessage) -> bool:
+        """Persist once; analysis emits the single operator-facing notification."""
         key = (message.channel_id, message.message_id, message.revision_hash)
         if key in self._messages:
             return False
         self._messages[key] = message
-        self.forwards.append(_source_forward_payload(message))
         return True
 
 
@@ -85,23 +84,14 @@ class PostgresRawMessageRepository:
         return message
 
     def save_and_enqueue_forward(self, message: RawTelegramMessage) -> bool:
-        """Atomically retain a source update and its bot-delivery outbox row."""
+        """Atomically retain a source update; analysis owns the operator notification."""
         statement = """
-            WITH inserted AS (
-                INSERT INTO telegram_messages (
-                    id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state
-                ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED')
-                ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
-                RETURNING id
-            ), enqueued AS (
-                INSERT INTO notifications_outbox (id, dedup_key, payload)
-                SELECT %s, %s, %s::jsonb FROM inserted
-                ON CONFLICT (dedup_key) DO NOTHING
-                RETURNING id
-            )
-            SELECT EXISTS (SELECT 1 FROM inserted)
+            INSERT INTO telegram_messages (
+                id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED')
+            ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
+            RETURNING id
         """
-        payload = _source_forward_payload(message)
         with closing(self._connection_factory()) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -113,14 +103,11 @@ class PostgresRawMessageRepository:
                         message.revision_hash,
                         message.received_at,
                         message.raw_text,
-                        uuid4(),
-                        _source_forward_dedup_key(message),
-                        json.dumps(payload),
                     ),
                 )
                 row = cursor.fetchone()
             connection.commit()
-        return bool(row[0] if isinstance(row, (tuple, list)) else row)
+        return row is not None
 
 
 def revision_hash(*, raw_text: str, reply_to_message_id: int | None, has_media: bool) -> str:

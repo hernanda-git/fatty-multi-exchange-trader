@@ -104,7 +104,7 @@ def process_received_batch(
                                 {
                                     "kind": "signal-analysis",
                                     "source_message_id": message_id,
-                                    "source_revision": revision,
+                                    "source_text": message.raw_text,
                                     "status": result.status.value,
                                     "failure_class": result.failure_class or "none",
                                     "canonical_signal": signal_id is not None,

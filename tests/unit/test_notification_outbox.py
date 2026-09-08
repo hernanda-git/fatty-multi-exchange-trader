@@ -62,12 +62,14 @@ def test_signal_analysis_without_trade_is_a_plain_language_update() -> None:
             "source_message_id": 16102,
             "status": "CODEX_SUCCEEDED",
             "canonical_signal": False,
+            "source_text": "$WLD TP1 booked here at 2R",
             "dispatches": 0,
         }
     )
 
-    assert "<b>Update sinyal</b>" in text
-    assert "Bukan setup baru" in text
+    assert "<b>Update sumber</b>" in text
+    assert "TP1 booked here at 2R" in text
+    assert "Tidak ada order dibuat" in text
     assert "Source Revision" not in text
     assert "Canonical Signal" not in text
 

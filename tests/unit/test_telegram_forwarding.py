@@ -35,7 +35,7 @@ def test_forward_html_escapes_untrusted_signal_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_forwarder_enqueues_one_durable_relay_across_restart_and_redelivery() -> None:
+async def test_forwarder_persists_once_without_duplicate_raw_notifications() -> None:
     sent: list[tuple[str, object, dict[str, object]]] = []
 
     class FakeClient:
@@ -54,9 +54,4 @@ async def test_forwarder_enqueues_one_durable_relay_across_restart_and_redeliver
     await TelegramForwarder(FakeClient(), settings, repository).handle_message(-1001, message)
 
     assert sent == []
-    assert repository.forward_count == 1
-    forward = repository.forwards[0]
-    assert forward["kind"] == "source-forward"
-    assert forward["source_channel_id"] == -1001
-    assert forward["source_message_id"] == 7
-    assert forward["has_media"] is True
+    assert repository.forward_count == 0
