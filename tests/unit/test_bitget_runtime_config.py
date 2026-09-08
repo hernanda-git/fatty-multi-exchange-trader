@@ -17,20 +17,17 @@ def test_compose_keeps_bitget_execution_closed_by_default() -> None:
     assert "BITGET_APPROVAL_REFERENCE: ${BITGET_APPROVAL_REFERENCE:-}" in COMPOSE
 
 
-def test_demo_execution_uses_global_cap_without_single_symbol_restriction() -> None:
-    demo = {
-        "TRADER_MODE": "DEMO",
-        "BITGET_MODE": "DEMO",
+def test_execution_uses_global_cap_without_single_symbol_restriction() -> None:
+    environment = {
+        "TRADER_MODE": "LIVE",
+        "BITGET_MODE": "LIVE",
         "BITGET_EXECUTION_ENABLED": "1",
-        "BITGET_CANARY_MAX_ORDERS": "100",
-        "BITGET_APPROVAL_REFERENCE": "user-demo-execution-test",
+        "BITGET_CANARY_MAX_ORDERS": "5",
+        "BITGET_APPROVAL_REFERENCE": "user-approved-20260908",
         "BITGET_MAX_CLOCK_SKEW_MS": "5000",
     }
-    assert service_config("dispatcher-bitget", demo).execution_enabled is True
 
-    live = {**demo, "TRADER_MODE": "LIVE", "BITGET_MODE": "LIVE"}
-    with pytest.raises(ValueError, match="canary symbol"):
-        service_config("dispatcher-bitget", live)
+    assert service_config("dispatcher-bitget", environment).execution_enabled is True
 
 
 def test_dispatcher_check_rejects_live_execution_without_all_explicit_gates() -> None:
@@ -60,7 +57,6 @@ def test_dispatcher_check_rejects_live_execution_without_all_explicit_gates() ->
     ("name", "value", "message"),
     [
         ("BITGET_CANARY_MAX_ORDERS", "0", "canary"),
-        ("BITGET_CANARY_SYMBOL", "btc-usdt", "canary"),
         ("BITGET_APPROVAL_REFERENCE", "", "approval"),
         ("BITGET_MAX_CLOCK_SKEW_MS", "0", "clock skew"),
     ],

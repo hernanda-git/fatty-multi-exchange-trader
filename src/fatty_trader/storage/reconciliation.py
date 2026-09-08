@@ -25,7 +25,7 @@ class Connection(Protocol):
 
 
 class ReconciliationRepository(Protocol):
-    def unknown_intents(self, exchange: str) -> list[LiveIntentRecord]: ...
+    def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]: ...
     def update_intent(self, record: LiveIntentRecord) -> None: ...
     def expected_position_symbols(self, exchange: str) -> set[str]: ...
     def kill_switch_active(self, scope: str) -> bool: ...
@@ -52,11 +52,12 @@ class InMemoryReconciliationRepository:
         self._alert_keys: set[tuple[str, str]] = set()
         self.alerts: list[str] = []
 
-    def unknown_intents(self, exchange: str) -> list[LiveIntentRecord]:
+    def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
         return [
             replace(intent)
             for intent in self.intents
-            if intent.exchange == exchange and intent.state == "unknown"
+            if intent.exchange == exchange
+            and intent.state not in {"rejected", "cancelled", "reconciled", "filled"}
         ]
 
     def update_intent(self, record: LiveIntentRecord) -> None:
@@ -98,13 +99,15 @@ class PostgresReconciliationRepository:
     def __init__(self, connection_factory: Callable[[], Connection]) -> None:
         self._connection_factory = connection_factory
 
-    def unknown_intents(self, exchange: str) -> list[LiveIntentRecord]:
+    def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
         connection = self._connection_factory()
         cursor = connection.cursor()
         cursor.execute(
             """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
                       filled_qty, filled_price, fee, provider_order_id, provider_fill_ids
-               FROM live_order_intents WHERE exchange = %s AND state = 'unknown'""",
+               FROM live_order_intents
+               WHERE exchange = %s
+                 AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')""",
             (exchange,),
         )
         return [_intent_from_row(row) for row in cursor.fetchall()]

@@ -120,12 +120,6 @@ def _validate_bitget_cutover(environ: Mapping[str, str]) -> None:
         raise ValueError("BITGET_CANARY_MAX_ORDERS must be a positive integer canary cap") from exc
     if canary_max_orders < 1:
         raise ValueError("positive Bitget canary cap is required when execution is enabled")
-    canary_symbol = environ.get("BITGET_CANARY_SYMBOL", "").strip()
-    if canary_symbol and not re.fullmatch(r"^[A-Z0-9]{2,20}$", canary_symbol):
-        raise ValueError("Bitget canary symbol must be uppercase when provided")
-    mode = environ.get("TRADER_MODE", "DEMO").upper()
-    if mode == "LIVE" and not canary_symbol:
-        raise ValueError("valid uppercase Bitget canary symbol is required for LIVE execution")
     approval_reference = environ.get("BITGET_APPROVAL_REFERENCE", "").strip()
     if not approval_reference:
         raise ValueError("Bitget approval reference is required when execution is enabled")
@@ -406,6 +400,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
     from fatty_trader.operator.live_commands import OperatorCommandService
     from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
+    from fatty_trader.operator.update_receipts import PostgresTelegramUpdateReceiptStore
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
 
     required = (
@@ -432,6 +427,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         command_service=commands,
         fetch_updates=api.fetch_updates,
         send_reply=api.send_reply,
+        receipt_store=PostgresTelegramUpdateReceiptStore(lambda: psycopg.connect()),
     )
 
     def listen() -> None:

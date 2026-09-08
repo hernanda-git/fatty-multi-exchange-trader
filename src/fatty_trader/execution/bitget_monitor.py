@@ -51,7 +51,7 @@ class BitgetMonitor:
 
     async def run_once(self) -> MonitorReport:
         reasons: list[str] = []
-        await self._reconcile_unknown_intents(reasons)
+        await self._reconcile_unresolved_intents(reasons)
         positions = await self._read_rows(
             self._client.get_all_positions, "provider-positions-invalid", reasons
         )
@@ -78,8 +78,8 @@ class BitgetMonitor:
             return MonitorReport("kill-switch-latched")
         return MonitorReport("ok")
 
-    async def _reconcile_unknown_intents(self, reasons: list[str]) -> None:
-        for intent in self._repository.unknown_intents(self._scope):
+    async def _reconcile_unresolved_intents(self, reasons: list[str]) -> None:
+        for intent in self._repository.unresolved_intents(self._scope):
             try:
                 reconciled = await reconcile_unknown_intent(
                     intent,
@@ -142,7 +142,7 @@ class BitgetMonitor:
                 reasons.append(report.reason or "native-protection-unconfirmed")
 
     def _check_orders(self, orders: list[dict[str, Any]], reasons: list[str]) -> None:
-        known = {intent.client_oid for intent in self._repository.unknown_intents(self._scope)}
+        known = {intent.client_oid for intent in self._repository.unresolved_intents(self._scope)}
         for order in orders:
             oid = order.get("clientOid", order.get("client_oid"))
             if not isinstance(oid, str) or oid not in known:

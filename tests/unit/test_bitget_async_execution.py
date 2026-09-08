@@ -9,7 +9,7 @@ import pytest
 
 from fatty_trader.exchanges.bitget.async_execution import AsyncBitgetExecution
 from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
-from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
+from fatty_trader.exchanges.bitget.client import BitgetApiError, BitgetUnknownResultError
 from fatty_trader.exchanges.bitget.live import LiveIntentRecord, LiveOrderStatus
 
 
@@ -131,3 +131,26 @@ async def test_unknown_post_result_reconciles_with_symbol_reads_without_a_second
 
     assert len(client.entry_calls) == 1
     assert result.status is LiveOrderStatus.FILLED
+
+
+@pytest.mark.asyncio
+async def test_unreadable_order_detail_with_matching_fill_is_filled() -> None:
+    class UnreadableDetailClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+    client = UnreadableDetailClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord(
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-0011223344556677",
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_qty=Decimal("0.001"),
+    )
+
+    result = await adapter.submit_entry(intent)
+
+    assert result.status is LiveOrderStatus.FILLED
+    assert result.filled_qty == Decimal("0.001")
+    assert result.provider_order_id == "provider-1"

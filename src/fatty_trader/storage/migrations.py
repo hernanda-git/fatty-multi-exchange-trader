@@ -103,6 +103,15 @@ MIGRATIONS: Final = [
         ON canary_entry_reservations (exchange);
         """,
     ),
+    (
+        8,
+        """
+        CREATE TABLE IF NOT EXISTS operator_telegram_updates (
+            update_id BIGINT PRIMARY KEY,
+            claimed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

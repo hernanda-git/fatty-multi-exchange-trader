@@ -18,6 +18,13 @@ FetchUpdates = Callable[[int | None], Sequence[dict[str, Any]]]
 SendReply = Callable[[int, str], None]
 
 
+class UpdateReceiptStore(Protocol):
+    """Durable update claim boundary; a false claim is never re-executed."""
+
+    def claim(self, update_id: int) -> bool: ...
+    def next_offset(self) -> int | None: ...
+
+
 class TelegramBotApi:
     """Small synchronous Bot API boundary with strict response validation."""
 
@@ -65,11 +72,13 @@ class TelegramCommandPoller:
         command_service: CommandService,
         fetch_updates: FetchUpdates,
         send_reply: SendReply,
+        receipt_store: UpdateReceiptStore | None = None,
     ) -> None:
         self._command_service = command_service
         self._fetch_updates = fetch_updates
         self._send_reply = send_reply
-        self.offset: int | None = None
+        self._receipt_store = receipt_store
+        self.offset = receipt_store.next_offset() if receipt_store is not None else None
 
     def run_once(self) -> int:
         updates = self._fetch_updates(self.offset)
@@ -80,6 +89,8 @@ class TelegramCommandPoller:
                 continue
             self.offset = update_id + 1
             processed += 1
+            if self._receipt_store is not None and not self._receipt_store.claim(update_id):
+                continue
             self._handle_update(update)
         return processed
 

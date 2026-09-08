@@ -157,16 +157,22 @@ class AsyncBitgetExecution:
         )
         filled_qty, avg_price, fee, fill_ids = summarize_fills(typed_fills)
         if not detail:
+            if filled_qty >= intent.requested_qty:
+                status = LiveOrderStatus.FILLED
+            elif filled_qty > 0:
+                status = LiveOrderStatus.PARTIAL
+            else:
+                status = (
+                    LiveOrderStatus.ACCEPTED if submitted is not None else LiveOrderStatus.UNKNOWN
+                )
             return AsyncExecutionResult(
                 client_oid=intent.client_oid,
-                status=(
-                    LiveOrderStatus.ACCEPTED if submitted is not None else LiveOrderStatus.UNKNOWN
-                ),
-                filled_qty=Decimal("0"),
-                avg_price=None,
-                fee=Decimal("0"),
+                status=status,
+                filled_qty=filled_qty,
+                avg_price=avg_price,
+                fee=fee,
                 provider_order_id=str(provider_order_id) if provider_order_id else None,
-                provider_fill_ids=(),
+                provider_fill_ids=fill_ids,
             )
         status = classify_live_order(detail, typed_fills)
         if status is LiveOrderStatus.ACCEPTED and typed_fills:

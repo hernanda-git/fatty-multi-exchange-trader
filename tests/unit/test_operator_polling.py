@@ -8,6 +8,20 @@ import httpx
 from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
 
 
+class InMemoryUpdateReceiptStore:
+    def __init__(self) -> None:
+        self.claimed: set[int] = set()
+
+    def claim(self, update_id: int) -> bool:
+        if update_id in self.claimed:
+            return False
+        self.claimed.add(update_id)
+        return True
+
+    def next_offset(self) -> int | None:
+        return max(self.claimed) + 1 if self.claimed else None
+
+
 class FakeCommandService:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -135,3 +149,27 @@ def test_poller_advances_offset_after_malformed_update() -> None:
 
     assert poller.run_once() == 1
     assert poller.offset == 5
+
+
+def test_poller_does_not_reexecute_claimed_mutation_after_restart() -> None:
+    store = InMemoryUpdateReceiptStore()
+    first_service = FakeCommandService()
+    first = TelegramCommandPoller(
+        command_service=first_service,
+        fetch_updates=lambda offset: [_update(update_id=42, text="/setsl WLDUSDT 0.47")],
+        send_reply=lambda chat_id, text: None,
+        receipt_store=store,
+    )
+    assert first.run_once() == 1
+    assert len(first_service.calls) == 1
+
+    restarted_service = FakeCommandService()
+    restarted = TelegramCommandPoller(
+        command_service=restarted_service,
+        fetch_updates=lambda offset: [_update(update_id=42, text="/setsl WLDUSDT 0.47")],
+        send_reply=lambda chat_id, text: None,
+        receipt_store=store,
+    )
+    assert restarted.offset == 43
+    assert restarted.run_once() == 1
+    assert restarted_service.calls == []
