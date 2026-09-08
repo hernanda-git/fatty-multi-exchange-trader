@@ -112,6 +112,22 @@ MIGRATIONS: Final = [
         );
         """,
     ),
+    (
+        9,
+        """
+        CREATE TABLE IF NOT EXISTS intent_reconciliation_audit (
+            id UUID PRIMARY KEY,
+            exchange TEXT NOT NULL,
+            client_order_id TEXT NOT NULL,
+            prior_state TEXT NOT NULL,
+            resolved_state TEXT NOT NULL,
+            provider_snapshot JSONB NOT NULL,
+            approval_reference TEXT NOT NULL,
+            reconciled_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (exchange, client_order_id, resolved_state)
+        );
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
