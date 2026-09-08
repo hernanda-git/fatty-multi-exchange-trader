@@ -128,6 +128,34 @@ MIGRATIONS: Final = [
         );
         """,
     ),
+    (
+        10,
+        """
+        CREATE TABLE IF NOT EXISTS source_management_updates (
+            id UUID PRIMARY KEY,
+            source_message_id UUID NOT NULL REFERENCES telegram_messages(id),
+            revision TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            action TEXT NOT NULL CHECK (action IN ('TP1_BOOKED', 'SL_TO_ENTRY', 'CLOSE')),
+            state TEXT NOT NULL CHECK (state IN (
+                'queued', 'claimed', 'reconciliation-pending', 'failed', 'reconciled'
+            )),
+            claimed_by TEXT,
+            claimed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (source_message_id, revision, symbol, action)
+        );
+        CREATE INDEX IF NOT EXISTS source_management_updates_claim
+        ON source_management_updates (created_at, id) WHERE state = 'queued';
+        CREATE TABLE IF NOT EXISTS source_management_provider_intents (
+            management_update_id UUID NOT NULL REFERENCES source_management_updates(id),
+            client_order_id TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (management_update_id, client_order_id)
+        );
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

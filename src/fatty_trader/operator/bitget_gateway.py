@@ -298,3 +298,88 @@ class BitgetOperatorGateway:
         if any(state["state"] == "reconciliation-pending" for state in states):
             return {"count": len(states), "state": "reconciliation-pending"}
         return {"count": len(states), "state": "closed"}
+
+    def close_reduce_only(
+        self, *, symbol: str, side: str, quantity: Decimal, client_oid: str
+    ) -> None:
+        """Intent-first partial close used by durable source-management execution."""
+        from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+        if self._intent_store.get(client_oid) is not None:
+            raise SourceManagementReconciliationPending(
+                "existing close intent requires reconciliation"
+            )
+        intent = LiveIntentRecord(
+            "bitget", client_oid, symbol, side, "CLOSE", "requested", quantity
+        )
+        self._intent_store.save(intent)
+        try:
+            submitted = self._run(
+                self._client.place_market_close(
+                    symbol=symbol, side=side, quantity=str(quantity), client_oid=client_oid
+                )
+            )
+        except (BitgetUnknownResultError, TimeoutError) as exc:
+            intent.state = "unknown"
+            self._intent_store.update(intent)
+            raise SourceManagementReconciliationPending("close result is unknown") from exc
+        if not isinstance(submitted, Mapping):
+            intent.state = "unknown"
+            self._intent_store.update(intent)
+            raise SourceManagementReconciliationPending("close acknowledgement is invalid")
+        if submitted.get("orderId") is not None:
+            intent.provider_order_id = str(submitted["orderId"])
+        intent.state = "submitted"
+        self._intent_store.update(intent)
+
+    def replace_stop_loss(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        stop_loss: Decimal,
+        client_oid: str,
+    ) -> None:
+        """Fail closed when an existing native SL needs an unverified cancel-plan adapter."""
+        from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+        if self._intent_store.get(client_oid) is not None:
+            raise SourceManagementReconciliationPending(
+                "existing stop-loss intent requires reconciliation"
+            )
+        positions = self.get_positions(symbol)
+        if len(positions) != 1 or positions[0]["side"] != side or positions[0]["size"] != quantity:
+            raise ValueError("Bitget position changed before stop-loss replacement")
+        if positions[0]["stop_loss"] is not None:
+            raise ValueError("native SL replacement requires verified cancel-plan-order adapter")
+        intent = LiveIntentRecord(
+            "bitget",
+            client_oid,
+            symbol,
+            "SELL" if side == "LONG" else "BUY",
+            "SL",
+            "requested",
+            quantity,
+        )
+        self._intent_store.save(intent)
+        submitted = self._run(
+            self._client.place_position_tpsl(
+                symbol=symbol,
+                hold_side=side.lower(),
+                quantity=str(quantity),
+                stop_loss=str(stop_loss),
+                take_profit=None,
+            )
+        )
+        if not isinstance(submitted, Mapping):
+            intent.state = "unknown"
+            self._intent_store.update(intent)
+            raise SourceManagementReconciliationPending("stop-loss acknowledgement is invalid")
+        current = self.get_positions(symbol)
+        if len(current) != 1 or current[0]["stop_loss"] != stop_loss:
+            intent.state = "unknown"
+            self._intent_store.update(intent)
+            raise SourceManagementReconciliationPending("stop-loss readback is unconfirmed")
+        intent.state = "reconciled"
+        self._intent_store.update(intent)

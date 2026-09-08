@@ -104,7 +104,9 @@ class FakeLiveGateway:
 
 def make_service() -> tuple[OperatorCommandService, FakeLiveGateway]:
     gw = FakeLiveGateway()
-    svc = OperatorCommandService(gateway=gw, operator_id=1, require_confirmation=True)
+    svc = OperatorCommandService(
+        gateway=gw, operator_id=1, require_confirmation=True, mutations_enabled=True
+    )
     return svc, gw
 
 
@@ -113,6 +115,16 @@ def test_price_command_returns_formatted_alert() -> None:
     alert = svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
     assert "BTCUSDT" in alert
     assert "60000" in alert
+
+
+def test_operator_mutations_are_closed_until_live_cutover_enables_them() -> None:
+    gateway = FakeLiveGateway()
+    svc = OperatorCommandService(gateway=gateway, operator_id=1, require_confirmation=True)
+
+    with pytest.raises(CommandError, match="mutations are disabled"):
+        svc.handle("/setsl WLDUSDT 0.47", sender_id=1, is_private=True, is_forwarded=False)
+
+    assert gateway.protection_calls == []
 
 
 def test_balance_command_shows_available() -> None:

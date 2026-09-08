@@ -34,6 +34,12 @@ INSERT INTO dispatches
 VALUES (%s, 'canonical_signal', %s, %s, %s, 'QUEUED')
 ON CONFLICT (source_type, source_id, revision, exchange) DO NOTHING
 """
+_MANAGEMENT_INSERT = """
+INSERT INTO source_management_updates
+(id, source_message_id, revision, symbol, action, state)
+VALUES (%s, %s, %s, %s, %s, 'queued')
+ON CONFLICT (source_message_id, revision, symbol, action) DO NOTHING
+"""
 _ANALYSIS_NOTIFICATION_INSERT = """
 INSERT INTO notifications_outbox (id, dedup_key, payload)
 VALUES (%s, %s, %s::jsonb)
@@ -75,6 +81,17 @@ def process_received_batch(
                         codex_runner=_runner_callable(analysis_runner),
                     )
                     management = parse_source_management(message.raw_text)
+                    if management is not None:
+                        cursor.execute(
+                            _MANAGEMENT_INSERT,
+                            (
+                                uuid4(),
+                                message_uuid,
+                                revision,
+                                management.symbol,
+                                management.action.value,
+                            ),
+                        )
                     signal_id = None
                     if result.signal is not None:
                         signal = result.signal.model_copy(update={"source_revision": revision})

@@ -421,7 +421,14 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         mode=mode,
     )
     gateway = BitgetOperatorGateway(client, PostgresLiveIntentStore(psycopg.connect))
-    commands = OperatorCommandService(gateway, operator_id=int(environ["TG_OPERATOR_ID"]))
+    mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
+    if mutations_raw not in {"0", "1"}:
+        raise ValueError("BITGET_OPERATOR_MUTATIONS_ENABLED must be 0 or 1")
+    commands = OperatorCommandService(
+        gateway,
+        operator_id=int(environ["TG_OPERATOR_ID"]),
+        mutations_enabled=mutations_raw == "1",
+    )
     api = TelegramBotApi(environ["TG_BOT_TOKEN"])
     poller = TelegramCommandPoller(
         command_service=commands,

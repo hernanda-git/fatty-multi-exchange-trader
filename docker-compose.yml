@@ -189,7 +189,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
-      TRADER_MODE: DEMO
+      TRADER_MODE: ${TRADER_MODE:-DEMO}
       SERVICE_NAME: operator-bot
       PGHOST: postgres
       PGPORT: "5432"
@@ -204,6 +204,7 @@ services:
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}
+      BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
       TELEGRAM_HEARTBEAT_SECONDS: ${TELEGRAM_HEARTBEAT_SECONDS:-21600}
     depends_on:
       init:

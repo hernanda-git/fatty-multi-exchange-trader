@@ -63,11 +63,13 @@ class OperatorCommandService:
         gateway: LiveGateway,
         operator_id: int,
         require_confirmation: bool = True,
+        mutations_enabled: bool = False,
         now: float | None = None,
     ) -> None:
         self._gw = gateway
         self._operator_id = operator_id
         self._require_confirmation = require_confirmation
+        self._mutations_enabled = mutations_enabled
         self._now = now
         self._confirm_token: str | None = None
         self._pending: _PendingConfirmation | None = None
@@ -129,12 +131,19 @@ class OperatorCommandService:
         if isinstance(command, OpenCommand):
             return self._on_open(command)
         if isinstance(command, CancelCommand):
+            self._require_mutations_enabled()
             return self._on_cancel(command)
         if isinstance(command, CloseCommand):
+            self._require_mutations_enabled()
             return self._on_close(command)
         if isinstance(command, SetProtectionCommand):
+            self._require_mutations_enabled()
             return self._on_set_protection(command)
         raise CommandError("unsupported command")
+
+    def _require_mutations_enabled(self) -> None:
+        if not self._mutations_enabled:
+            raise CommandError("operator mutations are disabled by the live cutover gate")
 
     def _on_price(self, command: PriceCommand) -> str:
         price = self._gw.get_price(command.symbol)
