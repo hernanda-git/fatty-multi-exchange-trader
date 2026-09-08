@@ -293,13 +293,22 @@ def format_source_forward_html(payload: Mapping[str, Any]) -> str:
 def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
     source_id = escape(_safe_value(payload.get("source_message_id", "?")))
     if payload.get("canonical_signal") is not True:
+        management_action = payload.get("management_action")
+        management_symbol = escape(_safe_value(payload.get("management_symbol", "")))
+        if management_action == "TP1_BOOKED":
+            heading = f"<b>Manajemen posisi · {management_symbol}</b>"
+            detail = "TP1 booked terdeteksi dari source trader."
+        elif management_action == "SL_TO_ENTRY":
+            heading = f"<b>Manajemen posisi · {management_symbol}</b>"
+            detail = "SL to entry terdeteksi dari source trader."
+        elif management_action == "CLOSE":
+            heading = f"<b>Manajemen posisi · {management_symbol}</b>"
+            detail = "Instruksi close terdeteksi dari source trader."
+        else:
+            heading = "<b>Update sumber</b>"
+            detail = "Tidak ada order dibuat · bukan setup baru"
         source_text = escape(_safe_text(payload.get("source_text", ""), limit=1000))
-        return (
-            "<b>Update sumber</b>\n\n"
-            f"{source_text}\n\n"
-            "Tidak ada order dibuat · bukan setup baru\n"
-            f"Pesan sumber: <code>#{source_id}</code>"
-        )
+        return f"{heading}\n\n{source_text}\n\n{detail}\nPesan sumber: <code>#{source_id}</code>"
     pair = escape(_safe_value(payload.get("pair", "?")))
     direction = escape(_safe_value(payload.get("direction", "?")))
     entry = escape(_safe_value(payload.get("entry", "?")))

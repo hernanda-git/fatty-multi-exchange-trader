@@ -58,6 +58,14 @@ class FakeBitgetClient:
         self.position_rows = []
         return self.close_result
 
+    async def place_position_tpsl(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("place_position_tpsl", kwargs))
+        if kwargs.get("stop_loss") is not None:
+            self.position_rows[0]["stopLossTriggerPrice"] = kwargs["stop_loss"]
+        if kwargs.get("take_profit") is not None:
+            self.position_rows[0]["stopSurplusTriggerPrice"] = kwargs["take_profit"]
+        return {"stopLossId": "sl-1", "stopSurplusId": "tp-1"}
+
     async def cancel_all_orders(self, symbol: str | None = None) -> dict[str, Any]:
         self.calls.append(("cancel_all_orders", symbol))
         return {"successList": [{"orderId": "order-1"}]}
@@ -88,6 +96,8 @@ def test_read_only_methods_return_sanitized_provider_dtos() -> None:
             "side": "LONG",
             "size": Decimal("0.01"),
             "entry": Decimal("60000"),
+            "stop_loss": None,
+            "take_profit": None,
         }
     ]
     assert gateway.get_orders() == [
@@ -163,6 +173,25 @@ def test_unknown_close_result_is_reconciliation_pending_not_success() -> None:
     intent = store.get("operator-close-1")
     assert intent is not None
     assert intent.state == "unknown"
+
+
+def test_set_stop_loss_submits_native_protection_and_reads_back() -> None:
+    gateway, client, _ = make_gateway()
+
+    result = gateway.set_position_protection(
+        "BTCUSDT", stop_loss=Decimal("59900"), take_profit=None
+    )
+
+    assert result == {"symbol": "BTCUSDT", "state": "reconciled"}
+    request = next(value for name, value in client.calls if name == "place_position_tpsl")
+    assert request == {
+        "symbol": "BTCUSDT",
+        "hold_side": "long",
+        "quantity": "0.01",
+        "stop_loss": "59900",
+        "take_profit": None,
+    }
+    assert gateway.get_positions()[0]["stop_loss"] == Decimal("59900")
 
 
 def test_close_without_matching_open_position_makes_no_close_request() -> None:

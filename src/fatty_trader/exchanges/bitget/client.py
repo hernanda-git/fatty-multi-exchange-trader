@@ -213,7 +213,11 @@ class BitgetRestClient:
         data = await self._get(
             "/api/v2/mix/market/ticker", {"symbol": symbol, "productType": product_type}
         )
-        return data if isinstance(data, dict) else {"data": data}
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+            return data[0]
+        raise BitgetApiError("Bitget ticker response is invalid")
 
     async def get_server_time_ms(self) -> int:
         """Return Bitget server time in milliseconds for clock-skew checks."""
@@ -487,37 +491,48 @@ class BitgetRestClient:
         symbol: str,
         hold_side: str,
         quantity: str,
-        stop_loss: str,
-        stop_loss_execute_price: str,
-        take_profit: str,
-        take_profit_execute_price: str,
-        stop_loss_client_oid: str,
-        take_profit_client_oid: str,
+        stop_loss: str | None = None,
+        stop_loss_execute_price: str | None = None,
+        take_profit: str | None = None,
+        take_profit_execute_price: str | None = None,
+        stop_loss_client_oid: str | None = None,
+        take_profit_client_oid: str | None = None,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
     ) -> dict[str, Any]:
         """Place venue-native mark-price SL/TP for the confirmed position size."""
         if hold_side not in {"long", "short"}:
             raise ValueError("Bitget hold side must be long or short")
-        data = await self._post(
-            "/api/v2/mix/order/place-pos-tpsl",
-            {
-                "symbol": symbol.upper(),
-                "productType": product_type,
-                "marginCoin": margin_coin,
-                "size": quantity,
-                "holdSide": hold_side,
-                "delegateType": "normal",
-                "stopLossTriggerPrice": stop_loss,
-                "stopLossTriggerType": "mark_price",
-                "stopLossExecutePrice": stop_loss_execute_price,
-                "stopLossClientOid": stop_loss_client_oid,
-                "stopSurplusTriggerPrice": take_profit,
-                "stopSurplusTriggerType": "mark_price",
-                "stopSurplusExecutePrice": take_profit_execute_price,
-                "stopSurplusClientOid": take_profit_client_oid,
-            },
-        )
+        payload: dict[str, str] = {
+            "symbol": symbol.upper(),
+            "productType": product_type,
+            "marginCoin": margin_coin,
+            "size": quantity,
+            "holdSide": hold_side,
+            "delegateType": "normal",
+        }
+        if stop_loss is not None:
+            payload.update(
+                {
+                    "stopLossTriggerPrice": stop_loss,
+                    "stopLossTriggerType": "mark_price",
+                    "stopLossExecutePrice": stop_loss_execute_price or stop_loss,
+                    "stopLossClientOid": stop_loss_client_oid or f"sl-{int(time.time() * 1000)}",
+                }
+            )
+        if take_profit is not None:
+            payload.update(
+                {
+                    "stopSurplusTriggerPrice": take_profit,
+                    "stopSurplusTriggerType": "mark_price",
+                    "stopSurplusExecutePrice": take_profit_execute_price or take_profit,
+                    "stopSurplusClientOid": take_profit_client_oid
+                    or f"tp-{int(time.time() * 1000)}",
+                }
+            )
+        if stop_loss is None and take_profit is None:
+            raise ValueError("at least one of stop_loss or take_profit is required")
+        data = await self._post("/api/v2/mix/order/place-pos-tpsl", payload)
         if not isinstance(data, dict):
             raise BitgetApiError("Bitget protection response is invalid")
         return data

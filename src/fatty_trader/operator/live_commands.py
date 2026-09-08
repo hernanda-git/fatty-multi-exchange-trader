@@ -15,6 +15,7 @@ from fatty_trader.operator.command_parser import (
     OrdersCommand,
     PositionsCommand,
     PriceCommand,
+    SetProtectionCommand,
     parse_operator_command,
 )
 
@@ -41,6 +42,9 @@ class LiveGateway(Protocol):
     def cancel_all(self) -> dict[str, Any]: ...
     def close_position(self, target: str) -> dict[str, Any]: ...
     def close_all(self) -> dict[str, Any]: ...
+    def set_position_protection(
+        self, symbol: str, *, stop_loss: Decimal | None, take_profit: Decimal | None
+    ) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -128,6 +132,8 @@ class OperatorCommandService:
             return self._on_cancel(command)
         if isinstance(command, CloseCommand):
             return self._on_close(command)
+        if isinstance(command, SetProtectionCommand):
+            return self._on_set_protection(command)
         raise CommandError("unsupported command")
 
     def _on_price(self, command: PriceCommand) -> str:
@@ -148,7 +154,11 @@ class OperatorCommandService:
             side = p.get("side")
             size = p.get("size")
             entry = p.get("entry")
-            rows.append(f"{symbol} {side} size={size} entry={entry}")
+            stop_loss = p.get("stop_loss") or "none"
+            take_profit = p.get("take_profit") or "none"
+            rows.append(
+                f"{symbol} {side} size={size} entry={entry} SL={stop_loss} TP={take_profit}"
+            )
         return "POSITIONS\n" + "\n".join(rows)
 
     def _on_orders(self) -> str:
@@ -215,6 +225,26 @@ class OperatorCommandService:
         if result.get("state") == "reconciliation-pending":
             return f"CLOSE {result['closed']} state=reconciliation-pending"
         return f"CLOSE {result['closed']}"
+
+    def _on_set_protection(self, command: SetProtectionCommand) -> str:
+        confirmation_kind = f"set{command.kind.lower()}:{command.symbol}:{command.price}"
+        if self._require_confirmation and command.confirm_token is None:
+            token = self._issue_confirmation(confirmation_kind, command.symbol)
+            return (
+                f"CONFIRM set {command.kind} {command.symbol} {command.price}? "
+                f"Re-send with confirm={token}"
+            )
+        if command.confirm_token is not None:
+            self._consume_confirmation(command.confirm_token, confirmation_kind)
+        result = self._gw.set_position_protection(
+            command.symbol,
+            stop_loss=command.price if command.kind == "SL" else None,
+            take_profit=command.price if command.kind == "TP" else None,
+        )
+        state = result.get("state", "reconciliation-pending")
+        if state != "reconciled":
+            return f"{command.kind} {command.symbol} {command.price} state={state}"
+        return f"{command.kind} {command.symbol} {command.price} verified"
 
     def _is_confirmed(self, target: str) -> bool:
         if self._pending is None or self._pending.target != target:

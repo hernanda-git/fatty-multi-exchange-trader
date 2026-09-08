@@ -114,6 +114,23 @@ def test_cutover_event_states_that_no_order_was_sent() -> None:
     assert "577ed2b8" not in text
 
 
+def test_source_tp1_update_is_labeled_as_position_management() -> None:
+    text = format_notification_html(
+        {
+            "kind": "signal-analysis",
+            "source_message_id": 16105,
+            "canonical_signal": False,
+            "management_action": "TP1_BOOKED",
+            "management_symbol": "WLDUSDT",
+            "source_text": "$WLD TP1 booked here at 2R",
+        }
+    )
+
+    assert "<b>Manajemen posisi · WLDUSDT</b>" in text
+    assert "TP1 booked terdeteksi dari source trader." in text
+    assert "Tidak ada order dibuat" not in text
+
+
 def test_heartbeat_uses_rich_report_layout() -> None:
     text = format_notification_html(
         {

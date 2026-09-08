@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunResult
 from fatty_trader.analyzer.integration import analyze_with_fallback
+from fatty_trader.analyzer.trade_management import parse_source_management
 from fatty_trader.intake.persistence import RawTelegramMessage
 
 _SELECT_RECEIVED = """
@@ -73,6 +74,7 @@ def process_received_batch(
                         message_id=message.message_id,
                         codex_runner=_runner_callable(analysis_runner),
                     )
+                    management = parse_source_management(message.raw_text)
                     signal_id = None
                     if result.signal is not None:
                         signal = result.signal.model_copy(update={"source_revision": revision})
@@ -108,6 +110,10 @@ def process_received_batch(
                                     "status": result.status.value,
                                     "failure_class": result.failure_class or "none",
                                     "canonical_signal": signal_id is not None,
+                                    "management_action": (
+                                        management.action.value if management else None
+                                    ),
+                                    "management_symbol": management.symbol if management else None,
                                     "pair": result.signal.pair_token if result.signal else "none",
                                     "direction": result.signal.direction.value
                                     if result.signal

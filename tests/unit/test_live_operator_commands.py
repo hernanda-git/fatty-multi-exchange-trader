@@ -23,6 +23,7 @@ class FakeLiveGateway:
         self.cancel_calls: list[str] = []
         self.close_calls: list[str] = []
         self.last_open: dict[str, Any] | None = None
+        self.protection_calls: list[tuple[str, Decimal | None, Decimal | None]] = []
 
     def get_price(self, symbol: str) -> Decimal:
         return self.price
@@ -94,6 +95,12 @@ class FakeLiveGateway:
         self.positions = []
         return {"closed": "all", "count": n}
 
+    def set_position_protection(
+        self, symbol: str, *, stop_loss: Decimal | None, take_profit: Decimal | None
+    ) -> dict[str, Any]:
+        self.protection_calls.append((symbol, stop_loss, take_profit))
+        return {"symbol": symbol, "stop_loss": stop_loss, "take_profit": take_profit}
+
 
 def make_service() -> tuple[OperatorCommandService, FakeLiveGateway]:
     gw = FakeLiveGateway()
@@ -118,6 +125,61 @@ def test_positions_empty() -> None:
     svc, gw = make_service()
     alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
     assert "position" in alert.lower()
+
+
+def test_positions_shows_native_sl_and_tp() -> None:
+    svc, gw = make_service()
+    gw.positions = [
+        {
+            "symbol": "WLDUSDT",
+            "side": "LONG",
+            "size": Decimal("100"),
+            "entry": Decimal("0.47"),
+            "stop_loss": Decimal("0.47"),
+            "take_profit": Decimal("0.51"),
+        }
+    ]
+
+    alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
+
+    assert "WLDUSDT LONG" in alert
+    assert "SL=0.47" in alert
+    assert "TP=0.51" in alert
+
+
+def test_setsl_requires_confirmation_and_updates_only_sl() -> None:
+    svc, gw = make_service()
+
+    first = svc.handle("/setsl WLDUSDT 0.47", sender_id=1, is_private=True, is_forwarded=False)
+    assert "confirm" in first.lower()
+    assert gw.protection_calls == []
+    token = svc._pending.token if svc._pending else ""
+
+    result = svc.handle(
+        f"/setsl WLDUSDT 0.47 confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+
+    assert "SL WLDUSDT 0.47" in result
+    assert gw.protection_calls == [("WLDUSDT", Decimal("0.47"), None)]
+
+
+def test_settp_requires_confirmation_and_updates_only_tp() -> None:
+    svc, gw = make_service()
+
+    svc.handle("/settp WLDUSDT 0.51", sender_id=1, is_private=True, is_forwarded=False)
+    token = svc._pending.token if svc._pending else ""
+    result = svc.handle(
+        f"/settp WLDUSDT 0.51 confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+
+    assert "TP WLDUSDT 0.51" in result
+    assert gw.protection_calls == [("WLDUSDT", None, Decimal("0.51"))]
 
 
 def test_open_market_alert_contains_required_fields() -> None:

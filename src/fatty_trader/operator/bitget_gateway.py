@@ -28,6 +28,15 @@ class BitgetOperatorClient(Protocol):
     ) -> Any: ...
     def cancel_all_orders(self, symbol: str | None = None) -> Any: ...
     def cancel_order(self, *, symbol: str, order_id: str) -> Any: ...
+    def place_position_tpsl(
+        self,
+        *,
+        symbol: str,
+        hold_side: str,
+        quantity: str,
+        stop_loss: str | None,
+        take_profit: str | None,
+    ) -> Any: ...
     def aclose(self) -> Any: ...
 
 
@@ -36,6 +45,12 @@ def _decimal(value: object, field: str) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(f"Bitget {field} is invalid") from exc
+
+
+def _optional_decimal(value: object, field: str) -> Decimal | None:
+    if value is None or str(value).strip() in {"", "0", "0.0"}:
+        return None
+    return _decimal(value, field)
 
 
 def _rows(value: object, field: str) -> Sequence[Mapping[str, Any]]:
@@ -130,6 +145,14 @@ class BitgetOperatorGateway:
                     "entry": _decimal(
                         row.get("openPriceAvg", row.get("entryPrice", "0")), "position entry"
                     ),
+                    "stop_loss": _optional_decimal(
+                        row.get("stopLossTriggerPrice", row.get("presetStopLossPrice")),
+                        "position stop loss",
+                    ),
+                    "take_profit": _optional_decimal(
+                        row.get("stopSurplusTriggerPrice", row.get("presetStopSurplusPrice")),
+                        "position take profit",
+                    ),
                 }
             )
         return positions
@@ -181,6 +204,44 @@ class BitgetOperatorGateway:
             raise ValueError("Bitget cancel-all response is invalid")
         successes = response.get("successList", response.get("success", []))
         return {"count": len(successes) if isinstance(successes, list) else 0}
+
+    def set_position_protection(
+        self,
+        symbol: str,
+        *,
+        stop_loss: Decimal | None,
+        take_profit: Decimal | None,
+    ) -> dict[str, Any]:
+        if (stop_loss is None) == (take_profit is None):
+            raise ValueError("set exactly one of stop_loss or take_profit")
+        positions = self.get_positions(symbol)
+        if len(positions) != 1:
+            raise ValueError("Bitget protection target must resolve to exactly one open position")
+        position = positions[0]
+        submitted = self._run(
+            self._client.place_position_tpsl(
+                symbol=symbol,
+                hold_side=position["side"].lower(),
+                quantity=str(position["size"]),
+                stop_loss=str(stop_loss) if stop_loss is not None else None,
+                take_profit=str(take_profit) if take_profit is not None else None,
+            )
+        )
+        if not isinstance(submitted, Mapping):
+            return {"symbol": symbol, "state": "reconciliation-pending"}
+        current = self.get_positions(symbol)
+        if len(current) != 1:
+            return {"symbol": symbol, "state": "reconciliation-pending"}
+        current_position = current[0]
+        verified = (
+            current_position["stop_loss"] == stop_loss
+            if stop_loss is not None
+            else current_position["take_profit"] == take_profit
+        )
+        return {
+            "symbol": symbol,
+            "state": "reconciled" if verified else "reconciliation-pending",
+        }
 
     def close_position(self, target: str) -> dict[str, Any]:
         if target.startswith("position_id="):

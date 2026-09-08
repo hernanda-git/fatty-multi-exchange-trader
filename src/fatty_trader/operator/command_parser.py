@@ -47,6 +47,14 @@ class CloseCommand:
 
 
 @dataclass(frozen=True)
+class SetProtectionCommand:
+    symbol: str
+    price: Decimal
+    kind: str  # "SL" or "TP"
+    confirm_token: str | None = None
+
+
+@dataclass(frozen=True)
 class PositionsCommand:
     pass
 
@@ -113,6 +121,7 @@ def parse_operator_command(
     | OpenCommand
     | CancelCommand
     | CloseCommand
+    | SetProtectionCommand
     | PositionsCommand
     | OrdersCommand
     | BalanceCommand
@@ -202,6 +211,32 @@ def parse_operator_command(
         if target == "all" or _valid_position:
             return CloseCommand(target=target, confirm_token=confirm_token)
         raise CommandError("invalid /close target")
+
+    if head in {"/setsl", "/settp"}:
+        if len(parts) not in {3, 4}:
+            raise CommandError(f"{head} requires SYMBOL PRICE [confirm=TOKEN]")
+        symbol = parts[1].upper()
+        if symbol != parts[1] or not symbol.endswith("USDT"):
+            raise CommandError("symbol must be uppercase USDT futures pair, e.g. WLDUSDT")
+        try:
+            price = Decimal(parts[2])
+        except InvalidOperation as exc:
+            raise CommandError("protection price must be a positive number") from exc
+        if price <= 0:
+            raise CommandError("protection price must be a positive number")
+        confirm_token = None
+        if len(parts) == 4:
+            if not parts[3].startswith("confirm="):
+                raise CommandError(f"invalid {head} argument: {parts[3]}")
+            confirm_token = parts[3].split("=", 1)[1]
+            if not confirm_token:
+                raise CommandError("confirmation token is required")
+        return SetProtectionCommand(
+            symbol=symbol,
+            price=price,
+            kind="SL" if head == "/setsl" else "TP",
+            confirm_token=confirm_token,
+        )
 
     if head == "/positions":
         if len(parts) != 1:
