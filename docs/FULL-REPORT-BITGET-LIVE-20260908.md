@@ -54,6 +54,16 @@ The normal dispatcher is explicitly gated by `BITGET_EXECUTION_ENABLED`. The ope
   - full-close language -> `CLOSE`
 - The parser is classification only. It does not correlate a source update to an active provider position, submit a reduce-only TP1 close, or replace native protection.
 
+### Independent fail-closed audit
+
+A separate source-level audit completed after this report was first drafted. It confirmed the status remains **FAIL-CLOSED** and added two material blockers:
+
+- **Unreadable-order fills:** when Bitget order detail returns `40109`/not-found, the execution path returns before it evaluates matching fills. A real fill can therefore be left without native SL/TP. Add a `40109 + matching fillList` regression test and classify/protect or contain the fill before any terminal result.
+- **Reconciliation coverage:** the monitor selects only `UNKNOWN` intents, while the historical ledger also contains `requested` and `submitted` intents. Reconciliation must terminalize every non-terminal entry, close, and protection intent, backed by provider read evidence.
+- **Operator mode policy:** the operator bot can invoke LIVE Bitget mutations independently of the normal dispatcher gate. Make its mutation policy explicit and gated, especially during automated cutover.
+
+No repository files were changed by the independent audit.
+
 ### Bitget execution safeguards
 
 - Dispatcher requires a coherent `TRADER_MODE`/`BITGET_MODE` pair.
@@ -159,12 +169,21 @@ It is a non-empty backup. Restoration into an isolated staging database has not 
 4. **Persist and reconcile manual protection mutations.**
    The operator path posts native protection and verifies read-back, but it does not yet record a durable mutation intent before the POST. Add intent-first persistence and recovery handling for `/setsl` and `/settp`, equivalent to entry/close safety.
 
+5. **Handle matching fills when order detail is unreadable.**
+   The `40109`/not-found detail path returns before matching fills are evaluated. A matching fill must be classified as filled/partial and receive verified native protection or a fail-closed containment action.
+
+6. **Expand reconciliation beyond `UNKNOWN` state.**
+   The monitor must recover every non-terminal `requested`, `submitted`, `accepted`, and `unknown` entry/close/protection intent. Record provider read evidence while terminalizing the historical NOTUSDT ledger.
+
+7. **Add an explicit operator-mutation gate.**
+   The operator bot can make LIVE mutations outside the dispatcher `BITGET_EXECUTION_ENABLED` gate. Define whether this is emergency-only and enforce a separate default-closed configuration plus audit trail.
+
 ### Must verify with controlled canary
 
-5. **Set a fresh cutover record only after items 1–4 are merged and deployed.**
+8. **Set a fresh cutover record only after items 1–7 are merged and deployed.**
    Supply a real approval reference and configure one supported, uppercase LIVE `BITGET_CANARY_SYMBOL`, a positive one-order cap, a tested clock-skew bound, and `BITGET_EXECUTION_ENABLED=1` only for the canary window.
 
-6. **Run one bounded canary with no duplicate retry.**
+9. **Run one bounded canary with no duplicate retry.**
    Use a small amount accepted by the contract metadata. Verify in sequence:
    - dispatcher created exactly one durable entry intent with deterministic client OID;
    - Bitget provider order read-back matches that intent;
@@ -174,17 +193,17 @@ It is a non-empty backup. Restoration into an isolated staging database has not 
    - local `orders`, `fills`, `positions`, and `live_order_intents` agree with Bitget;
    - notification outbox has one meaningful delivery per event.
 
-7. **Exercise failure recovery.**
-   In a safe test path, simulate or induce an accepted-but-unreadable result and confirm state remains `ACCEPTED`/`UNKNOWN`, no second entry POST occurs, the monitor raises the fault, and recovery requires reconciliation rather than blind retry.
+10. **Exercise unreadable-order recovery.**
+   Test both no-fill and matching-fill responses after an unreadable order detail. The no-fill case must remain `ACCEPTED`/`UNKNOWN` without a second POST; the matching-fill case must protect or contain the fill. In both cases the monitor must require provider reconciliation rather than blind retry.
 
-8. **Restore-test the backup.**
+11. **Restore-test the backup.**
    Restore the latest backup into an isolated database and verify schema migrations plus row readability. A non-empty dump alone is not a proven rollback.
 
 ### Operational approvals required from owner
 
-9. Confirm the canary symbol, maximum exposure/order, and `BITGET_APPROVAL_REFERENCE` immediately before enabling execution.
-10. Confirm whether operator manual `/setsl` and `/settp` remain enabled during automated cutover, or are temporarily disabled to reduce concurrent mutation paths.
-11. Accept the independent security/reliability review after the above remediations; no live enablement should rely only on unit tests.
+12. Confirm the canary symbol, maximum exposure/order, and `BITGET_APPROVAL_REFERENCE` immediately before enabling execution.
+13. Confirm whether operator manual `/setsl` and `/settp` remain enabled during automated cutover, or are temporarily disabled to reduce concurrent mutation paths.
+14. Accept the independent security/reliability review after the above remediations; no live enablement should rely only on unit tests.
 
 ## Exact current go-live decision
 
