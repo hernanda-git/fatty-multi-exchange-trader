@@ -124,7 +124,7 @@ def test_balance_command_shows_available() -> None:
 def test_positions_empty() -> None:
     svc, gw = make_service()
     alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
-    assert "position" in alert.lower()
+    assert "posisi" in alert.lower()
 
 
 def test_positions_shows_native_sl_and_tp() -> None:

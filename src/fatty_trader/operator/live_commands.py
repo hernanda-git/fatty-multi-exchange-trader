@@ -138,16 +138,16 @@ class OperatorCommandService:
 
     def _on_price(self, command: PriceCommand) -> str:
         price = self._gw.get_price(command.symbol)
-        return f"PRICE {command.symbol} {price}"
+        return f"Harga {command.symbol}: {price}"
 
     def _on_balance(self) -> str:
         balance = self._gw.get_balance()
-        return f"BALANCE available={balance}"
+        return f"Saldo tersedia: {balance}"
 
     def _on_positions(self) -> str:
         positions = self._gw.get_positions()
         if not positions:
-            return "POSITIONS none"
+            return "Tidak ada posisi terbuka"
         rows = []
         for p in positions:
             symbol = p.get("symbol")
@@ -159,12 +159,12 @@ class OperatorCommandService:
             rows.append(
                 f"{symbol} {side} size={size} entry={entry} SL={stop_loss} TP={take_profit}"
             )
-        return "POSITIONS\n" + "\n".join(rows)
+        return "Posisi terbuka\n" + "\n".join(rows)
 
     def _on_orders(self) -> str:
         orders = self._gw.get_orders()
         if not orders:
-            return "ORDERS none"
+            return "Tidak ada pending order"
         rows = []
         for o in orders:
             symbol = o.get("symbol")
@@ -173,7 +173,7 @@ class OperatorCommandService:
             price = o.get("price")
             size = o.get("size")
             rows.append(f"{symbol} {side} {order_id} px={price} qty={size}")
-        return "ORDERS\n" + "\n".join(rows)
+        return "Pending order\n" + "\n".join(rows)
 
     def _on_open(self, command: OpenCommand) -> str:
         margin: Decimal
@@ -231,8 +231,8 @@ class OperatorCommandService:
         if self._require_confirmation and command.confirm_token is None:
             token = self._issue_confirmation(confirmation_kind, command.symbol)
             return (
-                f"CONFIRM set {command.kind} {command.symbol} {command.price}? "
-                f"Re-send with confirm={token}"
+                f"Konfirmasi set {command.kind} {command.symbol} {command.price}. "
+                f"Kirim ulang dengan confirm={token}"
             )
         if command.confirm_token is not None:
             self._consume_confirmation(command.confirm_token, confirmation_kind)
@@ -243,8 +243,8 @@ class OperatorCommandService:
         )
         state = result.get("state", "reconciliation-pending")
         if state != "reconciled":
-            return f"{command.kind} {command.symbol} {command.price} state={state}"
-        return f"{command.kind} {command.symbol} {command.price} verified"
+            return f"{command.kind} {command.symbol} {command.price} status={state}"
+        return f"{command.kind} {command.symbol} {command.price} terverifikasi"
 
     def _is_confirmed(self, target: str) -> bool:
         if self._pending is None or self._pending.target != target:
