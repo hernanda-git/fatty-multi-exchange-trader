@@ -288,16 +288,60 @@ class BitgetRestClient:
             },
         )
 
+    async def cancel_order(
+        self,
+        *,
+        symbol: str,
+        order_id: str,
+        product_type: str = "USDT-FUTURES",
+        margin_coin: str = "USDT",
+    ) -> dict[str, Any]:
+        if not order_id:
+            raise ValueError("Bitget order id is required")
+        data = await self._post(
+            "/api/v2/mix/order/cancel-order",
+            {
+                "symbol": symbol.upper(),
+                "productType": product_type,
+                "marginCoin": margin_coin,
+                "orderId": order_id,
+            },
+        )
+        if not isinstance(data, dict):
+            raise BitgetApiError("Bitget cancel-order response is invalid")
+        return data
+
+    async def cancel_all_orders(
+        self,
+        symbol: str | None = None,
+        product_type: str = "USDT-FUTURES",
+        margin_coin: str = "USDT",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"productType": product_type, "marginCoin": margin_coin}
+        if symbol is not None:
+            payload["symbol"] = symbol.upper()
+        data = await self._post("/api/v2/mix/order/cancel-all-orders", payload)
+        if not isinstance(data, dict):
+            raise BitgetApiError("Bitget cancel-all response is invalid")
+        return data
+
     async def get_pending_orders(
         self,
         symbol: str | None = None,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
-    ) -> Any:
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"productType": product_type, "marginCoin": margin_coin}
         if symbol is not None:
             params["symbol"] = symbol
-        return await self._get("/api/v2/mix/order/orders-pending", params)
+        data = await self._get("/api/v2/mix/order/orders-pending", params)
+        if isinstance(data, list) and all(isinstance(row, dict) for row in data):
+            return data
+        if isinstance(data, dict):
+            orders = data.get("entrustedList") or []
+            if isinstance(orders, list) and all(isinstance(row, dict) for row in orders):
+                return orders
+        raise BitgetApiError("Bitget pending orders response is invalid")
 
     async def get_pending_plan_orders(
         self,
@@ -372,7 +416,7 @@ class BitgetRestClient:
         margin_mode: str = "isolated",
         order_type: str = "market",
         price: str | None = None,
-        trade_side: str = "open",
+        trade_side: str | None = None,
     ) -> dict[str, Any]:
         """Place one opening order; callers must persist intent before invoking."""
         normalized_side = side.lower()
@@ -387,11 +431,12 @@ class BitgetRestClient:
             "marginCoin": margin_coin,
             "size": quantity,
             "side": normalized_side,
-            "tradeSide": trade_side,
             "orderType": order_type,
             "reduceOnly": "NO",
             "clientOid": client_oid,
         }
+        if trade_side:
+            payload["tradeSide"] = trade_side
         if order_type == "limit":
             if price is None:
                 raise ValueError("limit entry price is required")
@@ -412,7 +457,7 @@ class BitgetRestClient:
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
         margin_mode: str = "isolated",
-        trade_side: str = "close",
+        trade_side: str | None = None,
     ) -> dict[str, Any]:
         """Place one reduce-only market close; never retries an ambiguous POST."""
         normalized_side = side.lower()
@@ -425,11 +470,12 @@ class BitgetRestClient:
             "marginCoin": margin_coin,
             "size": quantity,
             "side": normalized_side,
-            "tradeSide": trade_side,
             "orderType": "market",
             "reduceOnly": "YES",
             "clientOid": client_oid,
         }
+        if trade_side:
+            payload["tradeSide"] = trade_side
         data = await self._post("/api/v2/mix/order/place-order", payload)
         if not isinstance(data, dict):
             raise BitgetApiError("Bitget close response is invalid")
@@ -461,6 +507,7 @@ class BitgetRestClient:
                 "marginCoin": margin_coin,
                 "size": quantity,
                 "holdSide": hold_side,
+                "delegateType": "normal",
                 "stopLossTriggerPrice": stop_loss,
                 "stopLossTriggerType": "mark_price",
                 "stopLossExecutePrice": stop_loss_execute_price,

@@ -254,8 +254,12 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
     if payload.get("kind") == "heartbeat":
         return _format_heartbeat_html(payload)
-    if payload.get("kind") == "source-forward":
-        return format_source_forward_html(payload)
+    if payload.get("kind") == "signal-analysis":
+        return _format_signal_analysis_html(payload)
+    if payload.get("kind") == "execution-event":
+        return _format_execution_event_html(payload)
+    if payload.get("kind") == "execution-alert":
+        return _format_execution_alert_html(payload)
     title = _safe_text(payload.get("kind", "Operator alert"), limit=100)
     lines = [f"<b>Fatty Trader: {escape(title)}</b>"]
     for key in sorted(payload):
@@ -270,19 +274,66 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
 
 def format_source_forward_html(payload: Mapping[str, Any]) -> str:
     """Render a durable source relay without attempting provider-side media mutation."""
-    channel_id = payload.get("source_channel_id")
     message_id = payload.get("source_message_id")
     text = _safe_text(payload.get("raw_text", ""), limit=3500)
     suffix = (
-        "\n\n<i>Source included media; retained as metadata only.</i>"
+        "\n\n<i>Lampiran media terdeteksi; teks belum diekstrak.</i>"
         if payload.get("has_media")
         else ""
     )
     return (
-        f"<b>Fatty Signal Relay</b> · <i>Source channel update</i>\n"
-        f"Source ID: <code>{escape(str(channel_id))}:{escape(str(message_id))}</code>\n\n"
+        "<b>Pesan sumber diterima</b>\n"
+        f"Referensi: <code>#{escape(str(message_id))}</code>\n\n"
         f"{escape(text)}{suffix}"
     )[:4000]
+
+
+def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
+    source_id = escape(_safe_value(payload.get("source_message_id", "?")))
+    if payload.get("canonical_signal") is not True:
+        return (
+            "<b>Update sinyal</b>\n\n"
+            "Bukan setup baru · tidak ada order dibuat\n"
+            f"Pesan sumber: <code>#{source_id}</code>"
+        )
+    pair = escape(_safe_value(payload.get("pair", "?")))
+    direction = escape(_safe_value(payload.get("direction", "?")))
+    entry = escape(_safe_value(payload.get("entry", "?")))
+    stop_loss = escape(_safe_value(payload.get("stop_loss", "?")))
+    take_profits = escape(_safe_value(payload.get("take_profits", [])))
+    dispatches = payload.get("dispatches", 0)
+    try:
+        dispatch_count = max(0, int(dispatches))
+    except (TypeError, ValueError):
+        dispatch_count = 0
+    process_label = f"{dispatch_count} proses eksekusi dibuat"
+    return (
+        f"<b>Setup terdeteksi · {pair} {direction}</b>\n\n"
+        f"Entry  : <code>{entry}</code>\n"
+        f"SL     : <code>{stop_loss}</code>\n"
+        f"TP     : <code>{take_profits}</code>\n\n"
+        f"Status : {process_label}\n"
+        f"Sumber : <code>#{source_id}</code>"
+    )[:4000]
+
+
+def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
+    reason = str(payload.get("reason", ""))
+    if reason == "cutover-gated":
+        return (
+            "<b>Eksekusi diblokir</b>\n\n"
+            "Tidak ada order dikirim.\n"
+            "Alasan: mode DEMO · eksekusi live belum diaktifkan."
+        )
+    state = escape(_safe_value(payload.get("to_state", "diperbarui")))
+    return f"<b>Status eksekusi</b>\n\nStatus: <code>{state}</code>"
+
+
+def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
+    reason = str(payload.get("reason", ""))
+    if reason == "cutover-gated":
+        return _format_execution_event_html(payload)
+    return "<b>Perhatian eksekusi</b>\n\nPerlu pemeriksaan operator."
 
 
 def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
@@ -292,31 +343,31 @@ def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
         return escape(_safe_value(payload.get(key, default)))
 
     report = (
-        "<b>Fatty Signal Relay</b>  <i>DEMO Ops</i>\n\n"
-        "<b>Status</b>\n"
-        "<pre>Overall  🟢 ONLINE\n"
+        "<b>Fatty Trader</b>  <i>Ringkasan Operasional</i>\n\n"
+        "<b>Kesehatan</b>\n"
+        "<pre>Status   🟢 ONLINE\n"
         f"Mode     {value('mode')}\n"
         f"Venue    {value('venue_mode')}\n"
         f"Host     {value('host')}\n"
-        f"Source   {value('source')}</pre>\n\n"
-        "<b>Latest Signal</b>\n"
-        f"Message  <code>{value('latest_source_message_id')}</code>\n"
-        f"Received <code>{value('latest_source_received_at')}</code>\n\n"
-        "<b>Database</b>\n"
-        f"<pre>Messages          {value('raw_messages')}\n"
-        f"Received          {value('received')}\n"
-        f"Analyzed          {value('analyzed')}\n"
-        f"Failed            {value('failed')}\n"
-        f"Signals           {value('canonical_signals')}\n"
-        f"Dispatches        {value('dispatches')}\n"
-        f"Live intents      {value('live_order_intents')}</pre>\n\n"
-        "<b>Notifications</b>\n"
-        f"<pre>Pending           {value('notification_pending')}\n"
-        f"Failed            {value('notification_failed')}</pre>\n\n"
-        "<b>Safety</b>\n"
+        f"Sumber   {value('source')}</pre>\n\n"
+        "<b>Pesan terbaru</b>\n"
+        f"Referensi <code>#{value('latest_source_message_id')}</code>\n"
+        f"Diterima  <code>{value('latest_source_received_at')}</code>\n\n"
+        "<b>Data sistem</b>\n"
+        f"<pre>Pesan masuk       {value('raw_messages')}\n"
+        f"Menunggu analisis  {value('received')}\n"
+        f"Selesai dianalisis {value('analyzed')}\n"
+        f"Gagal dianalisis   {value('failed')}\n"
+        f"Setup valid        {value('canonical_signals')}\n"
+        f"Dispatch           {value('dispatches')}\n"
+        f"Live intents       {value('live_order_intents')}</pre>\n\n"
+        "<b>Notifikasi</b>\n"
+        f"<pre>Antrean           {value('notification_pending')}\n"
+        f"Gagal             {value('notification_failed')}</pre>\n\n"
+        "<b>Perlindungan</b>\n"
         f"<pre>Mode              {value('mode')}\n"
-        f"Execution enabled {value('execution_enabled')}\n"
-        f"Codex account     {value('codex')}</pre>"
+        f"Eksekusi aktif    {value('execution_enabled')}\n"
+        f"Codex             {value('codex')}</pre>"
     )
     return report[:4000]
 

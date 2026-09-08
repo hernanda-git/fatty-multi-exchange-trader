@@ -189,24 +189,26 @@ class OperatorCommandService:
         )
 
     def _on_cancel(self, command: CancelCommand) -> str:
+        confirmation_kind = f"cancel:{command.target}"
+        if self._require_confirmation and command.confirm_token is None:
+            token = self._issue_confirmation(confirmation_kind, command.target)
+            return f"CONFIRM cancel {command.target}? Re-send with confirm={token}"
+        if command.confirm_token is not None:
+            self._consume_confirmation(command.confirm_token, confirmation_kind)
         if command.target == "all":
-            if self._require_confirmation and command.confirm_token is None:
-                token = self._issue_confirmation("cancel_all", "all")
-                return f"CONFIRM cancel all? Re-send with confirm={token}"
-            if command.confirm_token is not None:
-                self._consume_confirmation(command.confirm_token, "cancel_all")
             result = self._gw.cancel_all()
             return f"CANCEL all count={result['count']}"
         result = self._gw.cancel_order(command.target)
         return f"CANCEL {result['cancelled']}"
 
     def _on_close(self, command: CloseCommand) -> str:
+        confirmation_kind = f"close:{command.target}"
+        if self._require_confirmation and command.confirm_token is None:
+            token = self._issue_confirmation(confirmation_kind, command.target)
+            return f"CONFIRM close {command.target}? Re-send with confirm={token}"
+        if command.confirm_token is not None:
+            self._consume_confirmation(command.confirm_token, confirmation_kind)
         if command.target == "all":
-            if self._require_confirmation and command.confirm_token is None:
-                token = self._issue_confirmation("close_all", "all")
-                return f"CONFIRM close all? Re-send with confirm={token}"
-            if command.confirm_token is not None:
-                self._consume_confirmation(command.confirm_token, "close_all")
             result = self._gw.close_all()
             return f"CLOSE all count={result['count']}"
         result = self._gw.close_position(command.target)

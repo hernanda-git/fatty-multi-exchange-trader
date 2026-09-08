@@ -9,6 +9,9 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+WIB = ZoneInfo("Asia/Jakarta")
 from pathlib import Path
 from uuid import uuid4
 
@@ -64,7 +67,7 @@ def run_cycle() -> dict[str, object]:
         {
             "cycle_count": cycle_count + 1,
             "cycle_id": cycle_id,
-            "last_success_at": datetime.now(UTC).isoformat(),
+            "last_success_at": datetime.now(WIB).isoformat(),
             "failure_count": 0,
             "replay": replay,
         }
@@ -89,7 +92,7 @@ def main() -> int:
             state = _state()
             state.update(
                 {
-                    "last_failure_at": datetime.now(UTC).isoformat(),
+                    "last_failure_at": datetime.now(WIB).isoformat(),
                     "failure_count": failure_count,
                     "last_error": type(exc).__name__,
                 }

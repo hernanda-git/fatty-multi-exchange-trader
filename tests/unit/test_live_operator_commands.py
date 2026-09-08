@@ -159,6 +159,22 @@ def test_cancel_all_requires_confirmation_first() -> None:
     assert "cancel" in second.lower()
 
 
+def test_cancel_symbol_requires_confirmation() -> None:
+    svc, gw = make_service()
+    first = svc.handle("/cancel BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
+    assert "confirm" in first.lower()
+    assert gw.cancel_calls == []
+    token = svc._pending.token if svc._pending else ""
+    second = svc.handle(
+        f"/cancel BTCUSDT confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+    assert "cancel" in second.lower()
+    assert gw.cancel_calls == ["BTCUSDT"]
+
+
 def test_close_all_requires_confirmation_first() -> None:
     svc, gw = make_service()
     gw.positions = [
@@ -176,13 +192,23 @@ def test_close_all_requires_confirmation_first() -> None:
     assert "close" in second.lower()
 
 
-def test_close_position_by_id() -> None:
+def test_close_position_by_id_requires_confirmation() -> None:
     svc, gw = make_service()
     gw.positions = [
         {"symbol": "BTCUSDT", "side": "LONG", "size": Decimal("0.01"), "entry": Decimal("60000")},
     ]
-    alert = svc.handle("/close position_id=pos-1", sender_id=1, is_private=True, is_forwarded=False)
+    first = svc.handle("/close position_id=pos-1", sender_id=1, is_private=True, is_forwarded=False)
+    assert "confirm" in first.lower()
+    assert gw.close_calls == []
+    token = svc._pending.token if svc._pending else ""
+    alert = svc.handle(
+        f"/close position_id=pos-1 confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
     assert "pos-1" in alert
+    assert gw.close_calls == ["position_id=pos-1"]
 
 
 def test_orders_lists_pending() -> None:
@@ -279,7 +305,15 @@ def test_close_reports_reconciliation_pending_not_closed_success() -> None:
         return {"closed": "BTCUSDT", "state": "reconciliation-pending"}
 
     gw.close_position = pending_close  # type: ignore[method-assign]
-    alert = svc.handle("/close BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
+    first = svc.handle("/close BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
+    token = svc._pending.token if svc._pending else ""
+    alert = svc.handle(
+        f"/close BTCUSDT confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
 
+    assert "confirm" in first.lower()
     assert "reconciliation-pending" in alert
     assert "success" not in alert.lower()

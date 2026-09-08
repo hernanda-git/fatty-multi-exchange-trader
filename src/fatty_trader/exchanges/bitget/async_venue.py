@@ -65,7 +65,10 @@ class AsyncBitgetVenue:
         if not isinstance(ticker, dict):
             raise ValueError("Bitget ticker response must be an object")
         try:
-            price = Decimal(str(ticker["lastPr"]))
+            entries = ticker.get("data", [ticker])
+            if not isinstance(entries, list) or not entries:
+                raise KeyError("no ticker entries")
+            price = Decimal(str(entries[0]["lastPr"]))
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             raise ValueError("Bitget ticker response has invalid lastPr") from exc
         if price <= 0:

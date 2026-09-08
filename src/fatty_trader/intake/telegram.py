@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from html import escape
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from telethon import events
 
@@ -14,6 +15,8 @@ from fatty_trader.intake.persistence import (
     RawTelegramMessage,
     revision_hash,
 )
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 
 class TelegramIntake:
@@ -95,5 +98,5 @@ class TelegramForwarder:
 def _message_time(message: Any) -> datetime:
     value = getattr(message, "date", None)
     if not isinstance(value, datetime):
-        return datetime.now(UTC)
+        return datetime.now(WIB)
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

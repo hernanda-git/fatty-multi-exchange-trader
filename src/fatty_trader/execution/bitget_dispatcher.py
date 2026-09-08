@@ -153,7 +153,8 @@ class BitgetDispatcher:
         self._repository.transition(
             dispatch.id, expected_state="QUEUED", target_state="REJECTED", reason=reason
         )
-        self._repository.alert(dispatch.id, reason)
+        if reason != "cutover-gated":
+            self._repository.alert(dispatch.id, reason)
 
     def _reject_from(self, dispatch: BitgetDispatch, current: str, reason: str) -> None:
         self._repository.transition(

@@ -49,7 +49,7 @@ intake_id="$(docker compose ps -q intake)"
 started="$(docker inspect -f '{{.State.StartedAt}}' "$intake_id" 2>/dev/null || true)"
 uptime='N/A'
 if [[ -n "$started" ]]; then
-  uptime="$(date -u -d "$started" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || printf '%s' "$started")"
+  uptime="$(TZ=Asia/Jakarta date -d "$started" '+%Y-%m-%d %H:%M WIB' 2>/dev/null || printf '%s' "$started')"
 fi
 
 metrics="$(query "
@@ -59,7 +59,7 @@ UNION ALL SELECT 'open_positions', count(*)::text FROM positions WHERE closed_at
 UNION ALL SELECT 'pending_orders', count(*)::text FROM orders WHERE state NOT IN ('FILLED','CANCELLED','REJECTED','CLOSED')
 UNION ALL SELECT 'total_orders', count(*)::text FROM orders;
 ")"
-latest="$(query "SELECT channel_id::text, message_id::text, to_char(received_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI UTC'), encode(convert_to(left(raw_text, 1200), 'UTF8'), 'base64') FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT 1;" || true)"
+latest="$(query "SELECT channel_id::text, message_id::text, to_char(received_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD HH24:MI WIB'), encode(convert_to(left(raw_text, 1200), 'UTF8'), 'base64') FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT 1;" || true)"
 
 # Codex subscription quota is informational only. Never let this optional probe
 # make the operational report fail, and never persist the access token.
@@ -72,6 +72,7 @@ import sys
 import time
 import urllib.request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 cache_path = sys.argv[1]
 def emit(status, five, seven, reset, plan, refreshed):
@@ -128,7 +129,7 @@ try:
     rate = data["rate_limit"]
     primary = rate["primary_window"]
     secondary = rate["secondary_window"]
-    now = datetime.now(timezone.utc).strftime("%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Jakarta")).strftime("%m-%d %H:%M WIB")
     plan = str(data.get("plan_type") or "N/A")
     fresh = {
         "5h": f"{primary['used_percent']}% used / {100 - primary['used_percent']}% left",
@@ -177,7 +178,7 @@ codex_refreshed="$(printf '%s' "$codex_refreshed" | html_escape)"
 # src/fatty_trader/storage/schema.py LIVE_SCHEMA_SQL exactly.
 esc() { printf '%s' "$1" | html_escape; }
 
-live_balance="$(query "SELECT total_balance::text, available_balance::text, equity::text, margin_coin, to_char(captured_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI UTC'), floor(extract(epoch FROM (now() - captured_at)))::text FROM balance_snapshots WHERE exchange = 'bitget' ORDER BY captured_at DESC LIMIT 1;" || true)"
+live_balance="$(query "SELECT total_balance::text, available_balance::text, equity::text, margin_coin, to_char(captured_at AT TIME ZONE 'Asia/Jakarta', 'YYYY-MM-DD HH24:MI WIB'), floor(extract(epoch FROM (now() - captured_at)))::text FROM balance_snapshots WHERE exchange = 'bitget' ORDER BY captured_at DESC LIMIT 1;" || true)"
 live_positions="$(query "SELECT symbol, side, size::text, COALESCE(entry_price::text, 'N/A'), COALESCE(mark_price::text, 'N/A'), COALESCE(liquidation_price::text, 'N/A'), COALESCE(leverage::text, 'N/A'), COALESCE(margin_mode, 'N/A'), unrealized_pnl::text FROM position_snapshots WHERE exchange = 'bitget' AND captured_at = (SELECT max(captured_at) FROM position_snapshots WHERE exchange = 'bitget') ORDER BY symbol LIMIT 20;" || true)"
 live_sltp="$(query "SELECT symbol, bool_or(role = 'SL' AND state IN ('requested', 'acknowledged'))::text, bool_or(role = 'TP' AND state IN ('requested', 'acknowledged'))::text FROM live_order_intents WHERE exchange = 'bitget' GROUP BY symbol;" || true)"
 live_pending="$(query "SELECT symbol, side, role, requested_qty::text, COALESCE(requested_price::text, 'N/A'), state FROM live_order_intents WHERE exchange = 'bitget' AND state IN ('requested', 'acknowledged') ORDER BY created_at DESC LIMIT 10;" || true)"

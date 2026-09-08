@@ -12,5 +12,6 @@ data/codex-home/
 runtime/codex-home/
 runtime/autonomous-demo-cycle-state.json
 data/backups/
+backups/
 data/logs/
 *.py[cod]

@@ -282,6 +282,8 @@ def classify_live_order(
         return LiveOrderStatus.FILLED
     if filled_qty > 0:
         return LiveOrderStatus.PARTIAL
+    if not raw_status and not fills:
+        return LiveOrderStatus.UNKNOWN
     if raw_status in _ACCEPTED_STATUSES or raw_status == "":
         return LiveOrderStatus.ACCEPTED
     return LiveOrderStatus.UNKNOWN

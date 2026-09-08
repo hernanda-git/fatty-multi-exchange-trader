@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID, uuid5
+from zoneinfo import ZoneInfo
 
 from fatty_trader.domain.enums import DispatchState, Exchange
 from fatty_trader.domain.models import CanonicalSignal, SizingPlan
 from fatty_trader.domain.state_machines import transition_dispatch
 from fatty_trader.storage.memory import Dispatch, InMemoryDispatchRepository
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 if TYPE_CHECKING:
     from fatty_trader.exchanges.bitget.live import (
@@ -125,4 +128,4 @@ def submit_live_entry(
 
 
 def utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(WIB)

@@ -55,6 +55,63 @@ def test_notification_html_escapes_and_redacts_untrusted_payload() -> None:
     assert "<br>" not in text
 
 
+def test_signal_analysis_without_trade_is_a_plain_language_update() -> None:
+    text = format_notification_html(
+        {
+            "kind": "signal-analysis",
+            "source_message_id": 16102,
+            "status": "CODEX_SUCCEEDED",
+            "canonical_signal": False,
+            "dispatches": 0,
+        }
+    )
+
+    assert "<b>Update sinyal</b>" in text
+    assert "Bukan setup baru" in text
+    assert "Source Revision" not in text
+    assert "Canonical Signal" not in text
+
+
+def test_signal_analysis_with_trade_uses_compact_trade_card() -> None:
+    text = format_notification_html(
+        {
+            "kind": "signal-analysis",
+            "source_message_id": 16103,
+            "status": "CODEX_SUCCEEDED",
+            "canonical_signal": True,
+            "pair": "WLD",
+            "direction": "LONG",
+            "entry": "0.47",
+            "stop_loss": "0.4562",
+            "take_profits": ["0.51"],
+            "dispatches": 1,
+        }
+    )
+
+    assert "<b>Setup terdeteksi · WLD LONG</b>" in text
+    assert "Entry  : <code>0.47</code>" in text
+    assert "SL     : <code>0.4562</code>" in text
+    assert "TP     : <code>0.51</code>" in text
+    assert "1 proses eksekusi dibuat" in text
+
+
+def test_cutover_event_states_that_no_order_was_sent() -> None:
+    text = format_notification_html(
+        {
+            "kind": "execution-event",
+            "dispatch_id": "577ed2b8-9511-4abc-851b-2f2d256714bf",
+            "from_state": "QUEUED",
+            "to_state": "REJECTED",
+            "reason": "cutover-gated",
+        }
+    )
+
+    assert "<b>Eksekusi diblokir</b>" in text
+    assert "Tidak ada order dikirim" in text
+    assert "cutover-gated" not in text
+    assert "577ed2b8" not in text
+
+
 def test_heartbeat_uses_rich_report_layout() -> None:
     text = format_notification_html(
         {
@@ -79,11 +136,11 @@ def test_heartbeat_uses_rich_report_layout() -> None:
         }
     )
 
-    assert "<b>Fatty Signal Relay</b>" in text
-    assert "<i>DEMO Ops</i>" in text
-    assert "Paper Ops" not in text
-    assert "<b>Database</b>" in text
-    assert "Signals           1" in text
+    assert "<b>Fatty Trader</b>" in text
+    assert "<i>Ringkasan Operasional</i>" in text
+    assert "<b>Kesehatan</b>" in text
+    assert "<b>Data sistem</b>" in text
+    assert "Signals" not in text
     assert "<br>" not in text
 
 

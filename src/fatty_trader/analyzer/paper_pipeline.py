@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 from fatty_trader.analyzer.codex_runner import CodexRunResult
 from fatty_trader.analyzer.integration import analyze_with_fallback
@@ -10,6 +11,8 @@ from fatty_trader.domain.enums import Exchange
 from fatty_trader.domain.models import CanonicalSignal
 from fatty_trader.intake.persistence import RawTelegramMessage, revision_hash
 from fatty_trader.storage.memory import Dispatch, InMemoryDispatchRepository
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 
 class PaperPipeline:
@@ -76,7 +79,7 @@ def observed_messages() -> tuple[RawTelegramMessage, ...]:
             "#PUMP $PUMP LONG TRADE ENTRY: 0.00427 TARGETS: 0.004438 - 0.004915 STOPLOSS: 0.00416",
         ),
     )
-    now = datetime.now(UTC)
+    now = datetime.now(WIB)
     return tuple(
         RawTelegramMessage(
             1,

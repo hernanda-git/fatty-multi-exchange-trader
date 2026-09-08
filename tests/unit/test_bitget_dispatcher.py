@@ -122,7 +122,7 @@ async def test_closed_gate_blocks_invalid_dispatch_without_provider_post() -> No
     assert result == "cutover-gated"
     assert execution.post_count == 0
     assert repository.transitions == [("QUEUED", "REJECTED", "cutover-gated")]
-    assert repository.alerts == ["cutover-gated"]
+    assert repository.alerts == []
 
 
 @pytest.mark.asyncio

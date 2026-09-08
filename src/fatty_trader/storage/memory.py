@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fatty_trader.domain.enums import DispatchState, Exchange
 from fatty_trader.domain.models import CanonicalSignal
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 
 @dataclass(frozen=True)
@@ -62,7 +65,7 @@ class InMemoryDispatchRepository:
     ) -> Dispatch | None:
         if not worker_id or lease_seconds <= 0:
             raise ValueError("worker_id and positive lease_seconds are required")
-        current_time = now or datetime.now().astimezone()
+        current_time = now or datetime.now(WIB)
         for item in self._items.values():
             lease_expired = item.lease_until is not None and item.lease_until <= current_time
             eligible = item.state in {DispatchState.QUEUED, DispatchState.RETRY_WAIT}

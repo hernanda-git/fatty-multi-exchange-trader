@@ -25,7 +25,6 @@ from fatty_trader.domain.models import InstrumentSpec, VenueRiskConfig
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
-from fatty_trader.notifications import enqueue_notification
 from fatty_trader.storage.migrations import apply_migrations
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
 
@@ -72,7 +71,13 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
     "dispatcher-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"),
     "monitor-binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
     "monitor-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"),
-    "operator-bot": ("TG_BOT_TOKEN", "TG_OPERATOR_ID"),
+    "operator-bot": (
+        "TG_BOT_TOKEN",
+        "TG_OPERATOR_ID",
+        "BITGET_API_KEY",
+        "BITGET_API_SECRET",
+        "BITGET_API_PASSPHRASE",
+    ),
 }
 
 
@@ -394,81 +399,54 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
 
 
 async def run_operator_bot(environ: Mapping[str, str]) -> None:
-    """Publish a durable, DB-backed heartbeat to the configured operator chat."""
+    """Run the private authenticated operator command listener in a dedicated thread."""
     import psycopg
 
-    interval = float(environ.get("TELEGRAM_HEARTBEAT_SECONDS", "21600"))
-    while True:
-        connection = psycopg.connect()
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+    from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
+    from fatty_trader.operator.live_commands import OperatorCommandService
+    from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+    required = (
+        "TG_BOT_TOKEN",
+        "TG_OPERATOR_ID",
+        "BITGET_API_KEY",
+        "BITGET_API_SECRET",
+        "BITGET_API_PASSPHRASE",
+    )
+    missing = [name for name in required if not environ.get(name)]
+    if missing:
+        raise ValueError("operator-bot requires Telegram and Bitget credentials")
+    mode = environ.get("BITGET_MODE", "DEMO").upper()
+    client = BitgetRestClient(
+        environ["BITGET_API_KEY"],
+        environ["BITGET_API_SECRET"],
+        environ["BITGET_API_PASSPHRASE"],
+        mode=mode,
+    )
+    gateway = BitgetOperatorGateway(client, PostgresLiveIntentStore(psycopg.connect))
+    commands = OperatorCommandService(gateway, operator_id=int(environ["TG_OPERATOR_ID"]))
+    api = TelegramBotApi(environ["TG_BOT_TOKEN"])
+    poller = TelegramCommandPoller(
+        command_service=commands,
+        fetch_updates=api.fetch_updates,
+        send_reply=api.send_reply,
+    )
+
+    def listen() -> None:
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT
-                      (SELECT count(*) FROM telegram_messages),
-                      (SELECT count(*) FROM telegram_messages WHERE intake_state = 'RECEIVED'),
-                      (SELECT count(*) FROM telegram_messages WHERE intake_state = 'ANALYZED'),
-                      (SELECT count(*) FROM telegram_messages WHERE intake_state = 'FAILED'),
-                      (SELECT count(*) FROM canonical_signals),
-                      (SELECT count(*) FROM dispatches),
-                      (SELECT count(*) FROM live_order_intents),
-                      (SELECT message_id FROM telegram_messages ORDER BY received_at DESC LIMIT 1),
-                      (SELECT received_at FROM telegram_messages ORDER BY received_at DESC LIMIT 1),
-                      (SELECT count(*) FROM notifications_outbox
-                       WHERE sent_at IS NULL AND failed_at IS NULL),
-                      (SELECT count(*) FROM notifications_outbox WHERE failed_at IS NOT NULL)
-                    """
-                )
-                row = cursor.fetchone()
+            while True:
+                try:
+                    poller.run_once()
+                except RuntimeError:
+                    print("service=operator-bot state=poll-retry", flush=True)
+                    time.sleep(3)
         finally:
-            connection.close()
-        if row is None:
-            raise RuntimeError("heartbeat query returned no row")
-        (
-            raw_total,
-            received,
-            analyzed,
-            failed,
-            signals,
-            dispatches,
-            intents,
-            latest_message_id,
-            latest_received_at,
-            pending_notifications,
-            failed_notifications,
-        ) = row
-        payload = {
-            "kind": "heartbeat",
-            "host": "fspmi-hostinger",
-            "mode": environ.get("TRADER_MODE", "DEMO").upper(),
-            "venue_mode": environ.get("BITGET_MODE", "DEMO").upper(),
-            "execution_enabled": environ.get("BITGET_EXECUTION_ENABLED", "0"),
-            "source": environ.get("TELEGRAM_SOURCE_CHANNELS", "configured"),
-            "raw_messages": raw_total,
-            "received": received,
-            "analyzed": analyzed,
-            "failed": failed,
-            "canonical_signals": signals,
-            "dispatches": dispatches,
-            "live_order_intents": intents,
-            "latest_source_message_id": latest_message_id or "none",
-            "latest_source_received_at": str(latest_received_at or "none"),
-            "notification_pending": pending_notifications,
-            "notification_failed": failed_notifications,
-            "codex": environ.get("CODEX_ACCOUNT_LABEL", "UNCONFIGURED"),
-        }
-        enqueue_notification(
-            psycopg.connect,
-            dedup_key=f"heartbeat:{int(time.time() // interval)}",
-            payload=payload,
-        )
-        print(
-            "service=operator-bot state=heartbeat-published "
-            f"latest_message_id={latest_message_id or 'none'} raw={raw_total} "
-            f"signals={signals} dispatches={dispatches} intents={intents}",
-            flush=True,
-        )
-        await asyncio.sleep(interval)
+            api.close()
+            gateway.close()
+
+    await asyncio.to_thread(listen)
 
 
 def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:

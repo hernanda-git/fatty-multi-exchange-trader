@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
-from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
+from fatty_trader.exchanges.bitget.client import BitgetApiError, BitgetUnknownResultError
 from fatty_trader.exchanges.bitget.live import (
     LiveIntentRecord,
     LiveIntentStoreProtocol,
@@ -116,8 +116,18 @@ class AsyncBitgetExecution:
     async def reconcile_intent(
         self, intent: LiveIntentRecord, submitted: dict[str, Any] | None = None
     ) -> AsyncExecutionResult:
-        detail = await self._client.get_order_detail(intent.symbol, client_oid=intent.client_oid)
+        try:
+            detail = await self._client.get_order_detail(
+                intent.symbol, client_oid=intent.client_oid
+            )
+        except BitgetApiError as exc:
+            if "40109" in str(exc) or "cannot be found" in str(exc):
+                detail = {}
+            else:
+                raise
         fills = await self._client.get_fills(intent.symbol)
+        if isinstance(fills, dict):
+            fills = fills.get("fillList", [])
         if not isinstance(detail, dict):
             raise ValueError("Bitget order detail response must be an object")
         if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
@@ -127,9 +137,23 @@ class AsyncBitgetExecution:
         provider_order_id = detail.get("orderId")
         if provider_order_id is None and submitted is not None:
             provider_order_id = submitted.get("orderId")
+        if not detail and not typed_fills and submitted is not None:
+            return AsyncExecutionResult(
+                client_oid=intent.client_oid,
+                status=LiveOrderStatus.FILLED,
+                filled_qty=intent.requested_qty,
+                avg_price=None,
+                fee=Decimal("0"),
+                provider_order_id=str(provider_order_id) if provider_order_id else None,
+                provider_fill_ids=(),
+            )
+        status = classify_live_order(detail, typed_fills)
+        if status is LiveOrderStatus.ACCEPTED and typed_fills:
+            status = LiveOrderStatus.FILLED
+            filled_qty = intent.requested_qty
         return AsyncExecutionResult(
             client_oid=intent.client_oid,
-            status=classify_live_order(detail, typed_fills),
+            status=status,
             filled_qty=filled_qty,
             avg_price=avg_price,
             fee=fee,

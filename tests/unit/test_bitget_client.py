@@ -123,6 +123,16 @@ async def test_server_time_is_normalized_to_milliseconds() -> None:
     await client.aclose()
 
 
+async def test_pending_orders_normalizes_bitget_envelope_to_a_list() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/mix/order/orders-pending"
+        return httpx.Response(200, json=ok_envelope({"endId": "", "entrustedList": None}))
+
+    client, _ = make_client(handler)
+    assert await client.get_pending_orders() == []
+    await client.aclose()
+
+
 async def test_place_entry_order_uses_open_side_semantics() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v2/mix/order/place-order"
@@ -137,7 +147,6 @@ async def test_place_entry_order_uses_open_side_semantics() -> None:
             "side": "buy",
             "size": "0.001",
             "symbol": "BTCUSDT",
-            "tradeSide": "open",
         }
         return httpx.Response(
             200, json=ok_envelope({"orderId": "provider-1", "clientOid": body["clientOid"]})
@@ -158,7 +167,7 @@ async def test_market_close_is_reduce_only_and_never_retried() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode())
         assert body["side"] == "sell"
-        assert body["tradeSide"] == "close"
+        assert "tradeSide" not in body
         assert body["reduceOnly"] == "YES"
         assert body["orderType"] == "market"
         return httpx.Response(200, json=ok_envelope({"orderId": "close-1"}))
@@ -174,11 +183,44 @@ async def test_market_close_is_reduce_only_and_never_retried() -> None:
     await client.aclose()
 
 
+async def test_cancel_order_uses_v2_cancel_endpoint_and_exact_order_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/mix/order/cancel-order"
+        assert json.loads(request.content.decode()) == {
+            "marginCoin": "USDT",
+            "orderId": "order-1",
+            "productType": "USDT-FUTURES",
+            "symbol": "BTCUSDT",
+        }
+        return httpx.Response(200, json=ok_envelope({"orderId": "order-1"}))
+
+    client, _ = make_client(handler)
+    result = await client.cancel_order(symbol="BTCUSDT", order_id="order-1")
+    assert result["orderId"] == "order-1"
+    await client.aclose()
+
+
+async def test_cancel_all_orders_uses_v2_cancel_all_endpoint() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/mix/order/cancel-all-orders"
+        assert json.loads(request.content.decode()) == {
+            "marginCoin": "USDT",
+            "productType": "USDT-FUTURES",
+        }
+        return httpx.Response(200, json=ok_envelope({"successList": [{"orderId": "order-1"}]}))
+
+    client, _ = make_client(handler)
+    result = await client.cancel_all_orders()
+    assert result["successList"] == [{"orderId": "order-1"}]
+    await client.aclose()
+
+
 async def test_place_position_tpsl_uses_mark_price_triggers() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v2/mix/order/place-pos-tpsl"
         body = json.loads(request.content.decode())
         assert body == {
+            "delegateType": "normal",
             "holdSide": "long",
             "marginCoin": "USDT",
             "productType": "USDT-FUTURES",

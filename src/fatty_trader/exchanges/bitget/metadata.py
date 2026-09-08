@@ -30,9 +30,7 @@ def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
     if not symbol:
         raise ValueError("contract symbol is required")
     price_precision = int(contract.get("pricePlace", 0))
-    price_tick = _decimal(
-        contract.get("priceEndStep") or Decimal(1).scaleb(-price_precision), "price tick"
-    )
+    price_tick = Decimal(1).scaleb(-price_precision)
     size_step = _decimal(contract.get("sizeMultiplier"), "size multiplier")
     min_qty = _decimal(contract.get("minTradeNum"), "minimum order quantity")
     max_qty = _decimal(

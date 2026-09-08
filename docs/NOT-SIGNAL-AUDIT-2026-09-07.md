@@ -87,6 +87,22 @@ be legitimately submitted there. Making it execute would require either:
 Neither condition may be simulated or inferred. Unsupported symbols must fail at
 venue preflight with a precise reason and zero provider mutation.
 
+## Post-deployment verification
+
+- Production code commit: `d882e13`.
+- Analyzer, dispatcher-bitget, and monitor-bitget were rebuilt in place with the
+  effective DEMO environment.
+- All eight persistent Compose services reported healthy.
+- Effective analyzer routing: `bitget` only.
+- Effective dispatcher state: `mode=DEMO`, `venue=DEMO`, execution enabled,
+  no single-symbol selector, global cap `100`.
+- Monitor completed repeated clean cycles with `state=ok reasons=none`.
+- Kill-switch database row remained inactive; DEMO runtime does not consult or
+  relatch it.
+- Post-deployment database read-back: zero queued dispatches, zero live order
+  intents, zero orders, and zero positions.
+- Authenticated read-only Bitget DEMO probe remained fully green after rollout.
+
 ## Verification
 
 - Exact NOT parser regression: passed.

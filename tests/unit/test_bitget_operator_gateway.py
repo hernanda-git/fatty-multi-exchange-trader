@@ -58,13 +58,16 @@ class FakeBitgetClient:
         self.position_rows = []
         return self.close_result
 
-    async def cancel_all_orders(self) -> dict[str, Any]:
-        self.calls.append(("cancel_all_orders", None))
+    async def cancel_all_orders(self, symbol: str | None = None) -> dict[str, Any]:
+        self.calls.append(("cancel_all_orders", symbol))
         return {"successList": [{"orderId": "order-1"}]}
 
     async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("cancel_order", kwargs))
         return {"orderId": kwargs.get("order_id", "order-1")}
+
+    async def aclose(self) -> None:
+        self.calls.append(("aclose", None))
 
 
 def make_gateway() -> tuple[BitgetOperatorGateway, FakeBitgetClient, InMemoryLiveIntentStore]:
@@ -97,6 +100,37 @@ def test_read_only_methods_return_sanitized_provider_dtos() -> None:
         }
     ]
     assert all("must-not-leak" not in str(value) for _, value in client.calls)
+
+
+def test_gateway_reuses_one_event_loop_and_closes_client_on_that_loop() -> None:
+    gateway, client, _ = make_gateway()
+
+    gateway.get_price("BTCUSDT")
+    first_loop = gateway._loop
+    gateway.get_balance()
+    gateway.close()
+
+    assert first_loop is not None
+    assert gateway._loop is first_loop
+    assert ("aclose", None) in client.calls
+
+
+def test_cancel_symbol_uses_provider_cancel_all_for_exact_symbol() -> None:
+    gateway, client, _ = make_gateway()
+
+    result = gateway.cancel_order("BTCUSDT")
+
+    assert result == {"cancelled": "BTCUSDT", "count": 1}
+    assert ("cancel_all_orders", "BTCUSDT") in client.calls
+
+
+def test_cancel_order_id_resolves_provider_symbol_before_cancellation() -> None:
+    gateway, client, _ = make_gateway()
+
+    result = gateway.cancel_order("order_id=order-1")
+
+    assert result == {"cancelled": "order-1"}
+    assert ("cancel_order", {"symbol": "BTCUSDT", "order_id": "order-1"}) in client.calls
 
 
 def test_close_position_persists_reduce_only_close_intent_and_reads_back_flat() -> None:

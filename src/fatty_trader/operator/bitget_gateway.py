@@ -23,9 +23,12 @@ class BitgetOperatorClient(Protocol):
     def get_account(self) -> Any: ...
     def get_all_positions(self) -> Any: ...
     def get_pending_orders(self, symbol: str | None = None) -> Any: ...
-    def place_market_close(self, **kwargs: Any) -> Any: ...
-    def cancel_all_orders(self) -> Any: ...
-    def cancel_order(self, **kwargs: Any) -> Any: ...
+    def place_market_close(
+        self, *, symbol: str, side: str, quantity: str, client_oid: str
+    ) -> Any: ...
+    def cancel_all_orders(self, symbol: str | None = None) -> Any: ...
+    def cancel_order(self, *, symbol: str, order_id: str) -> Any: ...
+    def aclose(self) -> Any: ...
 
 
 def _decimal(value: object, field: str) -> Decimal:
@@ -59,9 +62,10 @@ class BitgetOperatorGateway:
         self._client = client
         self._intent_store = intent_store
         self._client_oid_factory = client_oid_factory or (lambda: f"operator-close-{uuid4().hex}")
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._closed = False
 
-    @staticmethod
-    def _run(value: Any) -> Any:
+    def _run(self, value: Any) -> Any:
         if not inspect.isawaitable(value):
             return value
         if not isinstance(value, Coroutine):
@@ -69,9 +73,26 @@ class BitgetOperatorGateway:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(value)
+            if self._closed:
+                value.close()
+                raise RuntimeError("operator gateway is closed") from None
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+            return self._loop.run_until_complete(value)
         value.close()
         raise RuntimeError("synchronous operator gateway cannot run inside an active event loop")
+
+    def close(self) -> None:
+        """Close the async HTTP client on its owning loop."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._loop is None:
+            return
+        try:
+            self._loop.run_until_complete(self._client.aclose())
+        finally:
+            self._loop.close()
 
     def get_price(self, symbol: str) -> Decimal:
         payload = self._run(self._client.get_ticker(symbol.upper()))
@@ -136,11 +157,22 @@ class BitgetOperatorGateway:
 
     def cancel_order(self, target: str) -> dict[str, Any]:
         if not target.startswith("order_id="):
-            return {"cancelled": target}
+            symbol = target.upper()
+            response = self._run(self._client.cancel_all_orders(symbol=symbol))
+            if not isinstance(response, Mapping):
+                raise ValueError("Bitget cancel-all response is invalid")
+            successes = response.get("successList", response.get("success", []))
+            return {
+                "cancelled": symbol,
+                "count": len(successes) if isinstance(successes, list) else 0,
+            }
         order_id = target.split("=", 1)[1]
         if not order_id:
             raise ValueError("order id is required")
-        self._run(self._client.cancel_order(order_id=order_id))
+        matching = [order for order in self.get_orders() if order["order_id"] == order_id]
+        if len(matching) != 1:
+            raise ValueError("Bitget pending order id was not found uniquely")
+        self._run(self._client.cancel_order(symbol=matching[0]["symbol"], order_id=order_id))
         return {"cancelled": order_id}
 
     def cancel_all(self) -> dict[str, Any]:
