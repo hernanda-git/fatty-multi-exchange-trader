@@ -5,6 +5,8 @@
 **Application:** `/home/valarion/apps/fatty-multi-exchange-trader`  
 **Deployed source:** `ec987674d086363f741ebce32739ec62faf4c688`
 
+> **HISTORICAL DOCUMENT** — This report reflects the state before the LIVE cutover (2026-09-08). The Bitget lane is now LIVE with a bounded canary. See `FULL-REPORT-BITGET-LIVE-20260908.md` for current state.
+
 ## Executive status
 
 The Compose stack is healthy and is operating against the funded Bitget DEMO environment. The read-only provider probe, account-mode gate, Codex container text probe, and Codex container image probe pass.
@@ -61,7 +63,6 @@ server_time=PASS
 The variable is the explicit provider-mutation gate. At `0`, the service may run, connect to PostgreSQL, read DEMO account state, resolve contracts, inspect orders/fills/positions, and reconcile state, but it must not submit a provider order.
 
 It is intentionally distinct from `BITGET_MODE=DEMO`:
-
 - `BITGET_MODE=DEMO` selects Bitget DEMO credentials and private-request behavior.
 - `BITGET_EXECUTION_ENABLED=0` prevents orders even in DEMO.
 - A future bounded DEMO lifecycle must set the execution gate, a positive canary maximum, a valid canary symbol, a non-secret approval reference, and a positive clock-skew limit.

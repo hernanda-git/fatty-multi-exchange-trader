@@ -27,6 +27,8 @@ async def reconcile_unknown_intent(
     fills = await read_fills(intent.symbol)
     if not isinstance(detail, dict):
         raise ValueError("provider-order-detail-invalid")
+    if isinstance(fills, dict):
+        fills = fills.get("fillList", [])
     if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
         raise ValueError("provider-fills-invalid")
     filled_qty, avg_price, fee, fill_ids = summarize_fills(fills)

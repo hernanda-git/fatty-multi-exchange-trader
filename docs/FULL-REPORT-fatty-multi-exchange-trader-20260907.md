@@ -1,3 +1,5 @@
+> **HISTORICAL DOCUMENT** — This report reflects the state before the LIVE cutover (2026-09-08). The Bitget lane is now LIVE with a bounded canary. See `FULL-REPORT-BITGET-LIVE-20260908.md` for current state.
+
 # Fatty Multi-Exchange Trader — DEMO Copy-Trade Full Report
 
 **Evidence captured:** 2026-09-07 09:37 UTC
@@ -5,6 +7,8 @@
 **Host/path:** `fspmi-hostinger:/home/valarion/apps/fatty-multi-exchange-trader`
 **Source channel:** [`https://t.me/fattyfatclub`](https://t.me/fattyfatclub)
 **Source HEAD:** `0d0ff556c5dc607b427b5376045bc7fb1c50ad8a`
+
+> **HISTORICAL DOCUMENT** — This report reflects the state before the LIVE cutover (2026-09-08). The Bitget lane is now LIVE with a bounded canary. See `FULL-REPORT-BITGET-LIVE-20260908.md` for current state.
 
 Secrets, credentials, tokens, session material, and connection strings are omitted.
 
@@ -100,7 +104,6 @@ scripts/bitget_demo_telemetry.py
 ```
 
 The report distinguishes:
-
 - Bitget DEMO provider read-back;
 - local database snapshots;
 - execution state;
@@ -137,14 +140,12 @@ Telegram health delivery      HTTP 200
 ## Git/deployment lineage
 
 Relevant pushed commits:
-
 - `24f1f97` — durable Bitget intent states/roles and migration v6
 - `5a74698` — bounded canary reservations and migration v7
 - `425a329` — durable intake and notification delivery
 - `0d0ff55` — direct Bitget DEMO account telemetry and operations documentation
 
 The working tree contains only known local untracked operational directories:
-
 ```text
 .hermes/
 backups/
@@ -156,7 +157,6 @@ They were not staged or modified.
 ## What is proven vs not proven
 
 ### Proven
-
 - Telegram source configuration points to `@fattyfatclub`.
 - Compose services are healthy.
 - Authenticated Bitget DEMO account read succeeds.
@@ -168,7 +168,6 @@ They were not staged or modified.
 - No real-money order has been created.
 
 ### Not enabled / not claimed
-
 - Provider mutation is not enabled.
 - A copy-trade order lifecycle has not been submitted in DEMO because the execution gate is `0`.
 - The source database contains six messages, not ten or an unlimited historical feed.

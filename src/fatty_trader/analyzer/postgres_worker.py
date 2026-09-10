@@ -124,6 +124,7 @@ def process_received_batch(
                                     "kind": "signal-analysis",
                                     "source_message_id": message_id,
                                     "source_text": message.raw_text,
+                                    "source_received_at": message.received_at.isoformat() if message.received_at else None,
                                     "status": result.status.value,
                                     "failure_class": result.failure_class or "none",
                                     "canonical_signal": signal_id is not None,

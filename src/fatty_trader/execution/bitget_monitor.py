@@ -1,4 +1,4 @@
-"""Read-only Bitget monitor that latches a durable fail-closed kill switch."""
+"""Read-only Bitget monitor that alerts on anomalies without a hard kill switch."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class BitgetMonitor:
         *,
         scope: str = "bitget",
         max_clock_skew_ms: int = 10_000,
-        enforce_kill_switch: bool = True,
+        enforce_kill_switch: bool = False,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")

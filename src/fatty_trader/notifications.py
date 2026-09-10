@@ -1,8 +1,4 @@
-"""Durable Telegram bot notification delivery from ``notifications_outbox``.
-
-The worker owns lease-safe claiming and records only delivery state. It never logs
-bot tokens, payloads, Telegram response bodies, or transport exception text.
-"""
+"""Durable Telegram bot notification delivery from ``notifications_outbox``."""
 
 from __future__ import annotations
 
@@ -38,11 +34,8 @@ class OutboxNotification:
 
 class NotificationOutbox(Protocol):
     def claim(self, worker_id: str, lease_seconds: int) -> OutboxNotification | None: ...
-
     def mark_sent(self, notification_id: UUID, worker_id: str) -> None: ...
-
     def mark_retry(self, notification_id: UUID, worker_id: str, delay_seconds: int) -> None: ...
-
     def mark_failed(self, notification_id: UUID, worker_id: str) -> None: ...
 
 
@@ -262,6 +255,8 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
         return _format_execution_event_html(payload)
     if payload.get("kind") == "execution-alert":
         return _format_execution_alert_html(payload)
+    if payload.get("kind") == "system-event":
+        return _format_system_event_html(payload)
     title = _safe_text(payload.get("kind", "Operator alert"), limit=100)
     lines = [f"<b>Fatty Trader: {escape(title)}</b>"]
     for key in sorted(payload):
@@ -269,8 +264,6 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
             continue
         value = "[redacted]" if _SECRET_KEY.search(str(key)) else _safe_value(payload[key])
         lines.append(f"<b>{escape(str(key).replace('_', ' ').title())}:</b> {escape(value)}")
-    # Telegram's HTML subset does not support <br>; literal newlines preserve
-    # card readability without causing a permanent Bot API parse failure.
     return "\n".join(lines)[:4000]
 
 
@@ -292,23 +285,35 @@ def format_source_forward_html(payload: Mapping[str, Any]) -> str:
 
 def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
     source_id = escape(_safe_value(payload.get("source_message_id", "?")))
+    source_received_at = _format_timestamp(str(payload.get("source_received_at", "")))
     if payload.get("canonical_signal") is not True:
         management_action = payload.get("management_action")
         management_symbol = escape(_safe_value(payload.get("management_symbol", "")))
+        source_text = escape(_safe_text(payload.get("source_text", ""), limit=1000))
         if management_action == "TP1_BOOKED":
-            heading = f"<b>Manajemen posisi · {management_symbol}</b>"
+            icon = "🟢"
+            heading = f"Manajemen Posisi · {management_symbol}"
             detail = "TP1 booked terdeteksi dari source trader."
         elif management_action == "SL_TO_ENTRY":
-            heading = f"<b>Manajemen posisi · {management_symbol}</b>"
+            icon = "🟡"
+            heading = f"Manajemen Posisi · {management_symbol}"
             detail = "SL to entry terdeteksi dari source trader."
         elif management_action == "CLOSE":
-            heading = f"<b>Manajemen posisi · {management_symbol}</b>"
+            icon = "🔴"
+            heading = f"Manajemen Posisi · {management_symbol}"
             detail = "Instruksi close terdeteksi dari source trader."
         else:
-            heading = "<b>Update sumber</b>"
+            icon = "⚪"
+            heading = "Update Sumber"
             detail = "Tidak ada order dibuat · bukan setup baru"
-        source_text = escape(_safe_text(payload.get("source_text", ""), limit=1000))
-        return f"{heading}\n\n{source_text}\n\n{detail}\nPesan sumber: <code>#{source_id}</code>"
+        return (
+            f"{icon} <b>{escape(heading)}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{source_text}\n\n"
+            f"<i>{detail}</i>\n"
+            f"ID: <code>#{source_id}</code>\n"
+            f"Waktu: <code>{escape(source_received_at)}</code>"
+        )
     pair = escape(_safe_value(payload.get("pair", "?")))
     direction = escape(_safe_value(payload.get("direction", "?")))
     entry = escape(_safe_value(payload.get("entry", "?")))
@@ -320,13 +325,17 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
     except (TypeError, ValueError):
         dispatch_count = 0
     process_label = f"{dispatch_count} proses eksekusi dibuat"
+    direction_icon = "🟢" if direction == "LONG" else "🔴" if direction == "SHORT" else "⚪"
     return (
-        f"<b>Setup terdeteksi · {pair} {direction}</b>\n\n"
+        f"📊 <b>Setup Terdeteksi · {pair} {direction_icon} {direction}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"Entry  : <code>{entry}</code>\n"
         f"SL     : <code>{stop_loss}</code>\n"
-        f"TP     : <code>{take_profits}</code>\n\n"
+        f"TP     : <code>{take_profits}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"Status : {process_label}\n"
-        f"Sumber : <code>#{source_id}</code>"
+        f"ID: <code>#{source_id}</code>\n"
+        f"Waktu: <code>{escape(source_received_at)}</code>"
     )[:4000]
 
 
@@ -334,19 +343,37 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
     reason = str(payload.get("reason", ""))
     if reason == "cutover-gated":
         return (
-            "<b>Eksekusi diblokir</b>\n\n"
+            "⛔ <b>Eksekusi Diblokir</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
             "Tidak ada order dikirim.\n"
             "Alasan: mode DEMO · eksekusi live belum diaktifkan."
         )
     state = escape(_safe_value(payload.get("to_state", "diperbarui")))
-    return f"<b>Status eksekusi</b>\n\nStatus: <code>{state}</code>"
+    return (
+        f"📈 <b>Status Eksekusi</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Status: <code>{state}</code>"
+    )
 
 
 def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
     reason = str(payload.get("reason", ""))
     if reason == "cutover-gated":
         return _format_execution_event_html(payload)
-    return "<b>Perhatian eksekusi</b>\n\nPerlu pemeriksaan operator."
+    return (
+        "⚠️ <b>Perhatian Eksekusi</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "Perlu pemeriksaan operator."
+    )
+
+
+def _format_system_event_html(payload: Mapping[str, Any]) -> str:
+    message = escape(_safe_text(payload.get("message", ""), limit=1000))
+    return (
+        "🤖 <b>System Event</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{message}"
+    )
 
 
 def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
@@ -401,3 +428,17 @@ def _safe_text(value: Any, *, limit: int) -> str:
     text = _BOT_TOKEN.sub("[redacted]", text)
     text = _INLINE_SECRET.sub(lambda match: f"{match.group(1)}=[redacted]", text)
     return text[:limit]
+
+
+def _format_timestamp(iso_string: str) -> str:
+    """Format ISO timestamp to human-readable form in GMT+7 Jakarta time."""
+    if not iso_string:
+        return "?"
+    try:
+        from datetime import datetime, timezone, timedelta
+        dt = datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
+        jakarta_tz = timezone(timedelta(hours=7))
+        dt_jakarta = dt.astimezone(jakarta_tz)
+        return dt_jakarta.strftime("%d %b %Y, %H:%M WIB")
+    except (ValueError, TypeError):
+        return iso_string

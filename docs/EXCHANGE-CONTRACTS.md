@@ -1,3 +1,5 @@
+> **HISTORICAL DOCUMENT** — This report reflects the state before the LIVE cutover (2026-09-08). The Bitget lane is now LIVE with a bounded canary. See `FULL-REPORT-BITGET-LIVE-20260908.md` for current state.
+
 # Exchange Contracts
 
 ## Binance USD-M Futures TESTNET public market data
@@ -19,17 +21,17 @@ is a deliberately read-only adapter for `https://testnet.binancefuture.com`.
   It must remain public-market-data-only until a separately reviewed execution contract
   is introduced.
 
-## Bitget DEMO venue skeleton
+## Bitget LIVE venue
 
-`fatty_trader.config.bitget.BitgetVenueConfig` and
-`fatty_trader.exchanges.bitget.paper.BitgetPaperAdapter` form a strictly fail-closed
-DEMO-only selection boundary.
+`fatty_trader.config.bitget.BitgetVenueConfig` and the Bitget execution adapters form a
+**LIVE-capate** venue with bounded canary controls.
 
-- `mode` accepts only `DEMO`; `LIVE` is rejected during configuration validation.
+- `mode` accepts `DEMO` or `LIVE`; `LIVE` is the active production mode.
 - The venue is `disabled` when any required credential is missing, empty, or whitespace-only.
-  It becomes `demo_ready` only when API key, API secret, and passphrase are all non-blank.
 - Credential fields use secret-aware values and are not revealed by configuration `repr` or
   `str` output.
-- The adapter exposes only availability state. It has no HTTP client, API request, signing,
-  account, or order-submission operation. Adding any such capability requires a separately
-  reviewed execution contract.
+- Execution requires all four cutover gates: `BITGET_EXECUTION_ENABLED=1`,
+  `BITGET_CANARY_MAX_ORDERS > 0`, `BITGET_APPROVAL_REFERENCE` non-empty,
+  `BITGET_MAX_CLOCK_SKEW_MS > 0`.
+- Native SL/TP are placed only from confirmed fill quantity; protection mismatch latches degraded.
+- Emergency close uses a deterministic client OID with at-most-once submit.

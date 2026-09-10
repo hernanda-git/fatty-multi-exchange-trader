@@ -234,3 +234,25 @@ services:
     healthcheck:
       test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.notification_service", "--check"]
     restart: unless-stopped
+
+  source-management:
+    build: .
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "source-management"]
+    environment:
+      TRADER_MODE: ${TRADER_MODE:-DEMO}
+      SERVICE_NAME: source-management
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: fatty_trader
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      BITGET_API_KEY: ${BITGET_API_KEY:-}
+      BITGET_API_SECRET: ${BITGET_API_SECRET:-}
+      BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
+      BITGET_MODE: ${BITGET_MODE:-DEMO}
+      BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
+      SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped

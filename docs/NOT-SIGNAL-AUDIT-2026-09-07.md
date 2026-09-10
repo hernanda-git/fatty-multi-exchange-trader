@@ -1,3 +1,5 @@
+> **HISTORICAL DOCUMENT** — This report reflects the state before the LIVE cutover (2026-09-08). The Bitget lane is now LIVE with a bounded canary. See `FULL-REPORT-BITGET-LIVE-20260908.md` for current state.
+
 # NOT Signal Execution Audit — 2026-09-07
 
 ## Scope

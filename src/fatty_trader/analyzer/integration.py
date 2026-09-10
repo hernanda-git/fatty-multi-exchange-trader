@@ -37,7 +37,9 @@ def analyze_with_fallback(
         return _fallback(text, message_id, "codex unavailable")
     if codex.succeeded:
         classified = classify_json(text, codex.stdout, message_id=message_id)
-        return AnalysisResult(AnalysisStatus.CODEX_SUCCEEDED, classified.signal)
+        if classified.signal is not None:
+            return AnalysisResult(AnalysisStatus.CODEX_SUCCEEDED, classified.signal)
+        return _fallback(text, message_id, classified.reason or "codex returned no signal")
     return _fallback(text, message_id, codex.failure_reason or "codex failed")
 
 

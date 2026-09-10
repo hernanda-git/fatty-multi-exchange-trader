@@ -1,7 +1,9 @@
 # Bitget USDT-Futures Live Operations
 
 This document captures the runbook for operating the Bitget USDT-M futures live venue
-end-to-end: from credential wiring to a bounded first-production canary.
+end-to-end: from credential wiring to the active bounded canary.
+
+**Status: LIVE** (canary active since 2026-09-08)
 
 ---
 
@@ -12,24 +14,18 @@ never stored in source control.
 
 | Variable | Source | Notes |
 |---|---|---|
-| `BITGET_API_KEY` | Bitget API management | readonly + trade + read-only orders initially |
+| `BITGET_API_KEY` | Bitget API management | trade + read-only orders |
 | `BITGET_API_SECRET` | Bitget API management | |
 | `BITGET_API_PASSPHRASE` | Bitget API management | distinct from account password |
-| `BITGET_MODE` | compose / env | must be `DEMO` or `LIVE`; DEMO adds `paptrading: 1` |
-| `TRADER_MODE` | compose / env | global flag — **remains `DEMO`** for the rest of the topology |
+| `BITGET_MODE` | compose / env | `LIVE` |
+| `TRADER_MODE` | compose / env | `LIVE` globally |
 
-Inject via `.env` on the deployment host **or** via the orchestrator secret mechanism
-(`fly secret set` / compose `environment:`). After rotating any credential, restart the
-`dispatcher-bitget` container only.
+Inject via `.env` on the deployment host. After rotating any credential, recreate the
+`dispatcher-bitget` container:
 
-### Runtime boundary (current implementation)
-
-`TRADER_MODE` is the global topology mode and remains `DEMO`. The Bitget lane
-has a separate `BITGET_MODE` value, so `BITGET_MODE=LIVE` identifies the
-intended venue without promoting Binance, intake, analyzer, or operator
-services. Until the real dispatcher and monitor lifecycle is wired and its
-preflight gates pass, the Bitget workers must report `state=heartbeat-only` and
-must not submit provider mutations.
+```bash
+docker compose up -d --force-recreate dispatcher-bitget
+```
 
 Validation that credentials + product + margin mode are configured correctly:
 
@@ -40,36 +36,27 @@ docker compose exec dispatcher-bitget \
 
 ---
 
-## 2. Demo / testnet end-to-end verification
+## 2. Live canary configuration
 
-Before touching mainnet, run the full lifecycle against Bitget demo endpoints with the
-smallest permitted notional. The demo client is protocol-injected — no network required —
-and walks:
+Current active canary values:
 
-1. Account identity, product type (`USDT-FUTURES`), margin coin (`USDT`), isolated mode,
-   and position mode (one-way / hedge).
-2. Public symbol metadata + current price.
-3. `/price` and `/balance` operator commands.
-4. One tiny **market** entry with explicit SL/TP, with read-back of:
-   - provider order id
-   - fill qty + average price + fee
-   - protection SL/TP orders
-   - resulting position
-   - liquidation estimate
-5. Pending limit order → `/cancel` → read-back of zero pending.
-6. `/close` → read-back of zero position.
-7. Invalid symbol, bad direction, and insufficient-margin inputs — all rejected with an
-   alert (never a silent skip).
-8. Every action produces exactly one alert; no alert ever contains a secret, signature,
-   or raw auth header.
-
-```bash
-uv run pytest tests/e2e/test_bitget_demo_live_cycle.py -v
+```text
+BITGET_EXECUTION_ENABLED=1
+BITGET_CANARY_MAX_ORDERS=5
+BITGET_APPROVAL_REFERENCE=hernanda-approved-live-20260908
+BITGET_MAX_CLOCK_SKEW_MS=5000
+BITGET_OPERATOR_MUTATIONS_ENABLED=0
 ```
+
+Canary constraints:
+- **Bounded entries**: max 5 live orders.
+- **Smallest permitted notional** (min-order amount × current price × 1.02).
+- **Dynamic symbols**: any provider-listed pair passing metadata preflight.
+- Manual operator mutations remain disabled.
 
 ---
 
-## 3. Go-live gate (run before the first mainnet order)
+## 3. Go-live gate (completed 2026-09-08)
 
 Full suite green, no warnings, no shortcuts:
 
@@ -82,25 +69,20 @@ git diff --check
 docker compose config --quiet
 ```
 
-Execution is closed unless **all** server-side gates are intentionally set:
-`BITGET_EXECUTION_ENABLED=1`, a positive `BITGET_CANARY_MAX_ORDERS`, one
-uppercase `BITGET_CANARY_SYMBOL`, a non-secret `BITGET_APPROVAL_REFERENCE`, and
-a positive `BITGET_MAX_CLOCK_SKEW_MS`. These values are deployment metadata, not
-credentials; no approval token belongs in tracked configuration.
+Evidence recorded before enabling mainnet:
+- [x] Credentialed Bitget account read probe passes (balance + positions).
+- [x] 780 public contract fixtures cached locally.
+- [x] Protection + reconciliation health verified.
+- [x] Kill switch tested and released after reconciliation.
+- [x] Emergency reduce-only close path tested (NOTUSDT incident 2026-09-08 03:46 UTC).
+- [x] Fresh Postgres backup taken.
+- [x] Explicit human approval logged (2026-09-08 17:01 UTC).
 
-Evidence to record **before** enabling mainnet:
+---
 
-- [ ] Credentialed Bitget account read probe passes (balance + positions).
-- [ ] Public contract fixtures for the canary symbol cached locally.
-- [ ] Protection + reconciliation health verified in demo.
-- [ ] Kill switch tested (stale data / wrong margin mode / missing protection).
-- [ ] Emergency reduce-only close path tested.
-- [ ] Fresh Postgres backup taken (`scripts/backup_postgres.sh`).
-- [ ] Explicit human approval logged with timestamp.
+## 4. Runtime evidence and backup
 
-### Runtime evidence and backup
-
-With execution still disabled, collect the exact deployed SHA, Compose topology,
+Collect the exact deployed SHA, Compose topology,
 migration ledger, kill-switch state, recent monitor/dispatcher cycles, and the
 sanitized authenticated GET probe:
 
@@ -109,44 +91,13 @@ scripts/verify_bitget_runtime.sh
 scripts/backup_postgres.sh
 ```
 
-The backup command runs `pg_dump` inside the Compose PostgreSQL service, writes a
-timestamped custom dump outside Git, rejects an empty dump, and prints a restore
-command. Keep the reported path with the rollout record; do not paste secrets into
-terminal history or reports.
-
-### Canary constraints
-
-- **One venue, one symbol** (default `BTCUSDT`).
-- **Smallest permitted notional** (min-order amount × current price × 1.02).
-- **Ten signals only** — no auto-scaling, no all-in fallback.
-- Verify the complete lifecycle (entry → protect → reconcile → close) before allowing
-  additional signals.
-
----
-
-## 4. Cutover
-
-Performed as a **separate explicit action** once the gate above is green.
-
-```bash
-# 1. Confirm current state
-git log -1 --format='%H %s'
-docker compose ps
-
-# 2. Record rollback command for this cutover
-echo "ROLLBACK: git checkout <prior_sha> && docker compose up -d --build dispatcher-bitget"
-
-# 3. Enable live config on the server (example with Fly secrets)
-fly secrets set BITGET_API_KEY=... BITGET_API_SECRET=... BITGET_API_PASSPHRASE=...
-
-# 4. Restart only the Bitget lane
-docker compose up -d --build dispatcher-bitget monitor-bitget
-
-# 5. Verify
-docker compose logs -f dispatcher-bitget
-```
-
-Record: deployed commit SHA, timestamp, operator, rollback command.
+Current runtime state:
+- Runtime SHA: `6b34e25d496f740a15ea19802ebd4e1ec7e20a85`
+- All 8 services healthy
+- 780 contracts, 0 positions, 0 open orders
+- Kill switch: released (`hernanda-approved-live-20260908-historical-reconciled`)
+- Monitor: `state=ok`, `reasons=none`
+- Dispatcher: `mode=LIVE venue_mode=LIVE state=idle`
 
 ---
 
@@ -155,14 +106,13 @@ Record: deployed commit SHA, timestamp, operator, rollback command.
 If the canary misbehaves or any gate regresses:
 
 ```bash
-# Immediate: kill switch via operator bot
-# /close all        ← confirms with a token
-# /cancel all       ← confirms with a token
-# /positions        ← verify zero
+# Immediate: disable execution
+# Edit .env: BITGET_EXECUTION_ENABLED=0
+docker compose up -d --force-recreate dispatcher-bitget
 
 # Full revert to prior commit
 git checkout <prior_sha>
-docker compose up -d --build dispatcher-bitget monitor-bitget
+docker compose up -d --force-recreate dispatcher-bitget monitor-bitget
 
 # Confirm
 uv run pytest -q
@@ -186,3 +136,4 @@ docker compose ps
 | /close SYM / position_id=ID | Close one | no |
 
 All commands require a **private, non-forwarded** chat from the configured operator id.
+Manual operator mutations are currently disabled (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`).

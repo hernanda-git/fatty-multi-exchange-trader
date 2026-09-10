@@ -36,6 +36,7 @@ SUPPORTED_SERVICES = (
     "monitor-binance",
     "monitor-bitget",
     "operator-bot",
+    "source-management",
 )
 
 
@@ -74,6 +75,11 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
     "operator-bot": (
         "TG_BOT_TOKEN",
         "TG_OPERATOR_ID",
+        "BITGET_API_KEY",
+        "BITGET_API_SECRET",
+        "BITGET_API_PASSPHRASE",
+    ),
+    "source-management": (
         "BITGET_API_KEY",
         "BITGET_API_SECRET",
         "BITGET_API_PASSPHRASE",
@@ -336,6 +342,9 @@ async def run_worker(name: str) -> None:
     if name == "operator-bot":
         await run_operator_bot(os.environ)
         return
+    if name == "source-management":
+        await run_source_management(os.environ)
+        return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:
         # Keep this boundary observable without writing secrets or business payloads.
@@ -349,11 +358,12 @@ async def run_worker(name: str) -> None:
 
 
 def bitget_kill_switch_enforced(environ: Mapping[str, str]) -> bool:
-    """DEMO reports safety findings without blocking; LIVE remains fail-closed."""
-    return (
-        environ.get("TRADER_MODE", "DEMO").upper() == "LIVE"
-        and environ.get("BITGET_MODE", "DEMO").upper() == "LIVE"
-    )
+    """Kill switch latches are replaced by durable operator alerts.
+
+    The monitor still detects anomalies but enqueues notifications rather than
+    blocking execution, so signals are never silently dropped.
+    """
+    return False
 
 
 def enabled_dispatch_exchanges(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -450,6 +460,34 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
             gateway.close()
 
     await asyncio.to_thread(listen)
+
+
+async def run_source_management(environ: Mapping[str, str]) -> None:
+    """Execute durable source-management updates (TP1 booked, SL to entry, close)."""
+    import psycopg
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+    from fatty_trader.execution.source_management import SourceManagementExecutor
+    from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+    from fatty_trader.storage.source_management import PostgresSourceManagementStore
+
+    mode = environ.get("BITGET_MODE", "DEMO").upper()
+    client = BitgetRestClient(
+        environ["BITGET_API_KEY"],
+        environ["BITGET_API_SECRET"],
+        environ["BITGET_API_PASSPHRASE"],
+        mode=mode,
+    )
+    gateway = BitgetOperatorGateway(client, PostgresLiveIntentStore(psycopg.connect))
+    executor = SourceManagementExecutor(
+        PostgresSourceManagementStore(psycopg.connect), gateway
+    )
+    interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "30"))
+    while True:
+        state = await asyncio.to_thread(executor.run_once, "source-management")
+        print(f"service=source-management mode={mode} state={state}", flush=True)
+        await asyncio.sleep(interval)
 
 
 def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:

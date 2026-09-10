@@ -5,6 +5,8 @@
 **Source:** [`https://t.me/fattyfatclub`](https://t.me/fattyfatclub)
 **Venue:** Bitget USDT Futures DEMO
 
+> **HISTORICAL DOCUMENT** — This report reflects the state before the LIVE cutover (2026-09-08). The Bitget lane is now LIVE with a bounded canary. See `FULL-REPORT-BITGET-LIVE-20260908.md` for current state.
+
 ## Safety contract
 
 - `TRADER_MODE=DEMO`
@@ -59,7 +61,6 @@ There are two periodic reports:
 Historical `PAPER/LIVE` heartbeat rows remain in PostgreSQL for audit history. Current runtime heartbeat rows are `DEMO/DEMO`; historical rows must not be treated as current state.
 
 The health report separates:
-
 - provider read-only DEMO account telemetry;
 - local database snapshots;
 - local execution state;

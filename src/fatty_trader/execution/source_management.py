@@ -94,6 +94,10 @@ class SourceManagementExecutor:
         if update is None:
             return "idle"
         try:
+            positions = self._gateway.get_positions(update.symbol)
+            if not positions:
+                self._store.update_state(update.id, "reconciled")
+                return "reconciled"
             position = self._one_position(update.symbol)
             if update.action is ManagementAction.CLOSE:
                 close_oid = f"source-management-{update.id.hex}-close"

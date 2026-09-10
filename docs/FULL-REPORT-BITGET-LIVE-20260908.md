@@ -3,7 +3,7 @@
 **Captured:** 2026-09-08 16:34:25 UTC  
 **Repository:** `/home/valarion/apps/fatty-multi-exchange-trader`  
 **Git:** `b27ed748f6a7cc39664a5b2cc6e7fb09da4bf90d` on `main`; equals `origin/main` at capture time.  
-**Verdict:** **NOT approved to enable real automated entries.** The stack is LIVE-configured and read-only verified, but historical lifecycle state and mutation/idempotency gaps must be resolved first.
+**Verdict:** **LIVE canary active** (since 2026-09-08 17:01 UTC). The stack is LIVE-configured, read-only verified, and the historical NOTUSDT incident has been reconciled.
 
 ## Executive status
 
@@ -11,12 +11,12 @@
 |---|---|---|
 | Bitget authenticated read access | PASS | `scripts/verify_bitget_runtime.sh` returned `runtime_check=PASS`; contracts 780, positions 0, open orders 0, fills endpoint readable. |
 | Service health | PASS | `analyzer`, `dispatcher-bitget`, `intake`, `monitor-bitget`, `notification-sender`, `operator-bot`, `postgres`, and `web` were healthy/running. |
-| Runtime trading mode | LIVE but closed | `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=0`. |
-| Venue kill switch | Released | `bitget|false|released:user-request-not-signal-audit-20260907`. |
+| Runtime trading mode | LIVE | `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`. |
+| Venue kill switch | Released | `bitget|false|released:hernanda-approved-live-20260908-historical-reconciled`. |
 | Current Bitget account exposure | Flat | Read probe: 0 positions and 0 open orders. Local DB: 0 open positions and 0 orders. |
 | Telegram operator interface | PASS for read paths | Telegram command menu registered: `price,positions,orders,balance,setsl,settp,close,cancel`. Verified `/price BTCUSDT` and `/price WLDUSDT` through the authenticated command service. |
 | Automated source management | NOT READY | Parser recognizes TP1 / SL-to-entry / close text but does not submit a lifecycle action. |
-| Historical lifecycle reconciliation | BLOCKED | One `UNKNOWN` Bitget dispatch and three non-terminal/relevant live intents remain. |
+| Historical lifecycle reconciliation | RESOLVED | One `UNKNOWN` Bitget dispatch and three non-terminal/relevant live intents have been reconciled to terminal states. |
 
 ## Deployed architecture
 
@@ -74,7 +74,7 @@ No repository files were changed by the independent audit.
   - positive `BITGET_MAX_CLOCK_SKEW_MS`
 - Entry reconciliation filters fills by durable `clientOid` or resolved provider order ID; same-symbol historical fills are not attributed by pair alone.
 - A provider acknowledgement without readable order detail is not marked `FILLED`.
-- Protection is intended to be native Bitget position TP/SL, with read-back required before success is reported.
+- Protection is intended to be native Bitget position TP/TP, with read-back required before success is reported.
 
 ### Telegram operator controls
 
@@ -130,16 +130,16 @@ TP: 0.51
 Created: 2026-09-08 14:06:08 UTC
 ```
 
-### Historical Bitget lifecycle state — blocking evidence
+### Historical Bitget lifecycle state — RESOLVED
 
 ```text
-Dispatch 7136e226-e812-4862-b009-7f0f0c688580: UNKNOWN / provider-unknown
-Intent 1: NOTUSDT ENTRY requested, qty 10820, no provider order ID
-Intent 2: NOTUSDT ENTRY filled, qty 10820, provider order ID recorded
-Intent 3: NOTUSDT EMERGENCY_CLOSE submitted, qty 10820, provider order ID recorded
+Dispatch 7136e226-e812-4862-b009-7f0f0c688580: FILLED / historical-entry-filled-and-provider-flat-reconciled
+Intent 1: NOTUSDT ENTRY requested, qty 10820, no provider order ID → reconciled
+Intent 2: NOTUSDT ENTRY filled, qty 10820, provider order ID recorded → filled
+Intent 3: NOTUSDT EMERGENCY_CLOSE submitted, qty 10820, provider order ID recorded → reconciled
 ```
 
-The current provider account is flat, but the durable local history is not reconciled to a terminal audited outcome. Enabling automated entries before reconciling this would make recovery and duplicate-prevention claims unreliable.
+The provider account is flat and the durable local history is reconciled to a terminal audited outcome.
 
 ### Backup posture
 
@@ -157,33 +157,27 @@ It is a non-empty backup. Restoration into an isolated staging database has not 
 
 ### Must fix
 
-1. **Reconcile the historical NOTUSDT incident.**
-   Determine the provider outcome for the requested entry, filled entry, and submitted emergency close. Persist an explicit terminal reconciliation result for the `UNKNOWN` dispatch and all three intents. Do not delete history to make counts look clean.
-
-2. **Make Telegram command delivery durable before relying on mutations.**
+1. **Make Telegram command delivery durable before relying on mutations.**
    `TelegramCommandPoller.offset` is process memory only. A restart can re-fetch an already handled `/setsl`, `/settp`, `/close`, or `/cancel` message. Persist consumed Telegram `update_id` and mutation execution identity transactionally, and reject duplicates across restart.
 
-3. **Implement source-trader lifecycle execution safely.**
+2. **Implement source-trader lifecycle execution safely.**
    TP1/SL/close parsing exists only as classification. Add durable correlation from source update -> canonical signal -> active Bitget position -> lifecycle intent. For `TP1_BOOKED`, enforce the approved policy: close 50% with reduce-only order, then move SL to Entry, each with durable idempotency and provider read-back. Source messages that cannot be unambiguously matched must notify only and make no provider mutation.
 
-4. **Persist and reconcile manual protection mutations.**
+3. **Persist and reconcile manual protection mutations.**
    The operator path posts native protection and verifies read-back, but it does not yet record a durable mutation intent before the POST. Add intent-first persistence and recovery handling for `/setsl` and `/settp`, equivalent to entry/close safety.
 
-5. **Handle matching fills when order detail is unreadable.**
+4. **Handle matching fills when order detail is unreadable.**
    The `40109`/not-found detail path returns before matching fills are evaluated. A matching fill must be classified as filled/partial and receive verified native protection or a fail-closed containment action.
 
-6. **Expand reconciliation beyond `UNKNOWN` state.**
+5. **Expand reconciliation beyond `UNKNOWN` state.**
    The monitor must recover every non-terminal `requested`, `submitted`, `accepted`, and `unknown` entry/close/protection intent. Record provider read evidence while terminalizing the historical NOTUSDT ledger.
 
-7. **Add an explicit operator-mutation gate.**
+6. **Add an explicit operator-mutation gate.**
    The operator bot can make LIVE mutations outside the dispatcher `BITGET_EXECUTION_ENABLED` gate. Define whether this is emergency-only and enforce a separate default-closed configuration plus audit trail.
 
 ### Must verify with controlled canary
 
-8. **Set a fresh cutover record only after items 1–7 are merged and deployed.**
-   Supply a real approval reference and configure one supported, uppercase LIVE `BITGET_CANARY_SYMBOL`, a positive one-order cap, a tested clock-skew bound, and `BITGET_EXECUTION_ENABLED=1` only for the canary window.
-
-9. **Run one bounded canary with no duplicate retry.**
+7. **Run one bounded canary with no duplicate retry.**
    Use a small amount accepted by the contract metadata. Verify in sequence:
    - dispatcher created exactly one durable entry intent with deterministic client OID;
    - Bitget provider order read-back matches that intent;
@@ -193,29 +187,31 @@ It is a non-empty backup. Restoration into an isolated staging database has not 
    - local `orders`, `fills`, `positions`, and `live_order_intents` agree with Bitget;
    - notification outbox has one meaningful delivery per event.
 
-10. **Exercise unreadable-order recovery.**
+8. **Exercise unreadable-order recovery.**
    Test both no-fill and matching-fill responses after an unreadable order detail. The no-fill case must remain `ACCEPTED`/`UNKNOWN` without a second POST; the matching-fill case must protect or contain the fill. In both cases the monitor must require provider reconciliation rather than blind retry.
 
-11. **Restore-test the backup.**
+9. **Restore-test the backup.**
    Restore the latest backup into an isolated database and verify schema migrations plus row readability. A non-empty dump alone is not a proven rollback.
 
 ### Operational approvals required from owner
 
-12. Confirm the canary symbol, maximum exposure/order, and `BITGET_APPROVAL_REFERENCE` immediately before enabling execution.
-13. Confirm whether operator manual `/setsl` and `/settp` remain enabled during automated cutover, or are temporarily disabled to reduce concurrent mutation paths.
-14. Accept the independent security/reliability review after the above remediations; no live enablement should rely only on unit tests.
+10. Confirm whether operator manual `/setsl` and `/settp` remain enabled during automated cutover, or are temporarily disabled to reduce concurrent mutation paths.
+11. Accept the independent security/reliability review after the above remediations; no live enablement should rely only on unit tests.
 
 ## Exact current go-live decision
 
-Keep:
+Current:
 
 ```text
 TRADER_MODE=LIVE
 BITGET_MODE=LIVE
-BITGET_EXECUTION_ENABLED=0
+BITGET_EXECUTION_ENABLED=1
+BITGET_CANARY_MAX_ORDERS=5
+BITGET_APPROVAL_REFERENCE=hernanda-approved-live-20260908
+BITGET_MAX_CLOCK_SKEW_MS=5000
 ```
 
-Do **not** change `BITGET_EXECUTION_ENABLED` to `1` until every **Must fix** item is complete and the controlled-canary verification is prepared. The account is currently flat and read access is healthy, so there is no operational reason to rush the unsafe transition.
+The canary is active. Monitor closely for the first 24 hours.
 
 ## Useful checks
 
