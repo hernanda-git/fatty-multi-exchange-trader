@@ -23,6 +23,7 @@ class AsyncBitgetClient(Protocol):
     async def get_contracts(self) -> Any: ...
     async def get_ticker(self, symbol: str) -> Any: ...
     async def get_clock_skew_ms(self) -> int: ...
+    async def set_margin_mode(self, symbol: str, margin_mode: str) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,22 @@ class AsyncBitgetVenue:
         account = await read_account_state(self._client, symbol)
         position = await read_position_state(self._client, symbol)
         if account.margin_mode != "isolated":
-            raise ValueError("Bitget account margin mode must be isolated")
+            # Set margin mode; Bitget returns the confirmed mode in the response.
+            # Trust it, but verify with a short-delayed read-back before rejecting.
+            import asyncio
+            set_result = await self._client.set_margin_mode(symbol, margin_mode="isolated")
+            if isinstance(set_result, dict) and str(set_result.get("marginMode", "")).lower() == "isolated":
+                account = await read_account_state(self._client, symbol)
+                if account.margin_mode != "isolated":
+                    # Propagation delay: wait and re-read once before rejecting.
+                    await asyncio.sleep(2.0)
+                    account = await read_account_state(self._client, symbol)
+                    if account.margin_mode != "isolated":
+                        raise ValueError("Bitget account margin mode must be isolated")
+            else:
+                account = await read_account_state(self._client, symbol)
+                if account.margin_mode != "isolated":
+                    raise ValueError("Bitget account margin mode must be isolated")
         if account.position_mode.lower() not in _SUPPORTED_POSITION_MODES:
             raise ValueError("Bitget account has unsupported position mode")
         if account.long_leverage != account.short_leverage:

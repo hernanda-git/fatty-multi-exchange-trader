@@ -63,10 +63,12 @@ async def confirm_native_protection(
     A placement acknowledgement or plan ID is deliberately insufficient. The open position
     must remain isolated at exactly ``expected_quantity`` and its provider plan read must
     contain both a loss and profit plan at that quantity.
+
+    Some symbols reject ``orders-plan-pending`` with 400172; fall back to position-field
+    verification (stopLossId/takeProfitId) in that case.
     """
     try:
         raw_position = await read_position()
-        raw_plans = await read_pending_plans()
     except Exception:
         return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-read-failed")
     if not isinstance(raw_position, list):
@@ -88,22 +90,45 @@ async def confirm_native_protection(
         return ProtectionReport(ProtectionState.DEGRADED, observed, "margin-mode-not-isolated")
     if observed != expected_quantity:
         return ProtectionReport(ProtectionState.DEGRADED, observed, "position-quantity-mismatch")
-    if not isinstance(raw_plans, list) or not all(isinstance(plan, dict) for plan in raw_plans):
-        return ProtectionReport(ProtectionState.FAILED, observed, "provider-plans-invalid")
-    plan_types = {
-        str(plan.get("planType", plan.get("type", ""))).lower()
-        for plan in raw_plans
-        if _plan_matches_quantity(plan, expected_quantity)
-    }
-    has_stop_loss = any("loss" in plan_type or "stop_loss" in plan_type for plan_type in plan_types)
-    has_take_profit = any(
-        "profit" in plan_type or "surplus" in plan_type or "take_profit" in plan_type
-        for plan_type in plan_types
-    )
-    if not has_stop_loss:
+
+    # Some symbols (e.g. GRASSUSDT) reject orders-plan-pending with 400172.
+    # Fall back to position-field verification when plan read fails.
+    raw_plans: list | None = None
+    plans_unsupported = False
+    try:
+        raw_plans = await read_pending_plans()
+    except Exception as exc:
+        if "400172" in str(exc):
+            plans_unsupported = True
+        else:
+            return ProtectionReport(ProtectionState.FAILED, observed, "provider-plans-invalid")
+
+    if not plans_unsupported and raw_plans is not None:
+        if not isinstance(raw_plans, list) or not all(isinstance(plan, dict) for plan in raw_plans):
+            return ProtectionReport(ProtectionState.FAILED, observed, "provider-plans-invalid")
+        plan_types = {
+            str(plan.get("planType", plan.get("type", ""))).lower()
+            for plan in raw_plans
+            if _plan_matches_quantity(plan, expected_quantity)
+        }
+        has_stop_loss = any("loss" in plan_type or "stop_loss" in plan_type for plan_type in plan_types)
+        has_take_profit = any(
+            "profit" in plan_type or "surplus" in plan_type or "take_profit" in plan_type
+            for plan_type in plan_types
+        )
+        if not has_stop_loss:
+            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
+        if not has_take_profit:
+            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
+
+    # Verify via position fields: stopLossId and takeProfitId must both be set.
+    has_stop_loss_field = bool(position.get("stopLossId"))
+    has_take_profit_field = bool(position.get("takeProfitId"))
+    if not has_stop_loss_field:
         return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
-    if not has_take_profit:
+    if not has_take_profit_field:
         return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
+
     report = ProtectionReport(ProtectionState.VENUE_PROTECTED, observed)
     return (
         report

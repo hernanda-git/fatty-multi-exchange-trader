@@ -341,28 +341,35 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
 
 def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
     reason = str(payload.get("reason", ""))
+    dispatch_id = escape(_safe_value(payload.get("dispatch_id", "")))
     if reason == "cutover-gated":
         return (
             "⛔ <b>Eksekusi Diblokir</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Tidak ada order dikirim.\n"
-            "Alasan: mode DEMO · eksekusi live belum diaktifkan."
+            "Alasan: mode DEMO · eksekusi live belum diaktifkan.\n"
+            f"Dispatch: <code>{dispatch_id}</code>"
         )
     state = escape(_safe_value(payload.get("to_state", "diperbarui")))
     return (
         f"📈 <b>Status Eksekusi</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Status: <code>{state}</code>"
+        f"Status: <code>{state}</code>\n"
+        f"Alasan: <code>{escape(reason)}</code>\n"
+        f"Dispatch: <code>{dispatch_id}</code>"
     )
 
 
 def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
     reason = str(payload.get("reason", ""))
+    dispatch_id = escape(_safe_value(payload.get("dispatch_id", "")))
     if reason == "cutover-gated":
         return _format_execution_event_html(payload)
     return (
         "⚠️ <b>Perhatian Eksekusi</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Alasan: <code>{escape(reason)}</code>\n"
+        f"Dispatch: <code>{dispatch_id}</code>\n"
         "Perlu pemeriksaan operator."
     )
 

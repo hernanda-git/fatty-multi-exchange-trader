@@ -68,3 +68,47 @@ def test_native_confirmation_rejects_changed_margin_mode_even_when_plan_ids_exis
 
     assert report.state is ProtectionState.DEGRADED
     assert report.reason == "margin-mode-not-isolated"
+
+
+def test_native_confirmation_falls_back_to_position_fields_when_plans_unsupported() -> None:
+    """Symbols like GRASSUSDT reject orders-plan-pending with 400172."""
+    async def position() -> list[dict[str, str | None]]:
+        return [
+            {
+                "total": "15",
+                "marginMode": "isolated",
+                "stopLossId": "sl-123",
+                "takeProfitId": "tp-456",
+            }
+        ]
+
+    async def plans() -> list[dict[str, str]]:
+        raise Exception("400172 Parameter verification failed")
+
+    report = asyncio.run(
+        confirm_native_protection(position, plans, expected_quantity=Decimal("15"))
+    )
+
+    assert report.state is ProtectionState.VENUE_PROTECTED
+
+
+def test_native_confirmation_fails_when_plans_unsupported_and_no_stop_loss() -> None:
+    async def position() -> list[dict[str, str | None]]:
+        return [
+            {
+                "total": "15",
+                "marginMode": "isolated",
+                "stopLossId": None,
+                "takeProfitId": "tp-456",
+            }
+        ]
+
+    async def plans() -> list[dict[str, str]]:
+        raise Exception("400172 Parameter verification failed")
+
+    report = asyncio.run(
+        confirm_native_protection(position, plans, expected_quantity=Decimal("15"))
+    )
+
+    assert report.state is ProtectionState.DEGRADED
+    assert report.reason == "missing-stop-loss"

@@ -65,6 +65,7 @@ WITH canary_lock AS (
     WHERE (
         SELECT count(*) FROM live_order_intents
         WHERE exchange = %s AND role = 'ENTRY'
+          AND state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled')
     ) + (
         SELECT count(*) FROM canary_entry_reservations
         WHERE exchange = %s

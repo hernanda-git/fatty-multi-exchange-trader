@@ -3,40 +3,15 @@
 
 Run via cron every minute to detect and fix stuck intents, kill switches,
 and dispatch states without manual intervention.
+Only outputs when there is something to report (watchdog pattern).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-from pathlib import Path
 from typing import Any
-
-
-def _run_in_dispatcher_container() -> int:
-    """Run the DB-aware recovery code where the Compose DB is reachable."""
-    root = Path.cwd()
-    if not (root / "docker-compose.yml").is_file():
-        root = Path(__file__).resolve().parents[1]
-    command = [
-        "docker",
-        "compose",
-        "exec",
-        "-T",
-        "dispatcher-bitget",
-        "env",
-        "AUTO_RECOVERY_IN_CONTAINER=1",
-        "/app/.venv/bin/python",
-        "/app/scripts/auto_recover_bitget.py",
-    ]
-    completed = subprocess.run(command, cwd=root, check=False, text=True, capture_output=True)
-    if completed.stdout:
-        print(completed.stdout, end="")
-    if completed.stderr:
-        print(completed.stderr, end="", file=sys.stderr)
-    return completed.returncode
 
 
 def _db():
@@ -141,8 +116,8 @@ def _send_alert(results: dict[str, Any]) -> None:
 
 
 if __name__ == "__main__":
-    if not os.environ.get("AUTO_RECOVERY_IN_CONTAINER"):
-        raise SystemExit(_run_in_dispatcher_container())
     results = recover()
-    print(json.dumps(results, default=str))
-    sys.exit(0 if not results["alerts"] else 1)
+    # Watchdog pattern: only output when there's something to report
+    if results["alerts"] or results["intents_reconciled"] > 0 or results["kill_switch_released"] or results["dispatches_fixed"] > 0:
+        print(json.dumps(results, default=str))
+    # Otherwise: empty stdout = no delivery

@@ -229,7 +229,15 @@ class AsyncBitgetExecution:
                 lambda: self._client.get_pending_plan_orders(plan.symbol),
                 expected_quantity=filled_quantity,
             )
-        except Exception:
+        except Exception as exc:
+            # Some symbols (e.g. GRASSUSDT) don't support native SL/TP placement (43011).
+            # Don't emergency-close; alert operator and let them manage manually.
+            if "43011" in str(exc):
+                return AsyncProtectionResult(
+                    ProtectionState.DEGRADED,
+                    filled_quantity,
+                    "native-protection-unsupported",
+                )
             report = ProtectionReport(
                 ProtectionState.FAILED, Decimal("0"), "protection-submit-failed"
             )
@@ -247,6 +255,15 @@ class AsyncBitgetExecution:
         """Persist then submit at most one emergency close, never for an observed flat account."""
         if report.reason == "position-not-open":
             return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
+        # Check if position is already flat on Bitget before submitting
+        try:
+            positions = await self._client.get_single_position(entry.symbol)
+            if not positions:
+                return AsyncProtectionResult(
+                    report.state, Decimal("0"), "position-already-flat"
+                )
+        except Exception:
+            pass  # If we can't verify, proceed with close attempt
         close_intent = build_emergency_close_intent(entry, entry.filled_qty)
         existing = store.get(close_intent.client_oid)
         if existing is not None:
@@ -271,6 +288,11 @@ class AsyncBitgetExecution:
             )
             close_intent.state = "submitted"
             store.update(close_intent)
+            # Market close orders fill instantly — reconcile immediately so DB reflects reality
+            try:
+                await self.reconcile_intent(close_intent, submitted)
+            except Exception:
+                pass  # best-effort; stale state is better than lost state
         return AsyncProtectionResult(
             report.state, report.observed_quantity, report.reason, close_intent.client_oid
         )
