@@ -2,13 +2,14 @@
 """Periodic health report for Fatty Bitget.
 
 Rich Telegram HTML report modeled after the original telegram_health_report.sh format.
-Queries actual Bitget LIVE data from DB tables + Bitget API.
+Runs on host, uses docker compose exec for DB + Bitget API access.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone, timedelta
@@ -16,60 +17,52 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT / "src"))
-
-import psycopg
-from fatty_trader.exchanges.bitget.client import BitgetRestClient
 
 
-def db():
-    return psycopg.connect(
-        host=os.environ.get("PGHOST", "localhost"),
-        port=os.environ.get("PGPORT", "5432"),
-        dbname=os.environ.get("PGDATABASE", "fatty_trader"),
-        user=os.environ.get("PGUSER", "fatty_app"),
-        password=os.environ.get("PGPASSWORD", ""),
-    )
-
+# ── Docker exec helpers (matches original shell script pattern) ──────────
 
 def query_one(sql: str):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            cols = [desc[0] for desc in cur.description]
-            row = cur.fetchone()
-            return dict(zip(cols, row)) if row else {col: None for col in cols}
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "fatty_app", "-d", "fatty_trader", "-At", "-F", "|", "-c", sql],
+        capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+    )
+    if result.returncode != 0:
+        return {}
+    line = result.stdout.strip()
+    if not line:
+        return {}
+    return {f"col{i}": v for i, v in enumerate(line.split("|"))}
 
 
 def query_all(sql: str):
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            cols = [desc[0] for desc in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "fatty_app", "-d", "fatty_trader", "-At", "-F", "|", "-c", sql],
+        capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+    )
+    if result.returncode != 0:
+        return []
+    return [line.split("|") for line in result.stdout.strip().split("\n") if line]
+
+
+def docker_exec_bitget(cmd: str) -> str:
+    """Run a command inside the dispatcher-bitget container."""
+    result = subprocess.run(
+        ["docker", "compose", "exec", "-T", "dispatcher-bitget", "sh", "-lc", cmd],
+        capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+    )
+    return result.stdout.strip()
 
 
 # ── Runtime ──────────────────────────────────────────────────────────────
 
 def get_runtime_modes() -> dict:
+    raw = docker_exec_bitget('printf "%s|%s|%s" "$TRADER_MODE" "$BITGET_MODE" "$BITGET_EXECUTION_ENABLED"')
+    parts = raw.split("|") if raw else ["UNKNOWN"] * 3
     return {
-        "mode": os.environ.get("TRADER_MODE", "UNKNOWN"),
-        "venue_mode": os.environ.get("BITGET_MODE", "UNKNOWN"),
-        "execution_enabled": os.environ.get("BITGET_EXECUTION_ENABLED", "UNKNOWN"),
+        "mode": parts[0] if len(parts) > 0 else "UNKNOWN",
+        "venue_mode": parts[1] if len(parts) > 1 else "UNKNOWN",
+        "execution_enabled": parts[2] if len(parts) > 2 else "UNKNOWN",
     }
-
-
-def get_bitget_client():
-    required = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE")
-    if any(not os.environ.get(k, "").strip() for k in required):
-        return None
-    return BitgetRestClient(
-        api_key=os.environ["BITGET_API_KEY"],
-        api_secret=os.environ["BITGET_API_SECRET"],
-        passphrase=os.environ["BITGET_API_PASSPHRASE"],
-        mode="LIVE",
-    )
 
 
 def get_current_price(symbol: str) -> Decimal | None:
@@ -83,143 +76,90 @@ def get_current_price(symbol: str) -> Decimal | None:
 
 
 def get_account() -> dict:
-    client = get_bitget_client()
-    if not client:
+    raw = docker_exec_bitget('cd /app && . .venv/bin/activate && python3 scripts/_probe_account.py')
+    if not raw or "|" not in raw:
         return {}
+    parts = raw.split("|")
+    if len(parts) >= 3:
+        return {"equity": parts[0], "available": parts[1], "unrealized_pl": parts[2]}
+    return {}
+
+
+def get_single_position(symbol: str) -> list:
+    raw = docker_exec_bitget(f'cd /app && . .venv/bin/activate && python3 scripts/_probe_position.py {symbol}')
+    if not raw:
+        return []
     try:
-        async def read():
-            acct = await client.get_account("BTCUSDT")
-            return {
-                "equity": acct.get("accountEquity", "N/A"),
-                "available": acct.get("available", "N/A"),
-                "unrealized_pl": acct.get("unrealizedPL", "N/A"),
-            }
-        return asyncio.run(read())
+        return json.loads(raw)
     except Exception:
-        return {}
+        return []
 
 
 # ── Data ─────────────────────────────────────────────────────────────────
 
 def load_positions() -> list[dict]:
-    """Load active positions enriched with live Bitget data."""
-    rows = query_all("""
-        SELECT
-            p.exchange, p.symbol, p.direction,
-            p.quantity::text AS qty,
-            p.protection_state,
-            p.opened_at
-        FROM positions p
-        WHERE p.closed_at IS NULL
-        ORDER BY p.opened_at DESC
-    """)
-    client = get_bitget_client()
-    if not client or not rows:
-        return rows
-
-    async def enrich():
-        results = []
-        for pos in rows:
-            symbol = pos["symbol"]
-            try:
-                detail = await client.get_single_position(symbol)
-                price = get_current_price(symbol)
-                pos["current_price"] = fmt_price(price) if price else "N/A"
-                if detail and isinstance(detail, list) and len(detail) > 0:
-                    row = detail[0]
-                    pos["entry_price"] = fmt_price(row.get("openPriceAvg"))
-                    pos["mark_price"] = fmt_price(row.get("markPrice"))
-                    pos["unrealized_pl"] = row.get("unrealizedPL", "N/A")
-                    pos["leverage"] = row.get("leverage", "?")
-                    pos["margin_mode"] = row.get("margin_mode", "N/A")
-                    pos["liquidation_price"] = fmt_price(row.get("liquidationPrice"))
-                else:
-                    pos["entry_price"] = "N/A"
-                    pos["mark_price"] = "N/A"
-                    pos["unrealized_pl"] = "N/A"
-                    pos["leverage"] = "?"
-                    pos["margin_mode"] = "N/A"
-                    pos["liquidation_price"] = "N/A"
-            except Exception:
-                pos["current_price"] = "ERR"
+    raw = query_all("SELECT p.exchange, p.symbol, p.direction, p.quantity::text, p.protection_state, p.opened_at FROM positions p WHERE p.closed_at IS NULL ORDER BY p.opened_at DESC")
+    if not raw:
+        return []
+    positions = []
+    for row in raw:
+        pos = {"exchange": row[0], "symbol": row[1], "direction": row[2], "qty": row[3], "protection_state": row[4], "opened_at": row[5]}
+        try:
+            detail = get_single_position(pos["symbol"])
+            price = get_current_price(pos["symbol"])
+            pos["current_price"] = fmt_price(price) if price else "N/A"
+            if detail and isinstance(detail, list) and len(detail) > 0:
+                r = detail[0]
+                pos["entry_price"] = fmt_price(r.get("openPriceAvg"))
+                pos["mark_price"] = fmt_price(r.get("markPrice"))
+                pos["unrealized_pl"] = r.get("unrealizedPL", "N/A")
+                pos["leverage"] = r.get("leverage", "?")
+                pos["margin_mode"] = r.get("margin_mode", "N/A")
+                pos["liquidation_price"] = fmt_price(r.get("liquidationPrice"))
+            else:
                 pos["entry_price"] = "N/A"
                 pos["mark_price"] = "N/A"
                 pos["unrealized_pl"] = "N/A"
                 pos["leverage"] = "?"
                 pos["margin_mode"] = "N/A"
                 pos["liquidation_price"] = "N/A"
-            results.append(pos)
-        return results
-
-    try:
-        return asyncio.run(enrich())
-    except Exception:
-        return rows
+        except Exception:
+            pos["current_price"] = "ERR"
+            pos["entry_price"] = "N/A"
+            pos["mark_price"] = "N/A"
+            pos["unrealized_pl"] = "N/A"
+            pos["leverage"] = "?"
+            pos["margin_mode"] = "N/A"
+            pos["liquidation_price"] = "N/A"
+        positions.append(pos)
+    return positions
 
 
 def load_pending_orders() -> list[dict]:
-    """Load pending entry orders (not backed by active position)."""
-    return query_all("""
-        SELECT
-            li.exchange, li.symbol, li.role, li.state,
-            li.requested_qty::text AS qty,
-            li.requested_price::text AS price,
-            li.filled_qty::text AS filled
-        FROM live_order_intents li
-        WHERE li.state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled')
-          AND li.role = 'ENTRY'
-        ORDER BY li.created_at DESC
-    """)
+    raw = query_all("SELECT li.exchange, li.symbol, li.role, li.state, li.requested_qty::text, li.requested_price::text, li.filled_qty::text FROM live_order_intents li WHERE li.state NOT IN ('filled','rejected','cancelled','reconciled') AND li.role = 'ENTRY' ORDER BY li.created_at DESC")
+    return [{"exchange": r[0], "symbol": r[1], "role": r[2], "state": r[3], "qty": r[4], "price": r[5], "filled": r[6]} for r in raw]
 
 
 def load_sltp_status() -> dict:
-    """Check which symbols have SL/TP orders placed."""
-    rows = query_all("""
-        SELECT
-            symbol,
-            bool_or(role = 'SL' AND state IN ('requested', 'acknowledged', 'submitted')) AS has_sl,
-            bool_or(role = 'TP' AND state IN ('requested', 'acknowledged', 'submitted')) AS has_tp
-        FROM live_order_intents
-        WHERE exchange = 'bitget'
-        GROUP BY symbol
-    """)
-    return {r["symbol"]: r for r in rows}
+    raw = query_all("SELECT symbol, bool_or(role = 'SL' AND state IN ('requested','acknowledged','submitted')) AS has_sl, bool_or(role = 'TP' AND state IN ('requested','acknowledged','submitted')) AS has_tp FROM live_order_intents WHERE exchange = 'bitget' GROUP BY symbol")
+    return {r[0]: {"has_sl": r[1] == "true", "has_tp": r[2] == "true"} for r in raw}
 
 
 def load_pnl() -> dict:
-    """Load realized P&L from fills."""
-    return query_one("""
-        SELECT
-            count(*)::text AS fill_n,
-            coalesce(sum(realized_pnl), 0)::text AS total_pnl,
-            coalesce(sum(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0)::text AS gross_profit,
-            coalesce(sum(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0)::text AS gross_loss,
-            coalesce(sum(fee), 0)::text AS total_fees
-        FROM fills WHERE exchange = 'bitget'
-    """)
+    row = query_one("SELECT count(*)::text, coalesce(sum(realized_pnl),0)::text, coalesce(sum(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END),0)::text, coalesce(sum(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END),0)::text, coalesce(sum(fee),0)::text FROM fills WHERE exchange = 'bitget'")
+    if not row:
+        return {}
+    return {"fill_n": row.get("col0", "0"), "total_pnl": row.get("col1", "0"), "gross_profit": row.get("col2", "0"), "gross_loss": row.get("col3", "0"), "total_fees": row.get("col4", "0")}
 
 
 def load_latest_messages(n: int = 1) -> list[dict]:
-    return query_all(f"""
-        SELECT
-            message_id::text AS msg_id,
-            received_at,
-            LEFT(raw_text, 500) AS preview
-        FROM telegram_messages
-        ORDER BY received_at DESC, message_id DESC
-        LIMIT {n}
-    """)
+    raw = query_all(f"SELECT message_id::text, received_at, LEFT(raw_text, 500) FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT {n}")
+    return [{"msg_id": r[0], "received_at": r[1], "preview": r[2]} for r in raw]
 
 
 def load_db_metrics() -> dict:
-    return query_one("""
-        SELECT
-            (SELECT count(*)::text FROM telegram_messages) AS messages,
-            (SELECT count(*)::text FROM canonical_signals) AS signals,
-            (SELECT count(*)::text FROM positions WHERE closed_at IS NULL) AS open_positions,
-            (SELECT count(*)::text FROM orders WHERE state NOT IN ('FILLED','CANCELLED','REJECTED','CLOSED')) AS pending_orders,
-            (SELECT count(*)::text FROM orders) AS total_orders
-    """)
+    row = query_one("SELECT (SELECT count(*)::text FROM telegram_messages), (SELECT count(*)::text FROM canonical_signals), (SELECT count(*)::text FROM positions WHERE closed_at IS NULL), (SELECT count(*)::text FROM orders WHERE state NOT IN ('FILLED','CANCELLED','REJECTED','CLOSED')), (SELECT count(*)::text FROM orders)")
+    return {"messages": row.get("col0", "0"), "signals": row.get("col1", "0"), "open_positions": row.get("col2", "0"), "pending_orders": row.get("col3", "0"), "total_orders": row.get("col4", "0")}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -229,8 +169,7 @@ def fmt_price(val) -> str:
         return "N/A"
     try:
         d = Decimal(str(val))
-        s = f"{d:.6f}".rstrip("0").rstrip(".")
-        return s
+        return f"{d:.6f}".rstrip("0").rstrip(".")
     except Exception:
         return str(val)
 
@@ -250,24 +189,84 @@ def fmt_pnl(val) -> tuple[str, str]:
         return "➖", str(val)
 
 
+def _format_timestamp(iso_string: str) -> str:
+    if not iso_string:
+        return "?"
+    try:
+        dt = datetime.fromisoformat(iso_string.replace(" ", "T").replace("+00", "+00:00"))
+        jakarta_tz = timezone(timedelta(hours=7))
+        return dt.astimezone(jakarta_tz).strftime("%d %b %Y, %H:%M WIB")
+    except Exception:
+        return str(iso_string)
+
+
 # ── Codex Usage ──────────────────────────────────────────────────────────
 
 def get_codex_usage() -> dict:
-    """Read cached Codex usage data."""
+    """Fetch Codex usage from ChatGPT API (matching original telegram_health_report.sh logic)."""
     cache_path = Path.home() / ".cache" / "fatty" / "codex_usage.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def fmt_reset(seconds):
+        if seconds is None:
+            return "N/A"
+        seconds = max(0, int(seconds))
+        days, rem = divmod(seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes = rem // 60
+        if days:
+            return f"{days}d {hours}h"
+        if hours:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m"
+
+    def auth_candidates():
+        for path in (Path.home() / ".pi" / "agent" / "auth.json", Path.home() / ".codex" / "auth.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            def walk(value):
+                if isinstance(value, dict):
+                    token = value.get("access_token") or value.get("accessToken")
+                    account = value.get("account_id") or value.get("accountId")
+                    if isinstance(token, str) and token and not token.startswith("sk-"):
+                        yield token, account if isinstance(account, str) else None
+                    for child in value.values():
+                        yield from walk(child)
+            yield from walk(data)
+
     try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        refreshed = data.get("refreshed", "unknown")
-        return {
-            "status": "LIVE",
-            "plan": data.get("plan", "N/A"),
-            "5h": data.get("5h", "N/A"),
-            "7d": data.get("7d", "N/A"),
-            "reset": data.get("reset", "N/A"),
-            "refreshed": refreshed,
+        token, account_id = next(auth_candidates())
+        headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+        if account_id:
+            headers["chatgpt-account-id"] = account_id
+        req = urllib.request.Request("https://chatgpt.com/backend-api/wham/usage", headers=headers)
+        with urllib.request.urlopen(req, timeout=12) as response:
+            data = json.load(response)
+        rate = data["rate_limit"]
+        primary = rate["primary_window"]
+        secondary = rate["secondary_window"]
+        now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=7))).strftime("%m-%d %H:%M WIB")
+        plan = str(data.get("plan_type") or "N/A")
+        fresh = {
+            "5h": f"{primary['used_percent']}% used / {100 - primary['used_percent']}% left",
+            "7d": f"{secondary['used_percent']}% used / {100 - secondary['used_percent']}% left",
+            "reset": f"5h {fmt_reset(primary.get('reset_after_seconds'))}; 7d {fmt_reset(secondary.get('reset_after_seconds'))}",
+            "plan": plan,
+            "refreshed": now,
+            "saved_at": int(datetime.now().timestamp()),
         }
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(fresh), encoding="utf-8")
+        tmp.rename(cache_path)
+        return {"status": "LIVE", **fresh}
     except Exception:
-        return {"status": "N/A", "plan": "N/A", "5h": "N/A", "7d": "N/A", "reset": "N/A", "refreshed": "never"}
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            return {"status": "STALE", **cached}
+        except Exception:
+            return {"status": "N/A", "plan": "N/A", "5h": "N/A", "7d": "N/A", "reset": "N/A", "refreshed": "never"}
 
 
 # ── Format ────────────────────────────────────────────────────────────────
@@ -327,7 +326,7 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
             tp = "OK" if sltp.get(p["symbol"], {}).get("has_tp") else "--"
             upnl_icon, upnl_str = fmt_pnl(p.get("unrealized_pl"))
             L.append(f"{sym:<12} {side:<5} {qty:<10} {entry:<10} {mark:<10} {lev:<3} {margin:<8} {sl:<4} {tp:<4} {upnl_icon}{upnl_str}</pre>")
-            L.append("")  # spacing between positions
+            L.append("")
     L.append("")
 
     # ── Pending Orders ─────────────────────────────────────────────────
@@ -338,7 +337,7 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
         L.append("<pre>SYMBOL       SIDE  ROLE  QTY        PRICE      STATE")
         for o in pending_orders:
             sym = o["symbol"][:12]
-            side = "BUY" if o["role"] == "ENTRY" and o.get("state") != "filled" else "SELL"
+            side = "BUY" if o["role"] == "ENTRY" else "SELL"
             role = o["role"][:5]
             qty = o.get("qty", "?")[:10]
             price = o.get("price", "N/A")[:10]
@@ -413,17 +412,6 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
         L.append("<i>No source message stored yet.</i>")
 
     return "\n".join(L)[:4000]
-
-
-def _format_timestamp(iso_string: str) -> str:
-    if not iso_string:
-        return "?"
-    try:
-        dt = datetime.fromisoformat(iso_string.replace(" ", "T").replace("+00", "+00:00"))
-        jakarta_tz = timezone(timedelta(hours=7))
-        return dt.astimezone(jakarta_tz).strftime("%d %b %Y, %H:%M WIB")
-    except Exception:
-        return str(iso_string)
 
 
 # ── Delivery ─────────────────────────────────────────────────────────────
