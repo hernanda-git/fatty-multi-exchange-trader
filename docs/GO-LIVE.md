@@ -2,14 +2,15 @@
 
 Bitget is **LIVE** with a bounded canary (2026-09-08). This document is now a historical reference for the gate sequence that was completed.
 
-## Current state
+## Current state (2026-09-11)
 
 - `BITGET_EXECUTION_ENABLED=1`
 - `BITGET_CANARY_MAX_ORDERS=5`
 - `BITGET_APPROVAL_REFERENCE=hernanda-approved-live-20260908`
 - `BITGET_MAX_CLOCK_SKEW_MS=5000`
 - Kill switch: released (`hernanda-approved-live-20260908-historical-reconciled`)
-- Runtime: PASS (780 contracts, 0 positions, 0 open orders)
+- Runtime: PASS (780+ contracts, 0 positions, 0 open orders)
+- **Bot-managed TP/SL fallback active** for 43011 symbols
 
 ## Gate sequence (completed)
 
@@ -22,7 +23,6 @@ Bitget is **LIVE** with a bounded canary (2026-09-08). This document is now a hi
 - [x] Explicit human approval logged (2026-09-08 17:01 UTC).
 - [x] `BITGET_EXECUTION_ENABLED=1` enabled.
 - [x] Runtime verified PASS after cutover.
-
-## Historical gate (before 2026-09-08)
-
-Before the cutover, the gate required: credentialed read probe, public contract fixtures, protection/reconciliation health, tested halt and close path, fresh backup, and explicit human approval. All were satisfied before the flip.
+- [x] Bot-managed TP/SL fallback deployed (2026-09-11).
+- [x] Sizing logic fixed to use intended allocation (2026-09-11).
+- [x] Emergency close reconciliation fix deployed (2026-09-11).

@@ -1,22 +1,44 @@
 # Bitget LIVE Readiness Report
 
-**Captured:** 2026-09-08 16:34:25 UTC  
+**Captured:** 2026-09-11 00:30:00 UTC  
 **Repository:** `/home/valarion/apps/fatty-multi-exchange-trader`  
-**Git:** `b27ed748f6a7cc39664a5b2cc6e7fb09da4bf90d` on `main`; equals `origin/main` at capture time.  
-**Verdict:** **LIVE canary active** (since 2026-09-08 17:01 UTC). The stack is LIVE-configured, read-only verified, and the historical NOTUSDT incident has been reconciled.
+**Git:** `d61f149` on `main`; equals `origin/main` at capture time.  
+**Verdict:** **LIVE canary active** (since 2026-09-08). Bot-managed TP/SL fallback deployed, sizing logic fixed, emergency close reconciliation fixed.
 
 ## Executive status
 
 | Area | Status | Evidence |
 |---|---|---|
-| Bitget authenticated read access | PASS | `scripts/verify_bitget_runtime.sh` returned `runtime_check=PASS`; contracts 780, positions 0, open orders 0, fills endpoint readable. |
-| Service health | PASS | `analyzer`, `dispatcher-bitget`, `intake`, `monitor-bitget`, `notification-sender`, `operator-bot`, `postgres`, and `web` were healthy/running. |
-| Runtime trading mode | LIVE | `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`. |
-| Venue kill switch | Released | `bitget|false|released:hernanda-approved-live-20260908-historical-reconciled`. |
-| Current Bitget account exposure | Flat | Read probe: 0 positions and 0 open orders. Local DB: 0 open positions and 0 orders. |
-| Telegram operator interface | PASS for read paths | Telegram command menu registered: `price,positions,orders,balance,setsl,settp,close,cancel`. Verified `/price BTCUSDT` and `/price WLDUSDT` through the authenticated command service. |
-| Automated source management | NOT READY | Parser recognizes TP1 / SL-to-entry / close text but does not submit a lifecycle action. |
-| Historical lifecycle reconciliation | RESOLVED | One `UNKNOWN` Bitget dispatch and three non-terminal/relevant live intents have been reconciled to terminal states. |
+| Bitget authenticated read access | PASS | `scripts/bitget_api_probe.py` PASS; contracts 787, positions 0, open orders 0 |
+| Service health | PASS | All services running and healthy |
+| Runtime trading mode | LIVE | `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1` |
+| Venue kill switch | Released | `bitget|false|released:hernanda-approved-live-20260908-historical-reconciled` |
+| Current Bitget account exposure | Flat | 0 positions, 0 open orders, equity $8.459 |
+| Bot-managed TP/SL fallback | ACTIVE | Catches 43011, monitors mark price, submits close on threshold |
+| Sizing logic | FIXED | Uses intended allocation (20% equity) instead of exchange minimum |
+| Emergency close reconciliation | FIXED | Reconciles to `filled` immediately after submission |
+| Hourly health report | ACTIVE | Rich HTML card via Telegram bot API |
+
+## 2026-09-11 Changes
+
+1. **Bot-managed TP/SL fallback** (`bitget_fallback_protection.py`)
+   - Catches 43011 (native SL/TP unsupported)
+   - Registers position with entry/SL/TP targets
+   - Monitor polls mark price, submits close when threshold hit
+   - No more emergency-close on valid positions
+
+2. **Sizing fix** (`risk/sizing.py`)
+   - Quantity calculated from `margin × leverage / reference_price`
+   - Exchange minimum is safety floor only
+   - Position size now matches 20% allocation target
+
+3. **Emergency close reconciliation** (`bitget_dispatch_execution.py`)
+   - Calls `reconcile_intent()` immediately after `place_market_close`
+   - DB reflects `filled` instead of stuck `submitted`
+
+4. **Cron config pinning**
+   - Health report job pinned to current provider/model
+   - Runs on host with docker compose exec for DB + Bitget access
 
 ## Deployed architecture
 
