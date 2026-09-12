@@ -231,8 +231,21 @@ class AsyncBitgetExecution:
             )
         except Exception as exc:
             # Some symbols (e.g. GRASSUSDT) don't support native SL/TP placement (43011).
-            # Don't emergency-close; alert operator and let them manage manually.
+            # Register for bot-managed fallback TP/SL monitoring instead of emergency-closing.
             if "43011" in str(exc):
+                try:
+                    from fatty_trader.execution.bitget_fallback_protection import register_fallback
+                    register_fallback(
+                        exchange=intent.exchange,
+                        symbol=intent.symbol,
+                        direction=plan.direction.value,
+                        entry_price=plan.quantity,  # placeholder; entry is in intent
+                        stop_loss=plan.stop_loss,
+                        take_profits=list(plan.take_profits),
+                        quantity=filled_quantity,
+                    )
+                except Exception:
+                    pass
                 return AsyncProtectionResult(
                     ProtectionState.DEGRADED,
                     filled_quantity,

@@ -60,6 +60,8 @@ class BitgetMonitor:
         )
         await self._check_positions(positions, reasons)
         self._check_orders(orders, reasons)
+        # Bot-managed TP/SL fallback for symbols that reject native SL/TP (43011)
+        await self._run_fallback_monitor(reasons)
         try:
             skew = await self._client.get_clock_skew_ms()
         except Exception:
@@ -77,6 +79,16 @@ class BitgetMonitor:
         if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
             return MonitorReport("kill-switch-latched")
         return MonitorReport("ok")
+
+    async def _run_fallback_monitor(self, reasons: list[str]) -> None:
+        """Run bot-managed TP/SL fallback monitoring for degraded positions."""
+        try:
+            from fatty_trader.execution.bitget_fallback_protection import run_fallback_monitor
+            triggered = run_fallback_monitor()
+            for t in triggered:
+                reasons.append(f"fallback-{t['reason']}:{t['symbol']}")
+        except Exception as exc:
+            reasons.append(f"fallback-monitor-error:{exc}")
 
     async def _reconcile_unresolved_intents(self, reasons: list[str]) -> None:
         for intent in self._repository.unresolved_intents(self._scope):
