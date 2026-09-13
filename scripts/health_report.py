@@ -15,6 +15,7 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -95,54 +96,139 @@ def get_single_position(symbol: str) -> list:
         return []
 
 
+def load_provider_state() -> dict[str, Any] | None:
+    """Read provider positions/orders once; None means provider state is unknown."""
+    raw = docker_exec_bitget(
+        "cd /app && . .venv/bin/activate && python3 scripts/_probe_open_state.py"
+    )
+    if not raw:
+        return None
+    try:
+        state = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    if not isinstance(state.get("positions"), list) or not isinstance(
+        state.get("open_orders"), list
+    ):
+        return None
+    if any(isinstance(value, dict) and "error_type" in value for value in state.values()):
+        return None
+    return state
+
+
+def _provider_quantity(row: dict[str, Any]) -> Decimal | None:
+    for key in ("total", "size", "quantity"):
+        if key not in row:
+            continue
+        try:
+            return abs(Decimal(str(row[key] or "0")))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+    return None
+
+
 # ── Data ─────────────────────────────────────────────────────────────────
 
-def load_positions() -> list[dict]:
-    raw = query_all("SELECT p.exchange, p.symbol, p.direction, p.quantity::text, p.protection_state, p.opened_at FROM positions p WHERE p.closed_at IS NULL ORDER BY p.opened_at DESC")
-    if not raw:
-        return []
-    positions = []
-    for row in raw:
-        pos = {"exchange": row[0], "symbol": row[1], "direction": row[2], "qty": row[3], "protection_state": row[4], "opened_at": row[5]}
-        try:
-            detail = get_single_position(pos["symbol"])
-            price = get_current_price(pos["symbol"])
-            pos["current_price"] = fmt_price(price) if price else "N/A"
-            if detail and isinstance(detail, list) and len(detail) > 0:
-                r = detail[0]
-                pos["entry_price"] = fmt_price(r.get("openPriceAvg"))
-                pos["mark_price"] = fmt_price(r.get("markPrice"))
-                pos["unrealized_pl"] = r.get("unrealizedPL", "N/A")
-                pos["leverage"] = r.get("leverage", "?")
-                pos["margin_mode"] = r.get("margin_mode", "N/A")
-                pos["liquidation_price"] = fmt_price(r.get("liquidationPrice"))
-            else:
-                pos["entry_price"] = "N/A"
-                pos["mark_price"] = "N/A"
-                pos["unrealized_pl"] = "N/A"
-                pos["leverage"] = "?"
-                pos["margin_mode"] = "N/A"
-                pos["liquidation_price"] = "N/A"
-        except Exception:
-            pos["current_price"] = "ERR"
-            pos["entry_price"] = "N/A"
-            pos["mark_price"] = "N/A"
-            pos["unrealized_pl"] = "N/A"
-            pos["leverage"] = "?"
-            pos["margin_mode"] = "N/A"
-            pos["liquidation_price"] = "N/A"
-        positions.append(pos)
+def load_positions(provider_state: dict[str, Any] | None = None) -> list[dict] | None:
+    """Build the open-position view from Bitget, enriching it with local metadata."""
+    state = provider_state if provider_state is not None else load_provider_state()
+    if state is None:
+        return None
+    provider_rows = state["positions"]
+    local_rows = query_all(
+        "SELECT p.exchange, p.symbol, p.direction, p.quantity::text, "
+        "p.protection_state, p.opened_at FROM positions p "
+        "WHERE p.closed_at IS NULL ORDER BY p.opened_at DESC"
+    )
+    local_by_symbol = {row[1].upper(): row for row in local_rows if len(row) > 1}
+    positions: list[dict] = []
+    for row in provider_rows:
+        if not isinstance(row, dict):
+            continue
+        quantity = _provider_quantity(row)
+        if quantity is None or quantity <= 0:
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        local = local_by_symbol.get(symbol)
+        positions.append(
+            {
+                "exchange": "bitget",
+                "symbol": symbol,
+                "direction": "SHORT"
+                if str(row.get("holdSide", "")).lower() == "short"
+                else "LONG",
+                "qty": str(row.get("total", row.get("size", quantity))),
+                "protection_state": local[4] if local and len(local) > 4 else "provider",
+                "opened_at": local[5] if local and len(local) > 5 else row.get("cTime"),
+                "current_price": fmt_price(row.get("markPrice")),
+                "entry_price": fmt_price(row.get("openPriceAvg")),
+                "mark_price": fmt_price(row.get("markPrice")),
+                "unrealized_pl": row.get("unrealizedPL", "N/A"),
+                "leverage": str(row.get("leverage", "?")),
+                "margin_mode": str(row.get("marginMode", "N/A")).lower(),
+                "liquidation_price": fmt_price(row.get("liquidationPrice")),
+            }
+        )
     return positions
 
 
-def load_pending_orders() -> list[dict]:
-    raw = query_all("SELECT li.exchange, li.symbol, li.role, li.state, li.requested_qty::text, li.requested_price::text, li.filled_qty::text FROM live_order_intents li WHERE li.state NOT IN ('filled','rejected','cancelled','reconciled') AND li.role = 'ENTRY' ORDER BY li.created_at DESC")
-    return [{"exchange": r[0], "symbol": r[1], "role": r[2], "state": r[3], "qty": r[4], "price": r[5], "filled": r[6]} for r in raw]
+def load_pending_orders(provider_state: dict[str, Any] | None = None) -> list[dict] | None:
+    """Return provider pending orders; None means the provider read failed."""
+    state = provider_state if provider_state is not None else load_provider_state()
+    if state is None:
+        return None
+    orders = state["open_orders"]
+    return [
+        {
+            "exchange": "bitget",
+            "symbol": str(row.get("symbol", "?")),
+            "side": str(row.get("side", "?")).upper(),
+            "role": str(row.get("role", row.get("orderType", "ORDER"))).upper(),
+            "qty": str(row.get("size", row.get("quantity", "?"))),
+            "price": str(row.get("price", row.get("executePrice", "N/A"))),
+            "state": str(row.get("status", row.get("state", "?"))).upper(),
+        }
+        for row in orders
+        if isinstance(row, dict)
+    ]
 
 
-def load_sltp_status() -> dict:
-    raw = query_all("SELECT symbol, bool_or(role = 'SL' AND state IN ('requested','acknowledged','submitted')) AS has_sl, bool_or(role = 'TP' AND state IN ('requested','acknowledged','submitted')) AS has_tp FROM live_order_intents WHERE exchange = 'bitget' GROUP BY symbol")
-    return {r[0]: {"has_sl": r[1] == "true", "has_tp": r[2] == "true"} for r in raw}
+def load_sltp_status(provider_state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Report native protection versus bot-managed fallback protection."""
+    statuses: dict[str, dict[str, Any]] = {}
+    if provider_state is not None:
+        for row in provider_state.get("positions", []):
+            if not isinstance(row, dict) or (_provider_quantity(row) or Decimal("0")) <= 0:
+                continue
+            symbol = str(row.get("symbol", "")).upper()
+            if not symbol:
+                continue
+            native_sl = bool(row.get("stopLossId") or row.get("stopLoss"))
+            native_tp = bool(row.get("takeProfitId") or row.get("takeProfit"))
+            statuses[symbol] = {
+                "has_sl": native_sl,
+                "has_tp": native_tp,
+                "sl_label": "OK" if native_sl else "MISS",
+                "tp_label": "OK" if native_tp else "MISS",
+            }
+    fallback_rows = query_all(
+        "SELECT symbol FROM fallback_protection "
+        "WHERE exchange = 'bitget' AND state IN ('active', 'closing')"
+    )
+    for row in fallback_rows:
+        if not row:
+            continue
+        symbol = str(row[0]).upper()
+        status = statuses.setdefault(symbol, {"has_sl": False, "has_tp": False})
+        if not status.get("has_sl"):
+            status["sl_label"] = "MON"
+        if not status.get("has_tp"):
+            status["tp_label"] = "MON"
+    return statuses
 
 
 def load_pnl() -> dict:
@@ -309,8 +395,10 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
     L.append("")
 
     # ── Positions ──────────────────────────────────────────────────────
-    L.append("<b>Positions</b> <code>open · bitget</code>")
-    if not positions:
+    L.append("<b>Positions</b> <code>open · bitget provider</code>")
+    if positions is None:
+        L.append("<pre>UNKNOWN (provider position read failed)</pre>")
+    elif not positions:
         L.append("<pre>N/A (no open positions)</pre>")
     else:
         L.append("<pre>SYMBOL       SIDE  QTY        ENTRY      MARK       LEV  MARGIN   SL   TP   UPNL")
@@ -322,22 +410,25 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
             mark = p.get("mark_price", "N/A")[:10]
             lev = p.get("leverage", "?")[:3]
             margin = p.get("margin_mode", "N/A")[:8]
-            sl = "OK" if sltp.get(p["symbol"], {}).get("has_sl") else "MISS"
-            tp = "OK" if sltp.get(p["symbol"], {}).get("has_tp") else "--"
+            protection = sltp.get(p["symbol"], {})
+            sl = protection.get("sl_label", "OK" if protection.get("has_sl") else "MISS")
+            tp = protection.get("tp_label", "OK" if protection.get("has_tp") else "MISS")
             upnl_icon, upnl_str = fmt_pnl(p.get("unrealized_pl"))
             L.append(f"{sym:<12} {side:<5} {qty:<10} {entry:<10} {mark:<10} {lev:<3} {margin:<8} {sl:<4} {tp:<4} {upnl_icon}{upnl_str}</pre>")
             L.append("")
     L.append("")
 
     # ── Pending Orders ─────────────────────────────────────────────────
-    L.append("<b>Orders</b> <code>pending · bitget</code>")
-    if not pending_orders:
+    L.append("<b>Orders</b> <code>pending · bitget provider</code>")
+    if pending_orders is None:
+        L.append("<pre>UNKNOWN (provider open-order read failed)</pre>")
+    elif not pending_orders:
         L.append("<pre>N/A (no pending orders)</pre>")
     else:
         L.append("<pre>SYMBOL       SIDE  ROLE  QTY        PRICE      STATE")
         for o in pending_orders:
             sym = o["symbol"][:12]
-            side = "BUY" if o["role"] == "ENTRY" else "SELL"
+            side = o.get("side", "?")[:5]
             role = o["role"][:5]
             qty = o.get("qty", "?")[:10]
             price = o.get("price", "N/A")[:10]
@@ -374,14 +465,19 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
     L.append("<b>Database</b>")
     L.append(f"<pre>Messages      {metrics.get('messages', '0')}")
     L.append(f"Signals       {metrics.get('signals', '0')}")
-    L.append(f"Open pos      {metrics.get('open_positions', '0')}")
+    L.append(f"DB pos        {metrics.get('open_positions', '0')}")
+    L.append(f"Provider pos  {metrics.get('provider_positions', 'UNKNOWN')}")
     L.append(f"Pending ord   {metrics.get('pending_orders', '0')}")
     L.append(f"Total orders  {metrics.get('total_orders', '0')}</pre>")
     L.append("")
 
     # ── Safety ─────────────────────────────────────────────────────────
     L.append(f"<b>Safety</b> <code>{modes.get('mode', '?')} · Bitget {modes.get('venue_mode', '?')} · EXECUTION {modes.get('execution_enabled', '?')}</code>")
-    if positions:
+    if positions is None:
+        L.append("<pre>Isolated     UNKNOWN (provider read failed)")
+        L.append("Leverage     UNKNOWN (provider read failed)")
+        L.append("SL-before-liq UNKNOWN (provider read failed)</pre>")
+    elif positions:
         modes_set = set(p.get("margin_mode", "N/A") for p in positions)
         levs_set = set(str(p.get("leverage", "?")) for p in positions)
         iso = "yes" if modes_set == {"isolated"} else "mixed" if "isolated" in modes_set else "no"
@@ -439,12 +535,14 @@ def send_direct(html: str) -> bool:
 if __name__ == "__main__":
     modes = get_runtime_modes()
     account = get_account()
-    positions = load_positions()
-    pending = load_pending_orders()
-    sltp = load_sltp_status()
+    provider_state = load_provider_state()
+    positions = load_positions(provider_state)
+    pending = load_pending_orders(provider_state)
+    sltp = load_sltp_status(provider_state)
     pnl = load_pnl()
     messages = load_latest_messages(1)
     metrics = load_db_metrics()
+    metrics["provider_positions"] = "UNKNOWN" if positions is None else str(len(positions))
     codex = get_codex_usage()
 
     report = format_report(positions, pending, sltp, pnl, messages, metrics, account, modes, codex)
