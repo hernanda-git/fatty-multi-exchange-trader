@@ -62,6 +62,36 @@ def test_fallback_protection_is_labeled_as_monitoring(monkeypatch) -> None:
     assert statuses["WLDUSDT"]["tp_label"] == "MON"
 
 
+def test_fallback_metadata_is_loaded(monkeypatch) -> None:
+    monkeypatch.setattr(
+        health_report,
+        "query_all",
+        lambda _sql: [
+            [
+                "WLDUSDT",
+                "LONG",
+                "0.3971",
+                "0.388",
+                '["0.427"]',
+                "91",
+                "active",
+                "live-bitget-WLDUSDT-key",
+                "2026-09-13 14:28:35+00",
+            ]
+        ],
+    )
+
+    statuses = health_report.load_sltp_status(
+        {"positions": [provider_position()], "open_orders": []}
+    )
+
+    assert statuses["WLDUSDT"]["fallback"] is True
+    assert statuses["WLDUSDT"]["fallback_sl"] == "0.388"
+    assert statuses["WLDUSDT"]["fallback_tp"] == "0.427"
+    assert statuses["WLDUSDT"]["fallback_quantity"] == "91"
+    assert statuses["WLDUSDT"]["fallback_state"] == "ACTIVE"
+
+
 def test_report_separates_provider_position_from_db_position() -> None:
     html = health_report.format_report(
         positions=[
@@ -77,7 +107,20 @@ def test_report_separates_provider_position_from_db_position() -> None:
             }
         ],
         pending_orders=[],
-        sltp={"WLDUSDT": {"has_sl": False, "has_tp": False, "sl_label": "MON", "tp_label": "MON"}},
+        sltp={
+            "WLDUSDT": {
+                "has_sl": False,
+                "has_tp": False,
+                "sl_label": "MON",
+                "tp_label": "MON",
+                "fallback": True,
+                "fallback_state": "ACTIVE",
+                "fallback_entry": "0.3971",
+                "fallback_quantity": "91",
+                "fallback_sl": "0.388",
+                "fallback_tp": "0.427",
+            }
+        },
         pnl={
             "fill_n": "1",
             "total_pnl": "0",
@@ -107,8 +150,14 @@ def test_report_separates_provider_position_from_db_position() -> None:
     )
 
     assert "WLDUSDT" in html
-    assert "Provider pos  1" in html
-    assert "DB pos        0" in html
-    assert "MON" in html
-    assert "MONITORED WLDUSDT" in html
+    assert "provider 1" in html
+    assert "DB 0" in html
+    assert "Native      SL MISSING · TP MISSING" in html
+    assert "FALLBACK ACTIVE" in html
+    assert "SL 0.388" in html
+    assert "TP 0.427" in html
+    assert "BETWEEN SL / TP" in html
+    assert "Liquidation" in html
+    assert "Liq gap" in html
+    assert "0 pending orders · provider read OK" in html
     assert "N/A (no open positions)" not in html
