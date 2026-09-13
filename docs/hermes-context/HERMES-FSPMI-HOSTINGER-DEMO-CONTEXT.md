@@ -3,7 +3,9 @@
 **Purpose:** canonical handoff for Hermes sessions running on the deployment host.
 This document contains operational context and evidence, never credentials.
 
-**Last verified:** 2026-09-08
+**First read for new sessions:** `AGENTIC-OPS-FASTPATH.md`.
+
+**Last verified:** 2026-09-13
 **Remote host:** `fspmi-hostinger`
 **Remote application:** `/home/valarion/apps/fatty-multi-exchange-trader`
 
@@ -20,17 +22,23 @@ This document contains operational context and evidence, never credentials.
 ## Current LIVE canary state
 
 ```text
+TRADER_MODE=LIVE
+BITGET_MODE=LIVE
 BITGET_EXECUTION_ENABLED=1
 BITGET_CANARY_MAX_ORDERS=5
-BITGET_APPROVAL_REFERENCE=hernanda-approved-live-20260908
 BITGET_MAX_CLOCK_SKEW_MS=5000
 BITGET_OPERATOR_MUTATIONS_ENABLED=0
+BITGET_FALLBACK_MUTATIONS_ENABLED=0
 ```
 
-- Runtime SHA: `6b34e25d496f740a15ea19802ebd4e1ec7e20a85`
-- All 8 services healthy
-- 780 contracts, 0 positions, 0 open orders
-- Kill switch: released (`hernanda-approved-live-20260908-historical-reconciled`)
+- Runtime commit/image: `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`
+- All expected long-running services running; healthchecked services healthy
+- `migrate` and `init` completed successfully
+- 787 contracts, 0 provider positions, 0 provider open orders
+- Account read: equity/available `8.91215461 USDT`, unrealized PnL `0`
+- Database: 0 active entry intents, 3 effective nonterminal reservations, 5 raw reservation rows
+- Database: 0 queued dispatches, 0 submitting dispatches, 0 open DB positions
+- Kill switch: released; read the current DB row, never copy a historical approval reference
 - Monitor: `state=ok`, `reasons=none`
 - Dispatcher: `mode=LIVE venue_mode=LIVE state=idle`
 
@@ -48,16 +56,18 @@ The Bitget lane was DEMO-only until 2026-09-08. The cutover to LIVE was performe
 ```text
 BITGET_EXECUTION_ENABLED=1
 BITGET_CANARY_MAX_ORDERS=5
-live order intents=3 (all terminal: filled, reconciled, rejected)
-production .env unchanged except execution flag
+operator mutations=0
+fallback mutations=0
 PostgreSQL volume/data preserved
-kill switch released
-Telegram heartbeat remains 21600 seconds
+kill switch state unchanged
+provider account/positions/orders/fills read PASS
+running container source matches tested commit
 ```
 
 ## Documentation source map
 
-The `docs/hermes-context/` directory on the remote host contains snapshots of:
+The `docs/hermes-context/` directory on the remote host contains:
+- `AGENTIC-OPS-FASTPATH.md` — first-read current source map, one-pass snapshot, and rollout contract
 - this handoff
 - the full project readiness report (historical)
 - Bitget operations
@@ -67,7 +77,8 @@ The `docs/hermes-context/` directory on the remote host contains snapshots of:
 
 ## Related Hermes skills installed for this workspace
 
-- `fatty-bitget-live` — project-specific Bitget deployment, safety, telemetry, and lifecycle workflow (UPDATED for LIVE)
+- `fatty-bitget-ops` — project-specific Bitget audit, deployment, safety, telemetry, and lifecycle workflow
+- `fatty-bitget-ops/references/signal-audit-rollout.md` — source-to-provider audit and closed-gate rollout
 - `crypto-auto-trader-reliability` — exchange filters, sizing, idempotency, protection, reconciliation
 - `trading-bot-deploy-ops` — safe deployment and rollback practices
 - `agentic-trading-bot-stewardship` — human-in-the-loop and no-autonomous-live rules

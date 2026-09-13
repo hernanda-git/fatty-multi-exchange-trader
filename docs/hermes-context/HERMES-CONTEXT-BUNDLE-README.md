@@ -1,22 +1,22 @@
 # Hermes Context Bundle
 
-Use `HERMES-FSPMI-HOSTINGER-DEMO-CONTEXT.md` as the current operational source of truth.
+Use `AGENTIC-OPS-FASTPATH.md` as the first-read current operational source of truth, then use the handoff for current evidence.
 
 ## Reading order
 
-1. `HERMES-FSPMI-HOSTINGER-DEMO-CONTEXT.md` — current remote evidence, safety rules, blockers, and next commands.
-2. `FULL-REPORT-fatty-multi-exchange-trader-20260906.md` — complete historical architecture/readiness report; historical claims are labeled in the handoff.
-3. `BITGET-LIVE-OPERATIONS.md` — operating runbook and lifecycle gates.
+1. `AGENTIC-OPS-FASTPATH.md` — one-pass snapshot command, source map, cap semantics, and rollout contract.
+2. `HERMES-FSPMI-HOSTINGER-DEMO-CONTEXT.md` — current remote evidence, safety rules, blockers, and next commands.
+3. `BITGET-LIVE-OPERATIONS.md` — historical cutover runbook; current values require fastpath verification.
 4. `EXCHANGE-CONTRACTS.md` — exchange and metadata contracts.
-5. `GO-LIVE.md` and `OPERATIONS.md` — deployment/cutover/rollback context.
-6. `IMPLEMENTATION-STATUS.md` — implementation status snapshot.
-7. `.hermes/plans/2026-09-06_145742-bitget-demo-go-live-readiness-snapshot.md` — original detailed plan; do not treat stale historical statements as current evidence.
+5. `GO-LIVE.md` and `OPERATIONS.md` — historical deployment/cutover/rollback context.
+6. `IMPLEMENTATION-STATUS.md` — historical implementation snapshot.
+7. `.hermes/plans/2026-09-06_145742-bitget-demo-go-live-readiness-snapshot.md` — original plan; never treat its runtime claims as current evidence.
 
 ## Mandatory skill loading
 
 Before touching code, deployment, provider credentials, or order lifecycle, load:
 
-- `fatty-bitget-live`
+- `fatty-bitget-ops`
 - `crypto-auto-trader-reliability`
 - `trading-bot-deploy-ops`
 - `agentic-trading-bot-stewardship`
@@ -26,8 +26,12 @@ Before touching code, deployment, provider credentials, or order lifecycle, load
 
 ## Current short status
 
-- **Bitget LIVE canary active** (2026-09-08).
-- `BITGET_EXECUTION_ENABLED=1`, `BITGET_CANARY_MAX_ORDERS=5`, `BITGET_MAX_CLOCK_SKEW_MS=5000`.
-- Kill switch: released (`hernanda-approved-live-20260908-historical-reconciled`).
-- Runtime: PASS (780 contracts, 0 positions, 0 open orders).
-- Manual operator mutations disabled (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`).
+- **Bitget LIVE canary active**; last verified 2026-09-13.
+- `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`.
+- `BITGET_CANARY_MAX_ORDERS=5`, clock-skew limit `5000ms`.
+- Runtime commit/image: `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`.
+- Runtime probe: PASS (787 contracts, 0 positions, 0 open orders).
+- Account: equity/available `8.91215461 USDT`, unrealized PnL `0`.
+- Manual operator and fallback mutations disabled.
+- Effective reservations: `3/5`; raw historical reservations: `5`.
+- Kill switch state: released; verify current DB row before relying on it.
