@@ -30,7 +30,7 @@ Before touching code, deployment, provider credentials, or order lifecycle, load
 - **Bitget LIVE canary active**; last verified 2026-09-13.
 - `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`.
 - `BITGET_CANARY_MAX_ORDERS=5`, clock-skew limit `5000ms`.
-- Repository HEAD: `74fa80ba27295c15563541856a332fbd6a4e1b0d`; deployed runtime image: `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`.
+- Repository HEAD and origin are expected to match; deployed runtime image: `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`.
 - Runtime probe: PASS (787 contracts, 0 positions, 0 open orders).
 - Account: equity/available `8.91215461 USDT`, unrealized PnL `0`.
 - Manual operator and fallback mutations disabled.

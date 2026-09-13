@@ -31,7 +31,7 @@ BITGET_OPERATOR_MUTATIONS_ENABLED=0
 BITGET_FALLBACK_MUTATIONS_ENABLED=0
 ```
 
-- Repository HEAD: `74fa80ba27295c15563541856a332fbd6a4e1b0d`.
+- Repository `HEAD` and `origin/main` matched at last verification; use the snapshot for the exact current SHA.
 - Deployed runtime image: `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`.
 - Later commits contain only docs/host snapshot tooling; runtime source is unchanged.
 - All expected long-running services running; healthchecked services healthy

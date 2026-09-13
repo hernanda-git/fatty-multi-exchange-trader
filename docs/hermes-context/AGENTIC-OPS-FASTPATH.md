@@ -42,7 +42,7 @@ rows for the symbol. Read its JSON once before opening individual files.
 
 ## Current verified runtime baseline
 
-- Repository `HEAD == origin/main == 74fa80ba27295c15563541856a332fbd6a4e1b0d`.
+- Repository `HEAD` and `origin/main` must match; the snapshot reports both exact values.
 - Deployed runtime image was last rebuilt from `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`;
   later commits are documentation/host snapshot tooling and do not require a
   container rebuild.
