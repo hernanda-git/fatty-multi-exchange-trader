@@ -96,9 +96,12 @@ class SourceManagementExecutor:
         try:
             positions = self._gateway.get_positions(update.symbol)
             if not positions:
-                self._store.update_state(update.id, "reconciled")
-                return "reconciled"
-            position = self._one_position(update.symbol)
+                # A management instruction without a live provider position was
+                # not executed. Keep it auditable as failed rather than claiming
+                # reconciliation and losing the operator's intent.
+                self._store.update_state(update.id, "failed")
+                return "failed"
+            position = self._one_position(update.symbol, positions)
             if update.action is ManagementAction.CLOSE:
                 close_oid = f"source-management-{update.id.hex}-close"
                 if not self._store.persist_provider_intent(update.id, close_oid):
@@ -150,8 +153,10 @@ class SourceManagementExecutor:
         self._store.update_state(update.id, "reconciled")
         return "reconciled"
 
-    def _one_position(self, symbol: str) -> dict[str, Any]:
-        positions = self._gateway.get_positions(symbol)
+    def _one_position(
+        self, symbol: str, positions: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        positions = self._gateway.get_positions(symbol) if positions is None else positions
         if len(positions) != 1:
             raise ValueError("management target must resolve to exactly one open Bitget position")
         position = positions[0]

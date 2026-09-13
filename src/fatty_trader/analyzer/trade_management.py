@@ -6,7 +6,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-_SYMBOL = re.compile(r"\$?([A-Z0-9]{2,15})(?:USDT)?\b", re.I)
+_EXPLICIT_SYMBOL = re.compile(r"[$#]([A-Z0-9]{2,15})\b", re.I)
+_FULL_SYMBOL = re.compile(r"\b([A-Z0-9]{2,15}USDT)\b", re.I)
 _TP1 = re.compile(
     r"\b(?:tp\s*1|first\s+tp)\b.*\b(?:book(?:ed)?|take(?:n)?|hit)\b"
     r"|\b(?:book(?:ed)?|take(?:n)?|hit)\b.*\b(?:tp\s*1|first\s+tp)\b",
@@ -30,7 +31,7 @@ class SourceManagement:
 
 def parse_source_management(text: str) -> SourceManagement | None:
     """Return a high-confidence management instruction, otherwise None."""
-    symbol_match = _SYMBOL.search(text or "")
+    symbol_match = _EXPLICIT_SYMBOL.search(text or "") or _FULL_SYMBOL.search(text or "")
     if symbol_match is None:
         return None
     if _TP1.search(text):
