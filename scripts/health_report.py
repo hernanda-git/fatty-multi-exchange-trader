@@ -239,7 +239,11 @@ def load_pnl() -> dict:
 
 
 def load_latest_messages(n: int = 1) -> list[dict]:
-    raw = query_all(f"SELECT message_id::text, received_at, LEFT(raw_text, 500) FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT {n}")
+    raw = query_all(
+        f"SELECT message_id::text, received_at, "
+        f"LEFT(replace(replace(raw_text, chr(13), ' '), chr(10), ' '), 500) "
+        f"FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT {n}"
+    )
     return [{"msg_id": r[0], "received_at": r[1], "preview": r[2]} for r in raw]
 
 
@@ -481,8 +485,21 @@ def format_report(positions, pending_orders, sltp, pnl, messages, metrics, accou
         modes_set = set(p.get("margin_mode", "N/A") for p in positions)
         levs_set = set(str(p.get("leverage", "?")) for p in positions)
         iso = "yes" if modes_set == {"isolated"} else "mixed" if "isolated" in modes_set else "no"
-        missing_sl = [p["symbol"] for p in positions if not sltp.get(p["symbol"], {}).get("has_sl")]
-        sliq = "OK" if not missing_sl else f"MISSING {', '.join(missing_sl)}"
+        missing_sl = []
+        monitored_sl = []
+        for position in positions:
+            protection = sltp.get(position["symbol"], {})
+            sl_label = protection.get("sl_label", "MISS")
+            if sl_label == "MON":
+                monitored_sl.append(position["symbol"])
+            elif sl_label != "OK":
+                missing_sl.append(position["symbol"])
+        if missing_sl:
+            sliq = f"MISSING {', '.join(missing_sl)}"
+        elif monitored_sl:
+            sliq = f"MONITORED {', '.join(monitored_sl)}"
+        else:
+            sliq = "OK"
         L.append(f"<pre>Isolated     {iso} [{', '.join(modes_set)}]")
         L.append(f"Leverage     {', '.join(levs_set)}")
         L.append(f"SL-before-liq {sliq}</pre>")

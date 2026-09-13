@@ -110,4 +110,5 @@ def test_report_separates_provider_position_from_db_position() -> None:
     assert "Provider pos  1" in html
     assert "DB pos        0" in html
     assert "MON" in html
+    assert "MONITORED WLDUSDT" in html
     assert "N/A (no open positions)" not in html
