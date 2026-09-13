@@ -42,7 +42,10 @@ rows for the symbol. Read its JSON once before opening individual files.
 
 ## Current verified runtime baseline
 
-- `HEAD == origin/main == 5a2e2ebd82accdf29e04d1f36b811c836e2e736e`.
+- Repository `HEAD == origin/main == 74fa80ba27295c15563541856a332fbd6a4e1b0d`.
+- Deployed runtime image was last rebuilt from `5a2e2ebd82accdf29e04d1f36b811c836e2e736e`;
+  later commits are documentation/host snapshot tooling and do not require a
+  container rebuild.
 - `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`.
 - `BITGET_CANARY_MAX_ORDERS=5`, `BITGET_MAX_CLOCK_SKEW_MS=5000`.
 - Manual operator mutations are disabled; fallback mutations are `0`.
