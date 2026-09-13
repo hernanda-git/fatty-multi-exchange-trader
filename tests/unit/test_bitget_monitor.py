@@ -91,7 +91,7 @@ async def test_unknown_intent_is_reconciled_by_get_only_without_latching_kill_sw
     )
     venue = ReadOnlyVenue(
         details={"known-unknown": {"status": "filled", "orderId": "provider-1"}},
-        fills=[{"fillId": "fill-1", "size": "0.01", "price": "60000"}],
+        fills=[{"fillId": "fill-1", "orderId": "provider-1", "size": "0.01", "price": "60000"}],
     )
     repository = InMemoryReconciliationRepository(intents=[intent])
 

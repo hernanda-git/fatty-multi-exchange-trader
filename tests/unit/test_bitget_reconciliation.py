@@ -183,3 +183,76 @@ def test_status_callback_fires_on_tick() -> None:
     rec.on_status_change(lambda s: calls.append(s))
     rec.tick()
     assert ReconcilerStatus.OK in calls
+
+
+@pytest.mark.asyncio
+async def test_unknown_intent_handles_40109_with_existing_provider_order_id() -> None:
+    from fatty_trader.exchanges.bitget.client import BitgetApiError
+    from fatty_trader.exchanges.bitget.live import LiveIntentRecord
+    from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
+
+    intent = LiveIntentRecord(
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-abc",
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_qty=Decimal("0.01"),
+        state="unknown",
+        provider_order_id="provider-1",
+    )
+
+    async def detail(_: str, __: str) -> dict[str, Any]:
+        raise BitgetApiError("order not found", code="40109")
+
+    async def fills(_: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "orderId": "provider-1",
+                "fillId": "fill-1",
+                "baseVolume": "0.01",
+                "price": "50000",
+                "feeDetail": [{"totalFee": "-0.30", "feeCoin": "USDT"}],
+            }
+        ]
+
+    result = await reconcile_unknown_intent(
+        intent,
+        read_order_detail=detail,
+        read_fills=fills,
+    )
+
+    assert result.state == "filled"
+    assert result.filled_qty == Decimal("0.01")
+    assert result.avg_price == Decimal("50000")
+    assert result.fee == Decimal("0.30")
+    assert result.provider_fill_ids == ("fill-1",)
+
+
+@pytest.mark.asyncio
+async def test_filled_detail_without_fill_quantity_stays_unknown() -> None:
+    from fatty_trader.exchanges.bitget.live import LiveIntentRecord
+    from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
+
+    intent = LiveIntentRecord(
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-empty",
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_qty=Decimal("0.01"),
+        state="unknown",
+    )
+
+    async def detail(_: str, __: str) -> dict[str, Any]:
+        return {"status": "filled", "orderId": "provider-empty"}
+
+    async def fills(_: str) -> list[dict[str, Any]]:
+        return []
+
+    result = await reconcile_unknown_intent(
+        intent,
+        read_order_detail=detail,
+        read_fills=fills,
+    )
+
+    assert result.state == "unknown"
+    assert result.filled_qty == Decimal("0")

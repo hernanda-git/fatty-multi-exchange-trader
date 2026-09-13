@@ -6,7 +6,11 @@ from decimal import Decimal
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
-from fatty_trader.exchanges.bitget.live import LiveIntentRecord, LiveIntentStoreProtocol
+from fatty_trader.exchanges.bitget.live import (
+    LiveIntentRecord,
+    LiveIntentStoreProtocol,
+    normalize_fill,
+)
 
 
 class Cursor(Protocol):
@@ -26,7 +30,8 @@ def insert_provider_fills(
     fills: tuple[dict[str, Any], ...],
 ) -> None:
     """Persist provider fills without inventing IDs or prices."""
-    for fill in fills:
+    for raw_fill in fills:
+        fill = normalize_fill(raw_fill)
         provider_fill_id = fill.get("fillId", fill.get("tradeId", fill.get("id")))
         quantity = fill.get(
             "quantity", fill.get("size", fill.get("fillQty", fill.get("baseVolume")))
@@ -35,6 +40,10 @@ def insert_provider_fills(
         if provider_fill_id is None or quantity is None or price is None:
             continue
         try:
+            quantity_value = Decimal(str(quantity))
+            price_value = Decimal(str(price))
+            if quantity_value <= 0 or price_value <= 0:
+                continue
             fee = abs(Decimal(str(fill.get("fee", "0") or "0")))
             realized_pnl = Decimal(
                 str(
@@ -60,8 +69,8 @@ def insert_provider_fills(
                 record.client_oid,
                 str(provider_fill_id),
                 record.symbol,
-                price,
-                quantity,
+                price_value,
+                quantity_value,
                 fee,
                 fill.get("feeCcy", fill.get("feeCoin", "USDT")),
                 realized_pnl,
@@ -141,6 +150,9 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         if row is None:
             return None
         values = list(row.values()) if isinstance(row, dict) else list(row)
+        raw_fill_ids = values[11] or []
+        if isinstance(raw_fill_ids, str):
+            raw_fill_ids = json.loads(raw_fill_ids)
         return LiveIntentRecord(
             exchange=str(values[0]),
             client_oid=str(values[1]),
@@ -153,7 +165,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             avg_price=Decimal(str(values[8])) if values[8] is not None else None,
             fee=Decimal(str(values[9] or "0")),
             provider_order_id=str(values[10]) if values[10] is not None else None,
-            provider_fill_ids=tuple(str(item) for item in json.loads(values[11] or "[]")),
+            provider_fill_ids=tuple(str(item) for item in raw_fill_ids),
         )
 
     def update(self, record: LiveIntentRecord) -> None:

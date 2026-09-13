@@ -78,6 +78,29 @@ def test_get_maps_database_row_without_exposing_payload() -> None:
     assert result.provider_fill_ids == ("fill-1", "fill-2")
 
 
+def test_get_accepts_jsonb_list_value() -> None:
+    row = list(
+        (
+            "bitget",
+            "live-bitget-BTCUSDT-0011223344556677",
+            "BTCUSDT",
+            "BUY",
+            "ENTRY",
+            "filled",
+            "0.001",
+            "0.001",
+            "50000",
+            "0.03",
+            "provider-1",
+            ["fill-1"],
+        )
+    )
+    result = PostgresLiveIntentStore(lambda: Connection(tuple(row))).get(record().client_oid)
+
+    assert result is not None
+    assert result.provider_fill_ids == ("fill-1",)
+
+
 def test_update_rejects_conflicting_provider_order_id() -> None:
     store = InMemoryLiveIntentStore()
     existing = record()

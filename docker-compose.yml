@@ -184,6 +184,7 @@ services:
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "monitor-bitget"]
     environment:
       SERVICE_NAME: monitor-bitget
+      BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
 
   operator-bot:
     build: .

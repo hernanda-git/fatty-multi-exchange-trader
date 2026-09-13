@@ -294,11 +294,15 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
     max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
     if max_clock_skew_ms < 0:
         raise ValueError("BITGET_MAX_CLOCK_SKEW_MS must not be negative")
+    fallback_raw = environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0").lower()
+    if fallback_raw not in {"0", "1"}:
+        raise ValueError("BITGET_FALLBACK_MUTATIONS_ENABLED must be 0 or 1")
     monitor = BitgetMonitor(
         client,
         repository,
         max_clock_skew_ms=max_clock_skew_ms,
         enforce_kill_switch=bitget_kill_switch_enforced(environ),
+        fallback_mutations_enabled=(fallback_raw == "1" and bitget_kill_switch_enforced(environ)),
     )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
     try:

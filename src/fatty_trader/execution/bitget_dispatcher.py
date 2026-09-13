@@ -130,6 +130,11 @@ class BitgetDispatcher:
         except TimeoutError:
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
+        except Exception as exc:
+            reason = f"provider-readback-error:{type(exc).__name__}"
+            self._transition(dispatch, "SUBMITTING", "UNKNOWN", reason)
+            self._repository.alert(dispatch.id, reason)
+            return "unknown"
         target = {
             "ACKNOWLEDGED": "ACKNOWLEDGED",
             "FILLED": "FILLED",
@@ -140,7 +145,12 @@ class BitgetDispatcher:
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
         self._transition(dispatch, "SUBMITTING", target)
-        return target.lower().replace("partially_", "")
+        return {
+            "ACKNOWLEDGED": "acknowledged",
+            "FILLED": "filled",
+            "PARTIALLY_FILLED": "partial",
+            "REJECTED": "rejected",
+        }[target]
 
     def _transition(
         self, dispatch: BitgetDispatch, expected: str, target: str, reason: str | None = None

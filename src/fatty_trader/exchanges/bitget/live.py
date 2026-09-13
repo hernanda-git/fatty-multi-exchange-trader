@@ -17,6 +17,7 @@ Orchestrator contract:
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -257,6 +258,50 @@ def _to_decimal(value: Any) -> Decimal | None:
     return result
 
 
+def normalize_fill(fill: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize Bitget fill shapes, including nested/list-valued feeDetail."""
+    normalized = dict(fill)
+    raw_detail = fill.get("feeDetail")
+    if isinstance(raw_detail, str):
+        try:
+            raw_detail = json.loads(raw_detail)
+        except (TypeError, ValueError):
+            raw_detail = None
+    if isinstance(raw_detail, Mapping):
+        fee_details: Sequence[Mapping[str, Any]] = (raw_detail,)
+    elif isinstance(raw_detail, list):
+        fee_details = tuple(item for item in raw_detail if isinstance(item, Mapping))
+    else:
+        fee_details = ()
+    if fee_details:
+        fee = sum(
+            (
+                abs(
+                    _to_decimal(
+                        detail.get("totalFee", detail.get("fee", detail.get("feeAmount", "0")))
+                    )
+                    or Decimal("0")
+                )
+                for detail in fee_details
+            ),
+            Decimal("0"),
+        )
+        fee_coin = next(
+            (
+                detail.get("feeCoin", detail.get("feeCcy", detail.get("feeCurrency")))
+                for detail in fee_details
+                if detail.get("feeCoin", detail.get("feeCcy", detail.get("feeCurrency")))
+            ),
+            None,
+        )
+        normalized["fee"] = fee
+        if fee_coin is not None:
+            normalized["feeCcy"] = str(fee_coin)
+    else:
+        normalized["fee"] = abs(_to_decimal(fill.get("fee", "0")) or Decimal("0"))
+    return normalized
+
+
 def summarize_fills(
     fills: Sequence[Mapping[str, Any]],
 ) -> tuple[Decimal, Decimal | None, Decimal, tuple[str, ...]]:
@@ -265,7 +310,8 @@ def summarize_fills(
     notional = Decimal("0")
     total_fee = Decimal("0")
     ids: list[str] = []
-    for fill in fills:
+    for raw_fill in fills:
+        fill = normalize_fill(raw_fill)
         qty = _to_decimal(
             fill.get("quantity", fill.get("size", fill.get("fillQty", fill.get("baseVolume", 0))))
         )
@@ -277,7 +323,7 @@ def summarize_fills(
         fee = _to_decimal(fill.get("fee", 0)) or Decimal("0")
         total_fee += abs(fee)
         raw_id = fill.get("fillId", fill.get("tradeId", fill.get("id")))
-        if raw_id is not None:
+        if raw_id is not None and str(raw_id) not in ids:
             ids.append(str(raw_id))
     avg = (notional / total_qty) if total_qty > 0 else None
     return total_qty, avg, total_fee, tuple(ids)
@@ -292,8 +338,15 @@ def classify_live_order(
         return LiveOrderStatus.REJECTED
     requested = _to_decimal(detail.get("requestedQty", detail.get("size", 0)))
     filled_qty, _, _, _ = summarize_fills(fills)
+    detail_filled = _to_decimal(
+        detail.get("filledQty", detail.get("filledSize", detail.get("baseVolume", 0)))
+    )
     if raw_status in _FILLED_STATUSES:
-        return LiveOrderStatus.FILLED
+        return (
+            LiveOrderStatus.FILLED
+            if filled_qty > 0 or (detail_filled is not None and detail_filled > 0)
+            else LiveOrderStatus.UNKNOWN
+        )
     if raw_status in _PARTIAL_STATUSES:
         if requested is not None and requested > 0 and filled_qty >= requested:
             return LiveOrderStatus.FILLED
@@ -315,14 +368,15 @@ def _persist_readback(
     detail: Mapping[str, Any],
     fills: Sequence[Mapping[str, Any]],
 ) -> LiveOrderStatus:
-    status = classify_live_order(detail, fills)
-    filled_qty, avg_price, fee, fill_ids = summarize_fills(fills)
+    normalized_fills = tuple(normalize_fill(fill) for fill in fills)
+    status = classify_live_order(detail, normalized_fills)
+    filled_qty, avg_price, fee, fill_ids = summarize_fills(normalized_fills)
     provider_order_id = detail.get("orderId", detail.get("providerOrderId"))
     # Preserve the submitted provider id: read-back details may omit it.
     if provider_order_id is not None:
         record.provider_order_id = str(provider_order_id)
     record.provider_fill_ids = fill_ids
-    record.provider_fills = tuple(dict(fill) for fill in fills)
+    record.provider_fills = tuple(dict(fill) for fill in normalized_fills)
     record.filled_qty = filled_qty
     record.avg_price = avg_price
     record.fee = fee

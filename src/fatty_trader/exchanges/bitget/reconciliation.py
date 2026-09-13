@@ -9,9 +9,12 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
 
+from fatty_trader.exchanges.bitget.client import BitgetApiError
 from fatty_trader.exchanges.bitget.live import (
     LiveIntentRecord,
+    LiveOrderStatus,
     classify_live_order,
+    normalize_fill,
     summarize_fills,
 )
 
@@ -23,7 +26,13 @@ async def reconcile_unknown_intent(
     read_fills: Callable[[str], Awaitable[Any]],
 ) -> LiveIntentRecord:
     """Refresh one durable unknown intent using provider GET reads only."""
-    detail = await read_order_detail(intent.symbol, intent.client_oid)
+    try:
+        detail = await read_order_detail(intent.symbol, intent.client_oid)
+    except BitgetApiError as exc:
+        if exc.code == "40109" or "cannot be found" in str(exc).lower():
+            detail = {}
+        else:
+            raise
     fills = await read_fills(intent.symbol)
     if not isinstance(detail, dict):
         raise ValueError("provider-order-detail-invalid")
@@ -31,11 +40,11 @@ async def reconcile_unknown_intent(
         fills = fills.get("fillList", [])
     if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
         raise ValueError("provider-fills-invalid")
-    intent.provider_order_id = (
-        str(detail["orderId"]) if detail.get("orderId") is not None else intent.provider_order_id
-    )
+    provider_order_id = detail.get("orderId", detail.get("providerOrderId"))
+    if provider_order_id is not None:
+        intent.provider_order_id = str(provider_order_id)
     matching_fills = [
-        fill
+        normalize_fill(fill)
         for fill in fills
         if fill.get("clientOid", fill.get("client_oid")) == intent.client_oid
         or (
@@ -49,13 +58,25 @@ async def reconcile_unknown_intent(
     intent.fee = fee
     intent.provider_fill_ids = fill_ids
     intent.provider_fills = tuple(matching_fills)
+    if not detail:
+        status = (
+            LiveOrderStatus.FILLED
+            if filled_qty >= intent.requested_qty
+            else LiveOrderStatus.PARTIAL
+            if filled_qty > 0
+            else LiveOrderStatus.UNKNOWN
+        )
+    else:
+        status = classify_live_order(detail, matching_fills)
+        if status is LiveOrderStatus.FILLED and filled_qty <= 0:
+            status = LiveOrderStatus.UNKNOWN
     intent.state = {
-        "accepted": "acknowledged",
-        "partial": "acknowledged",
-        "filled": "filled",
-        "rejected": "rejected",
-        "unknown": "unknown",
-    }[classify_live_order(detail, matching_fills).value]
+        LiveOrderStatus.ACCEPTED: "acknowledged",
+        LiveOrderStatus.PARTIAL: "partially_filled",
+        LiveOrderStatus.FILLED: "filled",
+        LiveOrderStatus.REJECTED: "rejected",
+        LiveOrderStatus.UNKNOWN: "unknown",
+    }[status]
     return intent
 
 

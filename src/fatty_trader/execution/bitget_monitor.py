@@ -40,6 +40,7 @@ class BitgetMonitor:
         scope: str = "bitget",
         max_clock_skew_ms: int = 10_000,
         enforce_kill_switch: bool = True,
+        fallback_mutations_enabled: bool = False,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")
@@ -48,6 +49,7 @@ class BitgetMonitor:
         self._scope = scope
         self._max_clock_skew_ms = max_clock_skew_ms
         self._enforce_kill_switch = enforce_kill_switch
+        self._fallback_mutations_enabled = fallback_mutations_enabled
 
     async def run_once(self) -> MonitorReport:
         reasons: list[str] = []
@@ -81,7 +83,11 @@ class BitgetMonitor:
         return MonitorReport("ok")
 
     async def _run_fallback_monitor(self, reasons: list[str]) -> None:
-        """Run bot-managed TP/SL fallback monitoring for degraded positions."""
+        """Run bot-managed TP/SL only behind a separate explicit mutation gate."""
+        if not self._fallback_mutations_enabled or (
+            self._enforce_kill_switch and self._repository.kill_switch_active(self._scope)
+        ):
+            return
         try:
             from fatty_trader.execution.bitget_fallback_protection import (
                 run_fallback_monitor_async,

@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from typing import Any
 
 
 def _db():
     import psycopg
+
     return psycopg.connect(
         host=os.environ.get("PGHOST", "localhost"),
         port=os.environ.get("PGPORT", "5432"),
@@ -26,68 +26,39 @@ def _db():
 
 
 def recover() -> dict[str, Any]:
-    """Run full auto-recovery and return a summary."""
+    """Return read-only recovery evidence; never mutate provider or safety state."""
     results: dict[str, Any] = {
         "intents_reconciled": 0,
         "kill_switch_released": False,
         "dispatches_fixed": 0,
+        "read_only": True,
         "alerts": [],
     }
-    with _db() as conn:
-        with conn.cursor() as cur:
-            # Reconcile stuck intents
-            cur.execute(
-                """UPDATE live_order_intents
-                   SET state = 'filled', updated_at = CURRENT_TIMESTAMP
-                   WHERE exchange = 'bitget'
-                     AND state IN ('submitted', 'unknown')
-                     AND filled_qty > 0
-                   RETURNING client_order_id"""
-            )
-            results["intents_reconciled"] = cur.rowcount
-
-            # Release kill switch if no active positions
-            cur.execute(
-                """SELECT count(*) FROM live_order_intents
-                   WHERE exchange = 'bitget' AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')"""
-            )
-            unresolved = cur.fetchone()[0]
-            if unresolved == 0:
-                cur.execute(
-                    """UPDATE venue_kill_switches
-                       SET active = FALSE, reason = 'released:auto-recovery',
-                           updated_at = CURRENT_TIMESTAMP
-                       WHERE scope = 'bitget' AND active = TRUE
-                       RETURNING scope"""
-                )
-                results["kill_switch_released"] = cur.fetchone() is not None
-
-            # Fix stuck dispatches
-            cur.execute(
-                """UPDATE dispatches
-                   SET state = 'FILLED',
-                       terminal_reason = 'historical-entry-filled-and-provider-flat-reconciled',
-                       updated_at = CURRENT_TIMESTAMP
-                   WHERE exchange = 'bitget' AND state = 'UNKNOWN'
-                   RETURNING id"""
-            )
-            results["dispatches_fixed"] = cur.rowcount
-
-            # Check for anomalies
-            cur.execute(
-                """SELECT count(*) FROM live_order_intents
-                   WHERE exchange = 'bitget' AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')"""
-            )
-            remaining = cur.fetchone()[0]
-            if remaining > 0:
-                results["alerts"].append(f"{remaining} unresolved intents")
-
-            conn.commit()
-
-    # Send alert if there are issues
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            """SELECT count(*) FROM live_order_intents
+               WHERE exchange = 'bitget'
+                 AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')"""
+        )
+        unresolved = int(cur.fetchone()[0])
+        cur.execute(
+            "SELECT count(*) FROM dispatches WHERE exchange = 'bitget' AND state = 'UNKNOWN'"
+        )
+        unknown_dispatches = int(cur.fetchone()[0])
+        cur.execute("SELECT active FROM venue_kill_switches WHERE scope = 'bitget'")
+        row = cur.fetchone()
+        kill_switch_active = bool(row[0]) if row is not None else False
+    results["unresolved_intents"] = unresolved
+    results["unknown_dispatches"] = unknown_dispatches
+    results["kill_switch_active"] = kill_switch_active
+    if unresolved:
+        results["alerts"].append(f"{unresolved} unresolved intents")
+    if unknown_dispatches:
+        results["alerts"].append(f"{unknown_dispatches} unknown dispatches")
+    if kill_switch_active:
+        results["alerts"].append("kill switch active; explicit operator review required")
     if results["alerts"]:
         _send_alert(results)
-
     return results
 
 
@@ -99,6 +70,7 @@ def _send_alert(results: dict[str, Any]) -> None:
         return
     try:
         import httpx
+
         text = (
             "<b>Bitget Auto-Recovery Alert</b>\n\n"
             f"Intents reconciled: <b>{results['intents_reconciled']}</b>\n"
@@ -118,6 +90,11 @@ def _send_alert(results: dict[str, Any]) -> None:
 if __name__ == "__main__":
     results = recover()
     # Watchdog pattern: only output when there's something to report
-    if results["alerts"] or results["intents_reconciled"] > 0 or results["kill_switch_released"] or results["dispatches_fixed"] > 0:
+    if (
+        results["alerts"]
+        or results["intents_reconciled"] > 0
+        or results["kill_switch_released"]
+        or results["dispatches_fixed"] > 0
+    ):
         print(json.dumps(results, default=str))
     # Otherwise: empty stdout = no delivery

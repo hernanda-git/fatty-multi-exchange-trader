@@ -112,7 +112,7 @@ class BitgetDispatchExecution:
         intent.filled_qty = result.filled_qty
         intent.avg_price = result.avg_price
         intent.fee = result.fee
-        intent.provider_order_id = result.provider_order_id
+        intent.provider_order_id = result.provider_order_id or intent.provider_order_id
         intent.provider_fill_ids = result.provider_fill_ids
         intent.provider_fills = result.provider_fills
         self._store.update(intent)

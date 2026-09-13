@@ -6,7 +6,6 @@ when safe, and fix dispatch states — enabling instant recovery without manual 
 
 from __future__ import annotations
 
-from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -71,64 +70,27 @@ def create_recovery_app(
         authorization: str | None = Header(None),
         approval_reference: str = "auto-recovery",
     ) -> dict[str, object]:
-        """Release the Bitget kill switch after verifying no active positions."""
+        """Refuse implicit kill-switch release; operator approval is external."""
         _auth(authorization)
-        with _get_connection() as conn, conn.cursor() as cur:
-            cur.execute("SELECT active, reason FROM venue_kill_switches WHERE scope = 'bitget'")
-            row = cur.fetchone()
-            if row is None:
-                return {"released": False, "reason": "no kill switch row"}
-            active = row[0]
-            if not active:
-                return {"released": False, "reason": "already inactive"}
-            cur.execute(
-                """UPDATE venue_kill_switches
-                       SET active = FALSE, reason = %s, updated_at = CURRENT_TIMESTAMP
-                       WHERE scope = 'bitget'""",
-                (f"released:{approval_reference}",),
-            )
-            conn.commit()
-        return {"released": True, "approval_reference": approval_reference}
+        return {
+            "released": False,
+            "reason": "disabled-read-only-recovery",
+            "approval_reference": approval_reference,
+        }
 
     @app.post("/recover/full")
     async def recover_full(
         authorization: str | None = Header(None),
     ) -> dict[str, object]:
-        """Run full recovery: reconcile intents, release kill switch, fix dispatches."""
+        """Refuse broad automatic recovery; return a closed-by-default response."""
         _auth(authorization)
-        results: dict[str, Any] = {}
-        with _get_connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """UPDATE live_order_intents
-                       SET state = 'filled', updated_at = CURRENT_TIMESTAMP
-                       WHERE exchange = 'bitget'
-                         AND state IN ('submitted', 'unknown')
-                         AND filled_qty > 0
-                       RETURNING client_order_id"""
-            )
-            results["intents_reconciled"] = [r[0] for r in cur.fetchall()]
-            cur.execute(
-                """UPDATE venue_kill_switches
-                       SET active = FALSE, reason = 'released:auto-recovery-full',
-                           updated_at = CURRENT_TIMESTAMP
-                       WHERE scope = 'bitget' AND active = TRUE
-                       RETURNING scope"""
-            )
-            results["kill_switch_released"] = cur.fetchone() is not None
-            cur.execute(
-                """UPDATE dispatches
-                       SET state = 'FILLED',
-                           terminal_reason = 'historical-entry-filled-and-provider-flat-reconciled',
-                           updated_at = CURRENT_TIMESTAMP
-                       WHERE exchange = 'bitget' AND state = 'UNKNOWN'
-                       RETURNING id"""
-            )
-            results["dispatches_fixed"] = [str(r[0]) for r in cur.fetchall()]
-            conn.commit()
-        if telegram_bot_token and telegram_chat_id:
-            with suppress(Exception):
-                await _send_telegram_summary(telegram_bot_token, telegram_chat_id, results)
-        return results
+        return {
+            "read_only": True,
+            "reason": "disabled-read-only-recovery",
+            "intents_reconciled": [],
+            "kill_switch_released": False,
+            "dispatches_fixed": [],
+        }
 
     async def _send_telegram_summary(bot_token: str, chat_id: str, results: dict[str, Any]) -> None:
         kill_switch = "yes" if results.get("kill_switch_released") else "no"

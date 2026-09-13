@@ -42,9 +42,9 @@ def _db_query(sql: str, params: tuple[Any, ...] = ()) -> list[list[Any]]:
         with _psycopg_connect() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             return [list(row) for row in cur.fetchall()]
-    except Exception as e:
-        logger.error(f"_db_query failed: {type(e).__name__}: {e}")
-        return []
+    except Exception as exc:
+        logger.error(f"_db_query failed: {type(exc).__name__}: {exc}")
+        raise
 
 
 def _db_exec(sql: str, params: tuple[Any, ...] = ()) -> None:
@@ -53,8 +53,9 @@ def _db_exec(sql: str, params: tuple[Any, ...] = ()) -> None:
         with _psycopg_connect() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             conn.commit()
-    except Exception as e:
-        logger.error(f"_db_exec failed: {type(e).__name__}: {e}")
+    except Exception as exc:
+        logger.error(f"_db_exec failed: {type(exc).__name__}: {exc}")
+        raise
 
 
 # ── Schema ─────────────────────────────────────────────────────────────────
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS fallback_protection (
     stop_loss numeric NOT NULL,
     take_profits jsonb NOT NULL DEFAULT '[]'::jsonb,
     quantity numeric NOT NULL,
+    position_key text,
     state text NOT NULL DEFAULT 'active',
     close_price numeric,
     close_reason text,
@@ -78,6 +80,10 @@ CREATE TABLE IF NOT EXISTS fallback_protection (
 );
 CREATE INDEX IF NOT EXISTS fallback_protection_active
     ON fallback_protection (exchange, symbol) WHERE state = 'active';
+ALTER TABLE fallback_protection ADD COLUMN IF NOT EXISTS position_key text;
+CREATE UNIQUE INDEX IF NOT EXISTS fallback_protection_active_key
+    ON fallback_protection (position_key)
+    WHERE state IN ('active', 'closing') AND position_key IS NOT NULL;
 """
 
 
@@ -97,6 +103,7 @@ def register_fallback(
     stop_loss: Decimal,
     take_profits: list[Decimal],
     quantity: Decimal,
+    position_key: str | None = None,
 ) -> str:
     """Register a position for fallback TP/SL monitoring."""
     ensure_schema()
@@ -104,10 +111,12 @@ def register_fallback(
     _db_exec(
         """
         INSERT INTO fallback_protection
-            (exchange, symbol, direction, entry_price, stop_loss, take_profits, quantity, state)
-        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, 'active')
+            (exchange, symbol, direction, entry_price, stop_loss,
+             take_profits, quantity, position_key, state)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'active')
+        ON CONFLICT DO NOTHING
         """,
-        (exchange, symbol, direction, entry_price, stop_loss, tp_json, quantity),
+        (exchange, symbol, direction, entry_price, stop_loss, tp_json, quantity, position_key),
     )
     logger.info(
         "Fallback protection registered: %s %s entry=%s sl=%s tp=%s",

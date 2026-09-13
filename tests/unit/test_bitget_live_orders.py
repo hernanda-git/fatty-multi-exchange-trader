@@ -300,3 +300,34 @@ def test_rejected_order_classified_and_no_protection() -> None:
     assert result.filled_qty == Decimal("0")
     assert client.protection_qty is None
     assert result.emergency_closed is False
+
+
+def test_fee_detail_json_string_is_normalized_into_positive_fee() -> None:
+    from fatty_trader.exchanges.bitget.live import summarize_fills
+
+    quantity, average, fee, fill_ids = summarize_fills(
+        [
+            {
+                "fillId": "fee-detail-1",
+                "baseVolume": "0.01",
+                "price": "50000",
+                "feeDetail": '[{"totalFee":"-0.30","feeCoin":"USDT"}]',
+            }
+        ]
+    )
+
+    assert quantity == Decimal("0.01")
+    assert average == Decimal("50000")
+    assert fee == Decimal("0.30")
+    assert fill_ids == ("fee-detail-1",)
+
+
+def test_filled_detail_without_authoritative_quantity_is_not_marked_filled() -> None:
+    client = FakeLiveClient(detail=_filled_detail(), fills=[])
+    store = InMemoryLiveIntentStore()
+
+    result = enter_live_position(client, store, _request())
+
+    assert result.status is LiveOrderStatus.UNKNOWN
+    assert result.filled_qty == Decimal("0")
+    assert client.protection_qty is None

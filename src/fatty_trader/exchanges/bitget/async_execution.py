@@ -13,6 +13,7 @@ from fatty_trader.exchanges.bitget.live import (
     LiveIntentStoreProtocol,
     LiveOrderStatus,
     classify_live_order,
+    normalize_fill,
     summarize_fills,
 )
 from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
@@ -90,6 +91,20 @@ def _matching_fills(
     return matching
 
 
+def _detail_decimal(detail: dict[str, Any], *keys: str) -> Decimal | None:
+    for key in keys:
+        raw = detail.get(key)
+        if raw is None:
+            continue
+        try:
+            value = Decimal(str(raw))
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
+
 class AsyncBitgetExecution:
     """Production async execution adapter; POST is followed only by read-back GETs."""
 
@@ -148,14 +163,17 @@ class AsyncBitgetExecution:
             raise ValueError("Bitget order detail response must be an object")
         if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
             raise ValueError("Bitget fills response must be a list of objects")
-        provider_order_id = detail.get("orderId")
+        provider_order_id = detail.get("orderId") or detail.get("providerOrderId")
         if provider_order_id is None and submitted is not None:
-            provider_order_id = submitted.get("orderId")
-        typed_fills = _matching_fills(
+            provider_order_id = submitted.get("orderId") or submitted.get("providerOrderId")
+        if provider_order_id is None:
+            provider_order_id = intent.provider_order_id
+        matching_fills = _matching_fills(
             [dict(fill) for fill in fills],
             client_oid=intent.client_oid,
             provider_order_id=str(provider_order_id) if provider_order_id is not None else None,
         )
+        typed_fills = [normalize_fill(fill) for fill in matching_fills]
         filled_qty, avg_price, fee, fill_ids = summarize_fills(typed_fills)
         if not detail:
             if filled_qty >= intent.requested_qty:
@@ -176,6 +194,10 @@ class AsyncBitgetExecution:
                 provider_fill_ids=fill_ids,
                 provider_fills=tuple(typed_fills),
             )
+        detail_filled_qty = _detail_decimal(detail, "filledQty", "filledSize", "baseVolume")
+        if filled_qty <= 0 and detail_filled_qty is not None:
+            filled_qty = detail_filled_qty
+            avg_price = _detail_decimal(detail, "avgPrice", "priceAvg", "averagePrice")
         status = classify_live_order(detail, typed_fills)
         if status is LiveOrderStatus.ACCEPTED and typed_fills:
             status = LiveOrderStatus.FILLED
@@ -240,6 +262,7 @@ class AsyncBitgetExecution:
                     from fatty_trader.execution.bitget_fallback_protection import register_fallback
 
                     if intent.avg_price is None or intent.avg_price <= 0:
+                        self._degraded = True
                         return AsyncProtectionResult(
                             ProtectionState.DEGRADED,
                             filled_quantity,
@@ -253,13 +276,20 @@ class AsyncBitgetExecution:
                         stop_loss=plan.stop_loss,
                         take_profits=list(plan.take_profits),
                         quantity=filled_quantity,
+                        position_key=intent.client_oid,
                     )
                 except Exception:
-                    pass
+                    self._degraded = True
+                    return AsyncProtectionResult(
+                        ProtectionState.DEGRADED,
+                        filled_quantity,
+                        "fallback-registration-failed",
+                    )
+                self._degraded = True
                 return AsyncProtectionResult(
                     ProtectionState.DEGRADED,
                     filled_quantity,
-                    "native-protection-unsupported",
+                    "native-protection-unsupported-fallback-registered",
                 )
             report = ProtectionReport(
                 ProtectionState.FAILED, Decimal("0"), "protection-submit-failed"
@@ -278,14 +308,25 @@ class AsyncBitgetExecution:
         """Persist then submit at most one emergency close, never for an observed flat account."""
         if report.reason == "position-not-open":
             return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
-        # Check if position is already flat on Bitget before submitting
         try:
             positions = await self._client.get_single_position(entry.symbol)
-            if not _has_open_position(positions):
-                return AsyncProtectionResult(report.state, Decimal("0"), "position-already-flat")
+            open_quantity = _open_position_quantity(positions)
         except Exception:
-            pass  # If we can't verify, proceed with close attempt
-        close_intent = build_emergency_close_intent(entry, entry.filled_qty)
+            return AsyncProtectionResult(
+                report.state, report.observed_quantity, "position-read-failed"
+            )
+        if open_quantity is None:
+            return AsyncProtectionResult(
+                report.state, report.observed_quantity, "position-read-invalid"
+            )
+        if open_quantity <= 0:
+            return AsyncProtectionResult(report.state, Decimal("0"), "position-already-flat")
+        close_quantity = min(entry.filled_qty, open_quantity)
+        if close_quantity <= 0:
+            return AsyncProtectionResult(
+                report.state, report.observed_quantity, "close-quantity-invalid"
+            )
+        close_intent = build_emergency_close_intent(entry, close_quantity)
         existing = store.get(close_intent.client_oid)
         if existing is not None:
             return AsyncProtectionResult(
@@ -325,19 +366,25 @@ class AsyncBitgetExecution:
         )
 
 
-def _has_open_position(value: Any) -> bool:
-    if not isinstance(value, list):
-        return False
-    for row in value:
+def _open_position_quantity(value: Any) -> Decimal | None:
+    if isinstance(value, dict):
+        value = value.get("data", value.get("positionList", []))
+    if isinstance(value, list) and not value:
+        return Decimal("0")
+    rows = value if isinstance(value, list) else [value]
+    total = Decimal("0")
+    found = False
+    for row in rows:
         if not isinstance(row, dict):
             continue
+        raw = row.get("total", row.get("size", row.get("quantity", "0")))
         try:
-            quantity = Decimal(str(row.get("total", row.get("size", row.get("quantity", "0")))))
-        except Exception:
+            quantity = abs(Decimal(str(raw or "0")))
+        except (ArithmeticError, TypeError, ValueError):
             continue
-        if quantity > 0:
-            return True
-    return False
+        found = True
+        total += quantity
+    return total if found else None
 
 
 def _persist_intent_result(
@@ -359,7 +406,3 @@ def _persist_intent_result(
     intent.provider_fill_ids = result.provider_fill_ids
     intent.provider_fills = result.provider_fills
     store.update(intent)
-    if result.provider_fills:
-        record_fills = getattr(store, "record_fills", None)
-        if callable(record_fills):
-            record_fills(intent, result.provider_fills)
