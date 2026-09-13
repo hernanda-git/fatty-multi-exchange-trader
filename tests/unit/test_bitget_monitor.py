@@ -122,13 +122,6 @@ async def test_demo_monitor_reports_but_never_latches_kill_switch() -> None:
     ("positions", "orders", "plans", "clock_skew_ms", "reason"),
     [
         (
-            [{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}],
-            [],
-            [],
-            0,
-            "missing-stop-loss",
-        ),
-        (
             [{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "crossed"}],
             [],
             [],
@@ -162,6 +155,38 @@ async def test_unsafe_provider_read_latches_kill_switch_and_deduplicates_alert(
     assert repository.kill_switch_active("bitget") is True
     assert repository.alerts == [reason]
     assert all(call.startswith("get_") for call in venue.calls)
+
+
+@pytest.mark.asyncio
+async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fatty_trader.execution import bitget_fallback_protection
+
+    venue = ReadOnlyVenue(
+        positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}]
+    )
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+    fallback_calls: list[str] = []
+
+    async def run_fallback(client: object) -> list[dict[str, str]]:
+        del client
+        fallback_calls.append("called")
+        return []
+
+    monkeypatch.setattr(bitget_fallback_protection, "run_fallback_monitor_async", run_fallback)
+
+    report = await BitgetMonitor(
+        venue,
+        repository,
+        fallback_mutations_enabled=True,
+    ).run_once()
+
+    assert report.status == "degraded"
+    assert report.reasons == ("missing-stop-loss",)
+    assert fallback_calls == ["called"]
+    assert repository.kill_switch_active("bitget") is False
+    assert repository.alerts == []
 
 
 @pytest.mark.asyncio

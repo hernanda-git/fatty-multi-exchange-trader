@@ -12,6 +12,8 @@ from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_pro
 from fatty_trader.execution.protection import ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
 
+_FALLBACK_MANAGED_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
+
 
 class BitgetMonitorClient(Protocol):
     async def get_all_positions(self) -> Any: ...
@@ -73,11 +75,21 @@ class BitgetMonitor:
                 reasons.append("clock-skew-exceeded")
         unique_reasons = tuple(dict.fromkeys(reasons))
         if unique_reasons:
+            latchable_reasons = tuple(
+                reason
+                for reason in unique_reasons
+                if not (
+                    self._fallback_mutations_enabled
+                    and reason in _FALLBACK_MANAGED_PROTECTION_REASONS
+                )
+            )
+            if not latchable_reasons:
+                return MonitorReport("degraded", unique_reasons)
             if not self._enforce_kill_switch:
                 return MonitorReport("degraded", unique_reasons)
-            for reason in unique_reasons:
+            for reason in latchable_reasons:
                 self._repository.latch_kill_switch(self._scope, reason)
-            return MonitorReport("kill-switch-latched", unique_reasons)
+            return MonitorReport("kill-switch-latched", latchable_reasons)
         if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
             return MonitorReport("kill-switch-latched")
         return MonitorReport("ok")
