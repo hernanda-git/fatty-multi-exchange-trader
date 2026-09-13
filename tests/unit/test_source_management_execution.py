@@ -53,7 +53,10 @@ def test_tp1_update_is_claimed_once_closes_half_then_moves_sl_after_readback() -
     store = InMemorySourceManagementStore([update])
     gateway = Gateway()
 
-    assert SourceManagementExecutor(store, gateway).run_once("worker-a") == "reconciled"
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker-a")
+        == "reconciled"
+    )
     assert gateway.calls == [
         ("get_positions", "BTCUSDT"),
         (
@@ -137,9 +140,43 @@ def test_restart_with_existing_close_intent_never_reposts_provider_close() -> No
     store.persist_provider_intent(update.id, "source-management-" + update.id.hex + "-close")
     gateway = Gateway()
 
-    assert SourceManagementExecutor(store, gateway).run_once("worker-b") == "reconciliation-pending"
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker-b")
+        == "reconciliation-pending"
+    )
     assert gateway.posts == 0
     assert store.get(update.id).state == "reconciliation-pending"
+
+
+def test_source_management_gate_blocks_live_position_mutations_by_default() -> None:
+    from fatty_trader.execution.source_management import (
+        InMemorySourceManagementStore,
+        SourceManagementExecutor,
+        SourceManagementUpdate,
+    )
+
+    class Gateway:
+        def __init__(self) -> None:
+            self.posts = 0
+
+        def get_positions(self, symbol: str) -> list[dict[str, object]]:
+            return [
+                {"symbol": symbol, "side": "LONG", "size": Decimal("1"), "entry": Decimal("100")}
+            ]
+
+        def close_reduce_only(self, **_: object) -> None:
+            self.posts += 1
+
+        def replace_stop_loss(self, **_: object) -> None:
+            self.posts += 1
+
+    update = SourceManagementUpdate.new("a" * 64, "BTCUSDT", ManagementAction.CLOSE)
+    store = InMemorySourceManagementStore([update])
+    gateway = Gateway()
+
+    assert SourceManagementExecutor(store, gateway).run_once("worker") == "mutations-disabled"
+    assert gateway.posts == 0
+    assert store.get(update.id).state == "failed"
 
 
 def test_analyzer_persists_management_update_idempotently_before_marking_analyzed() -> None:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from fatty_trader.exchanges.bitget.metadata import find_contract, metadata_from_contract
 from fatty_trader.exchanges.bitget.read_model import (
@@ -51,8 +52,18 @@ class AsyncBitgetVenue:
             # Set margin mode; Bitget returns the confirmed mode in the response.
             # Trust it, but verify with a short-delayed read-back before rejecting.
             import asyncio
-            set_result = await self._client.set_margin_mode(symbol, margin_mode="isolated")
-            if isinstance(set_result, dict) and str(set_result.get("marginMode", "")).lower() == "isolated":
+
+            set_margin_mode = cast(
+                Callable[..., Awaitable[Any]] | None,
+                getattr(self._client, "set_margin_mode", None),
+            )
+            if not callable(set_margin_mode):
+                raise ValueError("Bitget account margin mode must be isolated")
+            set_result = await set_margin_mode(symbol, margin_mode="isolated")
+            if (
+                isinstance(set_result, dict)
+                and str(set_result.get("marginMode", "")).lower() == "isolated"
+            ):
                 account = await read_account_state(self._client, symbol)
                 if account.margin_mode != "isolated":
                     # Propagation delay: wait and re-read once before rejecting.

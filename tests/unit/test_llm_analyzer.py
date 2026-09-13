@@ -101,7 +101,7 @@ def test_classifier_rejects_invalid_canonical_geometry() -> None:
     assert "geometry" in result.reason.lower()
 
 
-def test_llm_result_is_primary_and_parser_is_not_used_on_success() -> None:
+def test_explicit_parser_recovers_signal_when_codex_misses_it() -> None:
     result = analyze_with_fallback(
         text="#GIGGLE $GIGGLE LONG TRADE ENTRY: 36.85 TARGET: 43 STOPLOSS: 35.45",
         message_id=16081,
@@ -109,6 +109,19 @@ def test_llm_result_is_primary_and_parser_is_not_used_on_success() -> None:
             {"actionable": False, "reason": "model says this is not a signal"}
         ),
     )
+    assert result.status is AnalysisStatus.FALLBACK_ACCEPTED
+    assert result.signal is not None
+    assert result.signal.pair_token == "GIGGLE"
+    assert result.failure_class == "model says this is not a signal"
+
+
+def test_non_actionable_ambiguous_text_remains_codex_succeeded() -> None:
+    result = analyze_with_fallback(
+        text="$ETH 6% up",
+        message_id=16082,
+        codex_runner=lambda _: run_result({"actionable": False, "reason": "movement only"}),
+    )
+
     assert result.status is AnalysisStatus.CODEX_SUCCEEDED
     assert result.signal is None
     assert result.failure_class is None

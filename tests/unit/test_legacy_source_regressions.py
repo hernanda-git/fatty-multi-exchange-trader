@@ -91,3 +91,11 @@ def test_codex_no_signal_falls_back_to_explicit_xpl_setup() -> None:
     assert result.status is AnalysisStatus.FALLBACK_ACCEPTED
     assert result.signal is not None
     assert result.signal.pair_token == "XPL"
+
+
+def test_management_symbol_rejects_reserved_prefix_candidates() -> None:
+    for text in ("$SL to entry $ETHFI", "#SL to entry #ETHFI"):
+        result = parse_source_management(text)
+        assert result is not None
+        assert result.symbol == "ETHFIUSDT"
+    assert parse_source_management("SLUSDT to entry") is None

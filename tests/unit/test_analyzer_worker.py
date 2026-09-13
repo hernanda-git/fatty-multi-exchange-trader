@@ -11,6 +11,7 @@ from fatty_trader.analyzer.postgres_worker import process_received_batch
 class Cursor:
     def __init__(self) -> None:
         self.executed: list[tuple[str, object]] = []
+        self.signal_id: object | None = None
         self.rows: list[tuple[object, ...]] = [
             (
                 uuid4(),
@@ -30,6 +31,11 @@ class Cursor:
 
     def execute(self, statement: str, params: object = ()) -> None:
         self.executed.append((statement, params))
+        if "INSERT INTO canonical_signals" in statement:
+            self.signal_id = cast(tuple[Any, ...], params)[0]
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return (self.signal_id,) if self.signal_id is not None else None
 
     def fetchall(self) -> list[tuple[object, ...]]:
         return self.rows
@@ -71,6 +77,33 @@ def test_process_received_batch_persists_analysis_and_two_paper_dispatches() -> 
     assert "INSERT INTO canonical_signals" in statements
     assert "UPDATE telegram_messages" in statements
     assert connection.commits == 1
+
+
+def test_process_received_batch_uses_existing_canonical_id_on_conflict() -> None:
+    existing_id = uuid4()
+
+    class ExistingCanonicalCursor(Cursor):
+        def execute(self, statement: str, params: object = ()) -> None:
+            super().execute(statement, params)
+            if "SELECT id FROM canonical_signals" in statement:
+                self.signal_id = existing_id
+
+    cursor = ExistingCanonicalCursor()
+    connection = Connection(cursor)
+
+    assert (
+        process_received_batch(
+            lambda: connection,
+            runner=lambda _: CodexRunResult(False, True, False, 1, "unavailable", "", ""),
+            exchanges=("bitget",),
+        )
+        == 1
+    )
+    dispatch_params = [
+        params for statement, params in cursor.executed if "INSERT INTO dispatches" in statement
+    ]
+    assert len(dispatch_params) == 1
+    assert cast(tuple[Any, ...], dispatch_params[0])[1] == existing_id
 
 
 def test_process_received_batch_dispatches_only_to_enabled_engine() -> None:

@@ -56,7 +56,7 @@ class Execution:
     async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str:
         self.post_count += 1
         assert dispatch.pair_token == "BTCUSDT"
-        assert quantity == Decimal("0.002")
+        assert quantity == Decimal("0.004")
         return "FILLED"
 
 

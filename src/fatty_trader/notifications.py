@@ -347,8 +347,7 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
             "⛔ <b>Eksekusi Diblokir</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Tidak ada order dikirim.\n"
-            "Alasan: mode DEMO · eksekusi live belum diaktifkan.\n"
-            f"Dispatch: <code>{dispatch_id}</code>"
+            "Alasan: mode DEMO · eksekusi live belum diaktifkan."
         )
     state = escape(_safe_value(payload.get("to_state", "diperbarui")))
     return (
@@ -376,11 +375,7 @@ def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
 
 def _format_system_event_html(payload: Mapping[str, Any]) -> str:
     message = escape(_safe_text(payload.get("message", ""), limit=1000))
-    return (
-        "🤖 <b>System Event</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"{message}"
-    )
+    return f"🤖 <b>System Event</b>\n━━━━━━━━━━━━━━━━━━━━\n{message}"
 
 
 def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
@@ -442,7 +437,8 @@ def _format_timestamp(iso_string: str) -> str:
     if not iso_string:
         return "?"
     try:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
+
         dt = datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
         jakarta_tz = timezone(timedelta(hours=7))
         dt_jakarta = dt.astimezone(jakarta_tz)

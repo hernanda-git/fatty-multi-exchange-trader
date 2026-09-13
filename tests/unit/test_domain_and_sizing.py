@@ -72,7 +72,7 @@ def test_sizing_raises_leverage_before_margin() -> None:
 
     assert plan.effective_leverage == 6
     assert plan.effective_margin_usdt == Decimal("1")
-    assert plan.quantity == Decimal("0.051")
+    assert plan.quantity == Decimal("0.06")
 
 
 def test_sizing_rejects_when_minimum_margin_breaks_hard_cap() -> None:

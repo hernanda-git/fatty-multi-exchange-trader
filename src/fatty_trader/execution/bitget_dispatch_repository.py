@@ -32,6 +32,8 @@ class BitgetDispatch:
     entry_price: Decimal
     stop_loss: Decimal
     take_profits: tuple[Decimal, ...]
+    source_channel_id: int | None = None
+    source_message_id: int | None = None
 
 
 _CLAIM_SQL = """
@@ -50,10 +52,10 @@ SET claimed_by = %s,
     lease_until = now() + (%s * interval '1 second'),
     attempts = attempts + 1,
     updated_at = now()
-FROM next_dispatch n, canonical_signals s
-WHERE d.id = n.id AND s.id = d.source_id
+FROM next_dispatch n, canonical_signals s, telegram_messages tm
+WHERE d.id = n.id AND s.id = d.source_id AND tm.id = s.message_id
 RETURNING d.id, d.state, d.claimed_by, d.attempts, s.pair_token, s.direction,
-          s.entry_price, s.stop_loss, s.take_profits;
+          s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id;
 """
 
 _RESERVE_CANARY_ENTRY_SQL = """
@@ -67,8 +69,11 @@ WITH canary_lock AS (
         WHERE exchange = %s AND role = 'ENTRY'
           AND state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled')
     ) + (
-        SELECT count(*) FROM canary_entry_reservations
-        WHERE exchange = %s
+        SELECT count(*)
+        FROM canary_entry_reservations r
+        JOIN dispatches reserved_dispatch ON reserved_dispatch.id = r.dispatch_id
+        WHERE r.exchange = %s
+          AND reserved_dispatch.state NOT IN ('FILLED', 'REJECTED', 'CANCELLED', 'RECONCILED')
     ) < %s
     ON CONFLICT (dispatch_id) DO NOTHING
     RETURNING dispatch_id
@@ -147,6 +152,14 @@ class PostgresBitgetDispatchRepository:
                 """,
                 (uuid4(), dispatch_id, expected_state, target_state, reason),
             )
+            if target_state in {"FILLED", "REJECTED", "CANCELLED", "RECONCILED"}:
+                cursor.execute(
+                    """
+                    DELETE FROM canary_entry_reservations
+                    WHERE dispatch_id = %s AND exchange = 'bitget'
+                    """,
+                    (dispatch_id,),
+                )
             cursor.execute(
                 """
                 INSERT INTO notifications_outbox (id, dedup_key, payload)
@@ -214,6 +227,8 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
             "entry_price": row[6],
             "stop_loss": row[7],
             "take_profits": row[8],
+            "source_channel_id": row[9] if len(row) > 9 else None,
+            "source_message_id": row[10] if len(row) > 10 else None,
         }
     )
     raw_take_profits = values["take_profits"] or []
@@ -229,4 +244,14 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
         entry_price=Decimal(str(values["entry_price"])),
         stop_loss=Decimal(str(values["stop_loss"])),
         take_profits=tuple(Decimal(str(value)) for value in raw_take_profits),
+        source_channel_id=(
+            int(values["source_channel_id"])
+            if values.get("source_channel_id") is not None
+            else None
+        ),
+        source_message_id=(
+            int(values["source_message_id"])
+            if values.get("source_message_id") is not None
+            else None
+        ),
     )

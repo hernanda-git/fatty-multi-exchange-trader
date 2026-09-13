@@ -20,6 +20,56 @@ class Connection(Protocol):
     def rollback(self) -> None: ...
 
 
+def insert_provider_fills(
+    cursor: Cursor,
+    record: LiveIntentRecord,
+    fills: tuple[dict[str, Any], ...],
+) -> None:
+    """Persist provider fills without inventing IDs or prices."""
+    for fill in fills:
+        provider_fill_id = fill.get("fillId", fill.get("tradeId", fill.get("id")))
+        quantity = fill.get(
+            "quantity", fill.get("size", fill.get("fillQty", fill.get("baseVolume")))
+        )
+        price = fill.get("price", fill.get("fillPrice", fill.get("priceAvg")))
+        if provider_fill_id is None or quantity is None or price is None:
+            continue
+        try:
+            fee = abs(Decimal(str(fill.get("fee", "0") or "0")))
+            realized_pnl = Decimal(
+                str(
+                    fill.get("realizedPnl", fill.get("profit", fill.get("totalProfits", "0")))
+                    or "0"
+                )
+            )
+        except Exception:
+            continue
+        timestamp_ms = fill.get("cTime", fill.get("uTime"))
+        cursor.execute(
+            """
+            INSERT INTO fills
+                (id, exchange, client_order_id, provider_fill_id, symbol, price,
+                 quantity, fee, fee_ccy, realized_pnl, filled_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    COALESCE(to_timestamp(%s / 1000.0), CURRENT_TIMESTAMP))
+            ON CONFLICT (exchange, provider_fill_id) DO NOTHING
+            """,
+            (
+                uuid5(NAMESPACE_URL, f"fatty-fill:{record.exchange}:{provider_fill_id}"),
+                record.exchange,
+                record.client_oid,
+                str(provider_fill_id),
+                record.symbol,
+                price,
+                quantity,
+                fee,
+                fill.get("feeCcy", fill.get("feeCoin", "USDT")),
+                realized_pnl,
+                timestamp_ms,
+            ),
+        )
+
+
 def build_emergency_close_intent(entry: LiveIntentRecord, quantity: Decimal) -> LiveIntentRecord:
     """Build the one stable reduce-only containment intent for an unsafe fill."""
     if quantity <= 0:
@@ -134,6 +184,17 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             )
             if cursor.fetchone() is None:
                 raise ValueError("live intent provider order id conflict or missing record")
+            if record.provider_fills:
+                insert_provider_fills(cursor, record, record.provider_fills)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None:
+        connection = self._connection_factory()
+        try:
+            insert_provider_fills(connection.cursor(), record, fills)
             connection.commit()
         except Exception:
             connection.rollback()

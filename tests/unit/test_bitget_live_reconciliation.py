@@ -72,6 +72,7 @@ def test_native_confirmation_rejects_changed_margin_mode_even_when_plan_ids_exis
 
 def test_native_confirmation_falls_back_to_position_fields_when_plans_unsupported() -> None:
     """Symbols like GRASSUSDT reject orders-plan-pending with 400172."""
+
     async def position() -> list[dict[str, str | None]]:
         return [
             {

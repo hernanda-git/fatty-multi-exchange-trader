@@ -39,7 +39,7 @@ class BitgetMonitor:
         *,
         scope: str = "bitget",
         max_clock_skew_ms: int = 10_000,
-        enforce_kill_switch: bool = False,
+        enforce_kill_switch: bool = True,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")
@@ -83,8 +83,11 @@ class BitgetMonitor:
     async def _run_fallback_monitor(self, reasons: list[str]) -> None:
         """Run bot-managed TP/SL fallback monitoring for degraded positions."""
         try:
-            from fatty_trader.execution.bitget_fallback_protection import run_fallback_monitor
-            triggered = run_fallback_monitor()
+            from fatty_trader.execution.bitget_fallback_protection import (
+                run_fallback_monitor_async,
+            )
+
+            triggered = await run_fallback_monitor_async(self._client)
             for t in triggered:
                 reasons.append(f"fallback-{t['reason']}:{t['symbol']}")
         except Exception as exc:

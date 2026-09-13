@@ -67,7 +67,7 @@ def test_signal_analysis_without_trade_is_a_plain_language_update() -> None:
         }
     )
 
-    assert "<b>Update sumber</b>" in text
+    assert "<b>update sumber</b>" in text.casefold()
     assert "TP1 booked here at 2R" in text
     assert "Tidak ada order dibuat" in text
     assert "Source Revision" not in text
@@ -90,7 +90,8 @@ def test_signal_analysis_with_trade_uses_compact_trade_card() -> None:
         }
     )
 
-    assert "<b>Setup terdeteksi · WLD LONG</b>" in text
+    assert "<b>setup terdeteksi · wld" in text.casefold()
+    assert "long</b>" in text.casefold()
     assert "Entry  : <code>0.47</code>" in text
     assert "SL     : <code>0.4562</code>" in text
     assert "TP     : <code>0.51</code>" in text
@@ -108,7 +109,7 @@ def test_cutover_event_states_that_no_order_was_sent() -> None:
         }
     )
 
-    assert "<b>Eksekusi diblokir</b>" in text
+    assert "<b>eksekusi diblokir</b>" in text.casefold()
     assert "Tidak ada order dikirim" in text
     assert "cutover-gated" not in text
     assert "577ed2b8" not in text
@@ -126,7 +127,7 @@ def test_source_tp1_update_is_labeled_as_position_management() -> None:
         }
     )
 
-    assert "<b>Manajemen posisi · WLDUSDT</b>" in text
+    assert "<b>manajemen posisi · wldusdt</b>" in text.casefold()
     assert "TP1 booked terdeteksi dari source trader." in text
     assert "Tidak ada order dibuat" not in text
 

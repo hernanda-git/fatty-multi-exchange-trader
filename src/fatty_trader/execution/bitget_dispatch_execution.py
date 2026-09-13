@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from fatty_trader.domain.enums import Direction, Exchange
 from fatty_trader.exchanges.bitget.async_execution import (
@@ -72,9 +73,16 @@ class BitgetDispatchExecution:
         if quantity <= 0:
             raise ValueError("dispatch quantity must be positive")
         side = "BUY" if dispatch.direction == Direction.LONG.value else "SELL"
+        token = dispatch.id.hex[:16]
+        if dispatch.source_channel_id is not None and dispatch.source_message_id is not None:
+            token = uuid5(
+                NAMESPACE_URL,
+                f"fatty-bitget-entry:{dispatch.source_channel_id}:{dispatch.source_message_id}:"
+                f"{dispatch.pair_token}:{side}",
+            ).hex[:16]
         return LiveIntentRecord(
             exchange=Exchange.BITGET.value,
-            client_oid=f"live-bitget-{dispatch.pair_token}-{dispatch.id.hex[:16]}",
+            client_oid=f"live-bitget-{dispatch.pair_token}-{token}",
             symbol=dispatch.pair_token,
             side=side,
             requested_qty=quantity,
@@ -106,6 +114,7 @@ class BitgetDispatchExecution:
         intent.fee = result.fee
         intent.provider_order_id = result.provider_order_id
         intent.provider_fill_ids = result.provider_fill_ids
+        intent.provider_fills = result.provider_fills
         self._store.update(intent)
 
 

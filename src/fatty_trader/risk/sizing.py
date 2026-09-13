@@ -29,7 +29,7 @@ def minimum_safe_plan(
         rounding=ROUND_CEILING
     )
     leverage = min(max(leverage, int(required_leverage)), leverage_cap)
-    
+
     # Use intended allocation margin (base_margin_usdt), not just minimum
     # base_margin_usdt already includes allocation_pct and free_margin_headroom
     margin = config.base_margin_usdt
@@ -55,7 +55,7 @@ def minimum_safe_plan(
         required_min / (reference_price * spec.contract_multiplier), spec.qty_step
     )
     quantity = max(target_qty, min_qty)
-    
+
     final_notional = quantity * reference_price * spec.contract_multiplier
     if final_notional > config.max_position_notional_usdt:
         raise SizingError("rounded quantity exceeds position cap")

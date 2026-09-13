@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from contextlib import closing
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunResult
 from fatty_trader.analyzer.integration import analyze_with_fallback
@@ -27,6 +27,9 @@ INSERT INTO canonical_signals
 (id, message_id, revision, pair_token, direction, entry_price, stop_loss, take_profits)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
 ON CONFLICT (message_id, revision) DO NOTHING
+"""
+_SIGNAL_ID_SELECT = """
+SELECT id FROM canonical_signals WHERE message_id = %s AND revision = %s
 """
 _DISPATCH_INSERT = """
 INSERT INTO dispatches
@@ -95,7 +98,9 @@ def process_received_batch(
                     signal_id = None
                     if result.signal is not None:
                         signal = result.signal.model_copy(update={"source_revision": revision})
-                        signal_id = uuid4()
+                        signal_id = uuid5(
+                            NAMESPACE_URL, f"fatty-canonical:{message_uuid}:{revision}"
+                        )
                         cursor.execute(
                             _SIGNAL_INSERT,
                             (
@@ -108,6 +113,13 @@ def process_received_batch(
                                 signal.stop_loss,
                                 json.dumps([str(target) for target in signal.take_profits]),
                             ),
+                        )
+                        cursor.execute(_SIGNAL_ID_SELECT, (message_uuid, revision))
+                        signal_row = cursor.fetchone()
+                        if signal_row is None:
+                            raise ValueError("canonical signal insert/read-back failed")
+                        signal_id = (
+                            signal_row["id"] if isinstance(signal_row, dict) else signal_row[0]
                         )
                         for exchange in exchanges:
                             cursor.execute(
@@ -124,7 +136,9 @@ def process_received_batch(
                                     "kind": "signal-analysis",
                                     "source_message_id": message_id,
                                     "source_text": message.raw_text,
-                                    "source_received_at": message.received_at.isoformat() if message.received_at else None,
+                                    "source_received_at": message.received_at.isoformat()
+                                    if message.received_at
+                                    else None,
                                     "status": result.status.value,
                                     "failure_class": result.failure_class or "none",
                                     "canonical_signal": signal_id is not None,
@@ -145,7 +159,7 @@ def process_received_batch(
                                     "take_profits": [str(v) for v in result.signal.take_profits]
                                     if result.signal
                                     else [],
-                                    "dispatches": 2 if signal_id is not None else 0,
+                                    "dispatches": len(exchanges) if signal_id is not None else 0,
                                 }
                             ),
                         ),

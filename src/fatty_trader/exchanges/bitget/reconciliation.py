@@ -31,21 +31,31 @@ async def reconcile_unknown_intent(
         fills = fills.get("fillList", [])
     if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
         raise ValueError("provider-fills-invalid")
-    filled_qty, avg_price, fee, fill_ids = summarize_fills(fills)
     intent.provider_order_id = (
         str(detail["orderId"]) if detail.get("orderId") is not None else intent.provider_order_id
     )
+    matching_fills = [
+        fill
+        for fill in fills
+        if fill.get("clientOid", fill.get("client_oid")) == intent.client_oid
+        or (
+            intent.provider_order_id is not None
+            and str(fill.get("orderId", fill.get("order_id"))) == intent.provider_order_id
+        )
+    ]
+    filled_qty, avg_price, fee, fill_ids = summarize_fills(matching_fills)
     intent.filled_qty = filled_qty
     intent.avg_price = avg_price
     intent.fee = fee
     intent.provider_fill_ids = fill_ids
+    intent.provider_fills = tuple(matching_fills)
     intent.state = {
         "accepted": "acknowledged",
         "partial": "acknowledged",
         "filled": "filled",
         "rejected": "rejected",
         "unknown": "unknown",
-    }[classify_live_order(detail, fills).value]
+    }[classify_live_order(detail, matching_fills).value]
     return intent
 
 

@@ -70,6 +70,33 @@ def _dispatch() -> BitgetDispatch:
     )
 
 
+def test_source_identity_makes_replayed_dispatches_share_client_oid() -> None:
+    first = BitgetDispatchExecution._intent(
+        BitgetDispatch(
+            **{
+                **_dispatch().__dict__,
+                "id": UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                "source_channel_id": 7,
+                "source_message_id": 999999999,
+            }
+        ),
+        Decimal("0.002"),
+    )
+    second = BitgetDispatchExecution._intent(
+        BitgetDispatch(
+            **{
+                **_dispatch().__dict__,
+                "id": UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                "source_channel_id": 7,
+                "source_message_id": 999999999,
+            }
+        ),
+        Decimal("0.002"),
+    )
+
+    assert first.client_oid == second.client_oid
+
+
 def _result(status: LiveOrderStatus = LiveOrderStatus.FILLED) -> AsyncExecutionResult:
     return AsyncExecutionResult(
         client_oid="live-bitget-BTCUSDT-1234567812345678",
@@ -79,6 +106,15 @@ def _result(status: LiveOrderStatus = LiveOrderStatus.FILLED) -> AsyncExecutionR
         fee=Decimal("0.01"),
         provider_order_id="provider-order-1",
         provider_fill_ids=("fill-1",),
+        provider_fills=(
+            {
+                "fillId": "fill-1",
+                "size": "0.002",
+                "price": "64001",
+                "fee": "-0.01",
+                "feeCoin": "USDT",
+            },
+        ),
     )
 
 
@@ -104,6 +140,18 @@ async def test_persists_intent_then_posts_once_and_confirms_native_protection() 
     assert stored.state == "filled"
     assert stored.provider_order_id == "provider-order-1"
     assert stored.filled_qty == Decimal("0.002")
+    assert store.fills == [
+        (
+            oid,
+            {
+                "fillId": "fill-1",
+                "size": "0.002",
+                "price": "64001",
+                "fee": "-0.01",
+                "feeCoin": "USDT",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

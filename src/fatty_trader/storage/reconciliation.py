@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from fatty_trader.exchanges.bitget.live import LiveIntentRecord
+from fatty_trader.storage.live_intents import insert_provider_fills
 
 
 class Cursor(Protocol):
@@ -145,6 +146,8 @@ class PostgresReconciliationRepository:
                     record.client_oid,
                 ),
             )
+            if record.provider_fills:
+                insert_provider_fills(cursor, record, record.provider_fills)
             connection.commit()
         except Exception:
             connection.rollback()

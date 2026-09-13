@@ -64,6 +64,7 @@ class AsyncExecutionResult:
     fee: Decimal
     provider_order_id: str | None
     provider_fill_ids: tuple[str, ...]
+    provider_fills: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ class AsyncBitgetExecution:
                 fee=fee,
                 provider_order_id=str(provider_order_id) if provider_order_id else None,
                 provider_fill_ids=fill_ids,
+                provider_fills=tuple(typed_fills),
             )
         status = classify_live_order(detail, typed_fills)
         if status is LiveOrderStatus.ACCEPTED and typed_fills:
@@ -186,6 +188,7 @@ class AsyncBitgetExecution:
             fee=fee,
             provider_order_id=str(provider_order_id) if provider_order_id is not None else None,
             provider_fill_ids=fill_ids,
+            provider_fills=tuple(typed_fills),
         )
 
     async def protect_filled_position(
@@ -235,11 +238,18 @@ class AsyncBitgetExecution:
             if "43011" in str(exc):
                 try:
                     from fatty_trader.execution.bitget_fallback_protection import register_fallback
+
+                    if intent.avg_price is None or intent.avg_price <= 0:
+                        return AsyncProtectionResult(
+                            ProtectionState.DEGRADED,
+                            filled_quantity,
+                            "fallback-entry-price-unavailable",
+                        )
                     register_fallback(
                         exchange=intent.exchange,
                         symbol=intent.symbol,
                         direction=plan.direction.value,
-                        entry_price=plan.quantity,  # placeholder; entry is in intent
+                        entry_price=intent.avg_price,
                         stop_loss=plan.stop_loss,
                         take_profits=list(plan.take_profits),
                         quantity=filled_quantity,
@@ -271,10 +281,8 @@ class AsyncBitgetExecution:
         # Check if position is already flat on Bitget before submitting
         try:
             positions = await self._client.get_single_position(entry.symbol)
-            if not positions:
-                return AsyncProtectionResult(
-                    report.state, Decimal("0"), "position-already-flat"
-                )
+            if not _has_open_position(positions):
+                return AsyncProtectionResult(report.state, Decimal("0"), "position-already-flat")
         except Exception:
             pass  # If we can't verify, proceed with close attempt
         close_intent = build_emergency_close_intent(entry, entry.filled_qty)
@@ -294,6 +302,11 @@ class AsyncBitgetExecution:
         except (BitgetUnknownResultError, TimeoutError):
             close_intent.state = "unknown"
             store.update(close_intent)
+            try:
+                result = await self.reconcile_intent(close_intent)
+                _persist_intent_result(close_intent, result, store)
+            except Exception:
+                pass
         else:
             provider_order_id = submitted.get("orderId")
             close_intent.provider_order_id = (
@@ -303,9 +316,50 @@ class AsyncBitgetExecution:
             store.update(close_intent)
             # Market close orders fill instantly — reconcile immediately so DB reflects reality
             try:
-                await self.reconcile_intent(close_intent, submitted)
+                result = await self.reconcile_intent(close_intent, submitted)
+                _persist_intent_result(close_intent, result, store)
             except Exception:
                 pass  # best-effort; stale state is better than lost state
         return AsyncProtectionResult(
             report.state, report.observed_quantity, report.reason, close_intent.client_oid
         )
+
+
+def _has_open_position(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        try:
+            quantity = Decimal(str(row.get("total", row.get("size", row.get("quantity", "0")))))
+        except Exception:
+            continue
+        if quantity > 0:
+            return True
+    return False
+
+
+def _persist_intent_result(
+    intent: LiveIntentRecord,
+    result: AsyncExecutionResult,
+    store: LiveIntentStoreProtocol,
+) -> None:
+    intent.state = {
+        LiveOrderStatus.ACCEPTED: "acknowledged",
+        LiveOrderStatus.PARTIAL: "partially_filled",
+        LiveOrderStatus.FILLED: "filled",
+        LiveOrderStatus.REJECTED: "rejected",
+        LiveOrderStatus.UNKNOWN: "unknown",
+    }[result.status]
+    intent.filled_qty = result.filled_qty
+    intent.avg_price = result.avg_price
+    intent.fee = result.fee
+    intent.provider_order_id = result.provider_order_id or intent.provider_order_id
+    intent.provider_fill_ids = result.provider_fill_ids
+    intent.provider_fills = result.provider_fills
+    store.update(intent)
+    if result.provider_fills:
+        record_fills = getattr(store, "record_fills", None)
+        if callable(record_fills):
+            record_fills(intent, result.provider_fills)

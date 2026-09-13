@@ -39,7 +39,14 @@ def analyze_with_fallback(
         classified = classify_json(text, codex.stdout, message_id=message_id)
         if classified.signal is not None:
             return AnalysisResult(AnalysisStatus.CODEX_SUCCEEDED, classified.signal)
-        return _fallback(text, message_id, classified.reason or "codex returned no signal")
+        explicit_signal = parse_explicit_signal(text, message_id=message_id)
+        if explicit_signal is None:
+            return AnalysisResult(AnalysisStatus.CODEX_SUCCEEDED, None)
+        return AnalysisResult(
+            AnalysisStatus.FALLBACK_ACCEPTED,
+            explicit_signal,
+            classified.reason or "codex returned no signal",
+        )
     return _fallback(text, message_id, codex.failure_reason or "codex failed")
 
 

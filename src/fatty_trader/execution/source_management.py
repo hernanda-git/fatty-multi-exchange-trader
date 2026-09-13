@@ -85,9 +85,16 @@ class InMemorySourceManagementStore:
 class SourceManagementExecutor:
     """Executes exactly one claimed update; provider POSTs are intent-first and never retried."""
 
-    def __init__(self, store: SourceManagementStore, gateway: SourceManagementGateway) -> None:
+    def __init__(
+        self,
+        store: SourceManagementStore,
+        gateway: SourceManagementGateway,
+        *,
+        mutations_enabled: bool = False,
+    ) -> None:
         self._store = store
         self._gateway = gateway
+        self._mutations_enabled = mutations_enabled
 
     def run_once(self, worker_id: str) -> str:
         update = self._store.claim(worker_id)
@@ -102,6 +109,9 @@ class SourceManagementExecutor:
                 self._store.update_state(update.id, "failed")
                 return "failed"
             position = self._one_position(update.symbol, positions)
+            if not self._mutations_enabled:
+                self._store.update_state(update.id, "failed")
+                return "mutations-disabled"
             if update.action is ManagementAction.CLOSE:
                 close_oid = f"source-management-{update.id.hex}-close"
                 if not self._store.persist_provider_intent(update.id, close_oid):

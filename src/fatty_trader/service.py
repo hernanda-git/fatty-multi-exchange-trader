@@ -358,12 +358,11 @@ async def run_worker(name: str) -> None:
 
 
 def bitget_kill_switch_enforced(environ: Mapping[str, str]) -> bool:
-    """Kill switch latches are replaced by durable operator alerts.
-
-    The monitor still detects anomalies but enqueues notifications rather than
-    blocking execution, so signals are never silently dropped.
-    """
-    return False
+    """Enforce Bitget anomaly latches only on the LIVE execution lane."""
+    return (
+        environ.get("TRADER_MODE", "").upper() == "LIVE"
+        and environ.get("BITGET_MODE", "").upper() == "LIVE"
+    )
 
 
 def enabled_dispatch_exchanges(environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -480,8 +479,13 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
         mode=mode,
     )
     gateway = BitgetOperatorGateway(client, PostgresLiveIntentStore(psycopg.connect))
+    mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
+    if mutations_raw not in {"0", "1"}:
+        raise ValueError("BITGET_OPERATOR_MUTATIONS_ENABLED must be 0 or 1")
     executor = SourceManagementExecutor(
-        PostgresSourceManagementStore(psycopg.connect), gateway
+        PostgresSourceManagementStore(psycopg.connect),
+        gateway,
+        mutations_enabled=mutations_raw == "1",
     )
     interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "30"))
     while True:

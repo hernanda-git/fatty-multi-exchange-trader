@@ -118,6 +118,7 @@ class LiveEntryResult:
     fee: Decimal = Decimal("0")
     provider_order_id: str | None = None
     provider_fill_ids: tuple[str, ...] = ()
+    provider_fills: tuple[dict[str, Any], ...] = ()
     protection: ProtectionReport | None = None
     emergency_closed: bool = False
 
@@ -136,12 +137,14 @@ class LiveIntentRecord:
     fee: Decimal = Decimal("0")
     provider_order_id: str | None = None
     provider_fill_ids: tuple[str, ...] = ()
+    provider_fills: tuple[dict[str, Any], ...] = ()
 
 
 class LiveIntentStoreProtocol(Protocol):
     def save(self, record: LiveIntentRecord) -> None: ...
     def get(self, client_oid: str) -> LiveIntentRecord | None: ...
     def update(self, record: LiveIntentRecord) -> None: ...
+    def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None: ...
 
 
 class InMemoryLiveIntentStore:
@@ -149,6 +152,8 @@ class InMemoryLiveIntentStore:
 
     def __init__(self) -> None:
         self._records: dict[str, LiveIntentRecord] = {}
+        self.fills: list[tuple[str, dict[str, Any]]] = []
+        self._fill_keys: set[tuple[str, str]] = set()
 
     def save(self, record: LiveIntentRecord) -> None:
         existing = self._records.get(record.client_oid)
@@ -181,6 +186,19 @@ class InMemoryLiveIntentStore:
         ):
             raise ValueError("live intent provider order id conflict")
         self._records[record.client_oid] = replace(record)
+        if record.provider_fills:
+            self.record_fills(record, record.provider_fills)
+
+    def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None:
+        for fill in fills:
+            provider_fill_id = fill.get("fillId", fill.get("tradeId", fill.get("id")))
+            if provider_fill_id is None:
+                continue
+            key = (record.exchange, str(provider_fill_id))
+            if key in self._fill_keys:
+                continue
+            self._fill_keys.add(key)
+            self.fills.append((record.client_oid, dict(fill)))
 
 
 @dataclass(frozen=True)
@@ -248,14 +266,16 @@ def summarize_fills(
     total_fee = Decimal("0")
     ids: list[str] = []
     for fill in fills:
-        qty = _to_decimal(fill.get("quantity", fill.get("size", 0)))
-        price = _to_decimal(fill.get("price", 0))
+        qty = _to_decimal(
+            fill.get("quantity", fill.get("size", fill.get("fillQty", fill.get("baseVolume", 0))))
+        )
+        price = _to_decimal(fill.get("price", fill.get("fillPrice", fill.get("priceAvg", 0))))
         if qty is None or qty <= 0 or price is None or price <= 0:
             continue
         total_qty += qty
         notional += qty * price
         fee = _to_decimal(fill.get("fee", 0)) or Decimal("0")
-        total_fee += fee
+        total_fee += abs(fee)
         raw_id = fill.get("fillId", fill.get("tradeId", fill.get("id")))
         if raw_id is not None:
             ids.append(str(raw_id))
@@ -302,6 +322,7 @@ def _persist_readback(
     if provider_order_id is not None:
         record.provider_order_id = str(provider_order_id)
     record.provider_fill_ids = fill_ids
+    record.provider_fills = tuple(dict(fill) for fill in fills)
     record.filled_qty = filled_qty
     record.avg_price = avg_price
     record.fee = fee

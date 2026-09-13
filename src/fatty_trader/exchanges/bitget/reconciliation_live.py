@@ -93,8 +93,9 @@ async def confirm_native_protection(
 
     # Some symbols (e.g. GRASSUSDT) reject orders-plan-pending with 400172.
     # Fall back to position-field verification when plan read fails.
-    raw_plans: list | None = None
+    raw_plans: list[dict[str, Any]] | None = None
     plans_unsupported = False
+    plans_verified = False
     try:
         raw_plans = await read_pending_plans()
     except Exception as exc:
@@ -111,7 +112,9 @@ async def confirm_native_protection(
             for plan in raw_plans
             if _plan_matches_quantity(plan, expected_quantity)
         }
-        has_stop_loss = any("loss" in plan_type or "stop_loss" in plan_type for plan_type in plan_types)
+        has_stop_loss = any(
+            "loss" in plan_type or "stop_loss" in plan_type for plan_type in plan_types
+        )
         has_take_profit = any(
             "profit" in plan_type or "surplus" in plan_type or "take_profit" in plan_type
             for plan_type in plan_types
@@ -120,14 +123,17 @@ async def confirm_native_protection(
             return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
         if not has_take_profit:
             return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
+        plans_verified = True
 
-    # Verify via position fields: stopLossId and takeProfitId must both be set.
-    has_stop_loss_field = bool(position.get("stopLossId"))
-    has_take_profit_field = bool(position.get("takeProfitId"))
-    if not has_stop_loss_field:
-        return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
-    if not has_take_profit_field:
-        return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
+    if not plans_verified:
+        # The plan endpoint is known to reject some symbols with 400172. In
+        # that case the position-level IDs are the only provider-backed proof.
+        has_stop_loss_field = bool(position.get("stopLossId"))
+        has_take_profit_field = bool(position.get("takeProfitId"))
+        if not has_stop_loss_field:
+            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
+        if not has_take_profit_field:
+            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
 
     report = ProtectionReport(ProtectionState.VENUE_PROTECTED, observed)
     return (
