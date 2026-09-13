@@ -1,25 +1,27 @@
-"""Contract test for scripts/telegram_health_report.sh (Plan Task 8).
+"""Contract tests for the scheduled and legacy Fatty health reports.
 
-Asserts the report contract against the script text (no docker/network needed):
-- required live-telemetry section headers present (Balance, Positions,
-  Orders, PNL, Safety)
-- HTML escaping helper present and used for dynamic values
-- Telegram HTML uses <pre> fixed-width tables only (no <table> tags)
-- message-size guard present (Telegram 4096-char limit, truncate + notice)
-- N/A-or-STALE fallback for missing data (never fabricated zeros)
-- live DB tables referenced match LIVE_SCHEMA_SQL names
+The shell report remains covered for its historical format contract. The
+scheduled unit must use the provider-first Python report so the live Telegram
+card cannot silently fall back to DB-only position snapshots.
 """
 
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "telegram_health_report.sh"
+DEPLOY_SERVICE = (
+    Path(__file__).resolve().parents[2] / "deploy" / "systemd" / "fatty-health-report.service"
+)
+
+
+def _scheduled_service_text() -> str:
+    return DEPLOY_SERVICE.read_text(encoding="utf-8")
 
 
 def _text() -> str:
     return SCRIPT.read_text(encoding="utf-8")
 
 
-def test_script_exists():
+def test_exists():
     assert SCRIPT.is_file(), f"missing {SCRIPT}"
 
 
@@ -78,3 +80,10 @@ def test_live_tables_match_schema_names():
     text = _text()
     for table in ("balance_snapshots", "position_snapshots", "live_order_intents", "fills"):
         assert table in text, f"report must query live table {table}"
+
+
+def test_scheduled_unit_uses_provider_first_report():
+    text = _scheduled_service_text()
+    assert "scripts/health_report.py" in text
+    assert "telegram_health_report.sh" not in text
+    assert "TimeoutStartSec=120" in text
