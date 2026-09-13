@@ -138,13 +138,19 @@ class BitgetDispatcher:
         target = {
             "ACKNOWLEDGED": "ACKNOWLEDGED",
             "FILLED": "FILLED",
+            "FILLED_FALLBACK": "FILLED",
             "PARTIAL": "PARTIALLY_FILLED",
             "REJECTED": "REJECTED",
         }.get(status)
         if target is None:
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
-        self._transition(dispatch, "SUBMITTING", target)
+        self._transition(
+            dispatch,
+            "SUBMITTING",
+            target,
+            "fallback-protection-active" if status == "FILLED_FALLBACK" else None,
+        )
         return {
             "ACKNOWLEDGED": "acknowledged",
             "FILLED": "filled",

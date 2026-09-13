@@ -212,6 +212,32 @@ async def test_provider_rejection_returns_rejected_dispatcher_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fallback_filled_dispatch_is_terminal_with_explicit_reason() -> None:
+    class FallbackExecution:
+        async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str:
+            assert dispatch.pair_token == "BTCUSDT"
+            assert quantity == Decimal("0.004")
+            return "FILLED_FALLBACK"
+
+    repository = Repository(_dispatch())
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=FallbackExecution(),
+        preflight=lambda _: (_spec(), _risk()),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "filled"
+    assert repository.transitions[-1] == (
+        "SUBMITTING",
+        "FILLED",
+        "fallback-protection-active",
+    )
+
+
+@pytest.mark.asyncio
 async def test_explicit_bounded_canary_rejects_non_canary_symbol_before_preflight_or_post() -> None:
     repository = Repository(_dispatch())
     execution = Execution()

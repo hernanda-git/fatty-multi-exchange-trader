@@ -65,6 +65,8 @@ class BitgetDispatchExecution:
             intent, self._protection_plan(dispatch, result.filled_qty), self._store
         )
         if protection.state is not ProtectionState.VENUE_PROTECTED:
+            if protection.reason == "native-protection-unsupported-fallback-registered":
+                return "FILLED_FALLBACK"
             return "UNKNOWN"
         return _dispatcher_status(result.status)
 

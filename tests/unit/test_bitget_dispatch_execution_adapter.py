@@ -205,6 +205,26 @@ async def test_unconfirmed_native_protection_returns_unknown_after_containment()
 
 
 @pytest.mark.asyncio
+async def test_fallback_registered_fill_is_not_reported_as_provider_unknown() -> None:
+    store = InMemoryLiveIntentStore()
+    execution = Execution(
+        result=_result(),
+        protection=AsyncProtectionResult(
+            ProtectionState.DEGRADED,
+            Decimal("0.002"),
+            "native-protection-unsupported-fallback-registered",
+        ),
+    )
+
+    status = await BitgetDispatchExecution(execution, store).submit_entry(
+        _dispatch(), Decimal("0.002")
+    )
+
+    assert status == "FILLED_FALLBACK"
+    assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
+
+
+@pytest.mark.asyncio
 async def test_acknowledged_entry_returns_without_a_protection_post() -> None:
     store = InMemoryLiveIntentStore()
     execution = Execution(result=_result(LiveOrderStatus.ACCEPTED))
