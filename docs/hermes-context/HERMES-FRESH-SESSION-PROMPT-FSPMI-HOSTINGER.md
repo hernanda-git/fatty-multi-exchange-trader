@@ -1,5 +1,10 @@
 # Fresh Hermes Session Prompt — Fatty Bitget DEMO on fspmi-hostinger
 
+> HISTORICAL PROMPT: this was written for the pre-LIVE DEMO readiness track.
+> Do not use its DEMO mission, `BITGET_EXECUTION_ENABLED=0` directive, account
+> evidence, or local paths as current state. Read
+> `AGENTIC-OPS-FASTPATH.md` and the current handoff first.
+
 You are continuing work on the existing `fatty-multi-exchange-trader` deployment. This is a safety-critical trading system. Use the repository source, live remote evidence, and the context documents below as the source of truth. Do not guess and do not repeat historical work that is already verified.
 
 ## Mission

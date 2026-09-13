@@ -11,6 +11,7 @@ Use `AGENTIC-OPS-FASTPATH.md` as the first-read current operational source of tr
 5. `GO-LIVE.md` and `OPERATIONS.md` — historical deployment/cutover/rollback context.
 6. `IMPLEMENTATION-STATUS.md` — historical implementation snapshot.
 7. `.hermes/plans/2026-09-06_145742-bitget-demo-go-live-readiness-snapshot.md` — original plan; never treat its runtime claims as current evidence.
+8. `HERMES-FRESH-SESSION-PROMPT-FSPMI-HOSTINGER.md` — historical pre-LIVE DEMO prompt; do not use its execution gate or account claims.
 
 ## Mandatory skill loading
 
