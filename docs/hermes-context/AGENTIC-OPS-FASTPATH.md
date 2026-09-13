@@ -47,7 +47,7 @@ rows for the symbol. Read its JSON once before opening individual files.
 - `BITGET_CANARY_MAX_ORDERS=5`, `BITGET_MAX_CLOCK_SKEW_MS=5000`.
 - Manual operator mutations are disabled; fallback mutations are `0`.
 - Authenticated Bitget probe: PASS; `787` contracts; `0` provider positions;
-  `0` provider open orders; `0` provider fills in the probe response.
+  `0` provider open orders; targeted `PONSUSDT` fills read returned `[]`.
 - Account read: equity/available `8.91215461 USDT`, unrealized PnL `0`.
 - Database at last verification: `0` active entry intents, `3` effective
   nonterminal reservations, `5` raw reservation rows, `0` queued dispatches,
