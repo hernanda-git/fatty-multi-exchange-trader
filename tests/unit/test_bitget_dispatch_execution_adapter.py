@@ -155,6 +155,26 @@ async def test_persists_intent_then_posts_once_and_confirms_native_protection() 
 
 
 @pytest.mark.asyncio
+async def test_entry_submission_uses_atomic_intent_claim() -> None:
+    class ClaimOnlyStore(InMemoryLiveIntentStore):
+        def save(self, record: LiveIntentRecord) -> None:
+            raise AssertionError("entry submission must use atomic claim")
+
+    store = ClaimOnlyStore()
+    execution = Execution(
+        result=_result(),
+        protection=AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, Decimal("0.002")),
+    )
+
+    status = await BitgetDispatchExecution(execution, store).submit_entry(
+        _dispatch(), Decimal("0.002")
+    )
+
+    assert status == "FILLED"
+    assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
+
+
+@pytest.mark.asyncio
 async def test_existing_durable_intent_uses_get_readback_without_a_second_post() -> None:
     store = InMemoryLiveIntentStore()
     oid = "live-bitget-BTCUSDT-1234567812345678"

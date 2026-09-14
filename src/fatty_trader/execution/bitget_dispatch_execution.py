@@ -51,13 +51,26 @@ class BitgetDispatchExecution:
 
     async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str:
         intent = self._intent(dispatch, quantity)
-        existing = self._store.get(intent.client_oid)
-        if existing is None:
-            self._store.save(intent)
-            result = await self._execution.submit_entry(intent)
+        claim = getattr(self._store, "claim", None)
+        if callable(claim):
+            claimed = bool(claim(intent))
+            if claimed:
+                result = await self._execution.submit_entry(intent)
+            else:
+                existing = self._store.get(intent.client_oid)
+                if existing is None:
+                    raise RuntimeError("entry intent claim lost without a durable record")
+                intent = existing
+                result = await self._execution.reconcile_intent(intent)
         else:
-            intent = existing
-            result = await self._execution.reconcile_intent(intent)
+            # Compatibility for legacy stores; production stores implement atomic claim.
+            existing = self._store.get(intent.client_oid)
+            if existing is None:
+                self._store.save(intent)
+                result = await self._execution.submit_entry(intent)
+            else:
+                intent = existing
+                result = await self._execution.reconcile_intent(intent)
         self._persist_readback(intent, result)
         if result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}:
             return _dispatcher_status(result.status)

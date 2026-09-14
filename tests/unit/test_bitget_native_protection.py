@@ -7,10 +7,14 @@ from decimal import Decimal
 import pytest
 
 from fatty_trader.domain.enums import Direction, Exchange
-from fatty_trader.exchanges.bitget.async_execution import AsyncBitgetExecution
+from fatty_trader.exchanges.bitget.async_execution import (
+    AsyncBitgetExecution,
+    _open_position_quantity,
+)
 from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
 from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore, LiveIntentRecord
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
+from fatty_trader.storage.protection_capabilities import InMemoryProtectionCapabilityRepository
 
 
 class NativeProtectionClient:
@@ -28,8 +32,30 @@ class NativeProtectionClient:
             plans
             if plans is not None
             else [
-                {"planType": "loss_plan", "size": position_qty},
-                {"planType": "profit_plan", "size": position_qty},
+                {
+                    "symbol": "BTCUSDT",
+                    "holdSide": "buy",
+                    "planType": "pos_loss",
+                    "orderId": "native-plan",
+                    "stopLossClientOid": "live-bitget-BTCUSDT-0011223344556677-sl",
+                    "triggerPrice": "49000",
+                    "executePrice": "0",
+                    "triggerType": "mark_price",
+                    "planStatus": "live",
+                    "size": "",
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "holdSide": "buy",
+                    "planType": "pos_profit",
+                    "orderId": "native-plan",
+                    "stopSurplusClientOid": "live-bitget-BTCUSDT-0011223344556677-tp",
+                    "triggerPrice": "51000",
+                    "executePrice": "0",
+                    "triggerType": "mark_price",
+                    "planStatus": "live",
+                    "size": "",
+                },
             ]
         )
         self.read_fails = read_fails
@@ -48,16 +74,39 @@ class NativeProtectionClient:
     async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
         if self.read_fails:
             raise TimeoutError("provider read unavailable")
-        return [{"symbol": symbol, "total": self.position_qty, "marginMode": self.margin_mode}]
+        return [
+            {
+                "symbol": symbol,
+                "holdSide": "buy",
+                "total": self.position_qty,
+                "marginMode": self.margin_mode,
+                "posMode": "one_way_mode",
+                "stopLossId": "native-plan",
+                "takeProfitId": "native-plan",
+            }
+        ]
 
     async def get_pending_plan_orders(self, symbol: str) -> list[dict[str, str]]:
         if self.read_fails:
             raise TimeoutError("provider read unavailable")
         return list(self.plans)
 
-    async def place_position_tpsl(self, **kwargs: str) -> dict[str, str]:
+    async def place_position_tpsl(self, **kwargs: str) -> list[dict[str, str]]:
         self.protection_calls.append(kwargs)
-        return {"orderId": "native-plan"}
+        for plan in self.plans:
+            if plan.get("planType") == "pos_loss":
+                plan["stopLossClientOid"] = kwargs["stop_loss_client_oid"]
+                plan["triggerPrice"] = kwargs["stop_loss"]
+            elif plan.get("planType") == "pos_profit":
+                plan["stopSurplusClientOid"] = kwargs["take_profit_client_oid"]
+                plan["triggerPrice"] = kwargs["take_profit"]
+        return [
+            {
+                "orderId": "native-plan",
+                "stopLossClientOid": kwargs["stop_loss_client_oid"],
+                "stopSurplusClientOid": kwargs["take_profit_client_oid"],
+            }
+        ]
 
     async def place_market_close(self, **kwargs: str) -> dict[str, str]:
         self.close_calls.append(kwargs)
@@ -108,6 +157,28 @@ def _plan() -> ProtectionPlan:
     )
 
 
+def test_live_intent_store_claims_a_close_identity_only_once() -> None:
+    store = InMemoryLiveIntentStore()
+    close = LiveIntentRecord(
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-0011223344556677-emergency",
+        symbol="BTCUSDT",
+        side="SELL",
+        role="EMERGENCY_CLOSE",
+        requested_qty=Decimal("0.008"),
+    )
+
+    assert store.claim(close) is True
+    assert store.claim(close) is False
+    assert store.get(close.client_oid) is not None
+
+
+def test_open_position_quantity_rejects_malformed_provider_rows() -> None:
+    assert _open_position_quantity({"data": [{"total": "0.008"}]}) == Decimal("0.008")
+    assert _open_position_quantity({"data": []}) == Decimal("0")
+    assert _open_position_quantity([{"symbol": "BTCUSDT"}]) is None
+
+
 @pytest.mark.asyncio
 async def test_full_or_partial_fill_protection_uses_confirmed_filled_quantity() -> None:
     client = NativeProtectionClient(position_qty="0.008")
@@ -117,7 +188,29 @@ async def test_full_or_partial_fill_protection_uses_confirmed_filled_quantity() 
 
     assert result.state is ProtectionState.VENUE_PROTECTED
     assert client.protection_calls[0]["quantity"] == "0.008"
+    assert client.protection_calls[0]["hold_side"] == "buy"
+    assert client.protection_calls[0]["stop_loss_execute_price"] == "0"
+    assert client.protection_calls[0]["take_profit_execute_price"] == "0"
     assert client.close_calls == []
+
+
+@pytest.mark.asyncio
+async def test_verified_native_readback_persists_symbol_capability() -> None:
+    client = NativeProtectionClient(position_qty="0.008")
+    capabilities = InMemoryProtectionCapabilityRepository()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        capability_repository=capabilities,
+        environment="LIVE",
+    )
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), InMemoryLiveIntentStore())
+
+    assert result.state is ProtectionState.VENUE_PROTECTED
+    capability = capabilities.get("bitget", "LIVE", "BTCUSDT")
+    assert capability is not None
+    assert capability.native_state.value == "VERIFIED"
 
 
 @pytest.mark.asyncio
@@ -172,6 +265,22 @@ async def test_containment_persists_one_deterministic_close_without_retry() -> N
     assert close is not None
     assert close.role == "EMERGENCY_CLOSE"
     assert close.requested_qty == Decimal("0.008")
+
+
+@pytest.mark.asyncio
+async def test_containment_uses_atomic_claim_before_emergency_close() -> None:
+    class ClaimOnlyStore(InMemoryLiveIntentStore):
+        def save(self, record: LiveIntentRecord) -> None:
+            raise AssertionError("containment must use atomic claim")
+
+    client = NativeProtectionClient(plans=[])
+    store = ClaimOnlyStore()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), store)
+
+    assert result.emergency_close_oid is not None
+    assert len(client.close_calls) == 1
 
 
 @pytest.mark.asyncio

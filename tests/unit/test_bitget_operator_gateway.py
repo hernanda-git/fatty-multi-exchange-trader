@@ -58,13 +58,13 @@ class FakeBitgetClient:
         self.position_rows = []
         return self.close_result
 
-    async def place_position_tpsl(self, **kwargs: Any) -> dict[str, Any]:
+    async def place_position_tpsl(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("place_position_tpsl", kwargs))
         if kwargs.get("stop_loss") is not None:
             self.position_rows[0]["stopLossTriggerPrice"] = kwargs["stop_loss"]
         if kwargs.get("take_profit") is not None:
             self.position_rows[0]["stopSurplusTriggerPrice"] = kwargs["take_profit"]
-        return {"stopLossId": "sl-1", "stopSurplusId": "tp-1"}
+        return [{"orderId": "plan-1"}]
 
     async def cancel_all_orders(self, symbol: str | None = None) -> dict[str, Any]:
         self.calls.append(("cancel_all_orders", symbol))

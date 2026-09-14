@@ -25,6 +25,12 @@ class FakeClient:
         return {"orderId": "provider-close-1"}
 
 
+def test_open_quantity_handles_bitget_envelope_and_rejects_malformed_rows() -> None:
+    assert fallback._open_quantity({"data": [{"total": "0.008"}]}) == Decimal("0.008")
+    assert fallback._open_quantity({"data": []}) == Decimal("0")
+    assert fallback._open_quantity([{"symbol": "BTCUSDT"}]) is None
+
+
 @pytest.fixture
 def active_entry() -> dict[str, object]:
     return {
@@ -102,5 +108,71 @@ async def test_fallback_marks_triggered_only_after_flat_readback(
     assert len(result) == 1
     assert result[0]["reason"] == "sl_hit"
     assert len(client.close_calls) == 1
+    assert any(kind == "triggered" for kind, _ in calls)
+    assert any(kind == "update" and args[1] == "filled" for kind, args in calls)
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_post_when_close_intent_is_already_claimed(
+    monkeypatch: pytest.MonkeyPatch, active_entry: dict[str, object]
+) -> None:
+    client = FakeClient([[{"total": "0.01"}]])
+    monkeypatch.setattr(fallback, "load_active", lambda: [active_entry])
+    monkeypatch.setattr(fallback, "_ensure_close_intent", lambda *args: False)
+
+    result = await fallback.run_fallback_monitor_async(client)
+
+    assert result == []
+    assert client.close_calls == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_close_result_marks_fallback_closing_before_post(
+    monkeypatch: pytest.MonkeyPatch, active_entry: dict[str, object]
+) -> None:
+    class UnknownClient(FakeClient):
+        async def place_market_close(self, **kwargs: str) -> dict[str, str]:
+            self.close_calls.append(kwargs)
+            raise TimeoutError("close result unknown")
+
+    client = UnknownClient([[{"total": "0.01"}]])
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(fallback, "load_active", lambda: [active_entry])
+    monkeypatch.setattr(fallback, "_ensure_close_intent", lambda *args: True)
+    monkeypatch.setattr(fallback, "mark_closing", lambda *args: calls.append(("closing", args)))
+    monkeypatch.setattr(
+        fallback, "_update_close_intent", lambda *args: calls.append(("update", args))
+    )
+
+    await fallback.run_fallback_monitor_async(client)
+
+    assert len(client.close_calls) == 1
+    assert any(kind == "closing" for kind, _ in calls)
+    assert any(kind == "update" and args[1] == "unknown" for kind, args in calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_close_callback_clamps_to_live_quantity_and_reconciles(
+    monkeypatch: pytest.MonkeyPatch, active_entry: dict[str, object]
+) -> None:
+    client = FakeClient([[{"total": "0.008"}], []])
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(fallback, "_ensure_close_intent", lambda *args: True)
+    monkeypatch.setattr(
+        fallback, "_update_close_intent", lambda *args: calls.append(("update", args))
+    )
+    monkeypatch.setattr(fallback, "mark_closing", lambda *args: calls.append(("closing", args)))
+    monkeypatch.setattr(fallback, "mark_triggered", lambda *args: calls.append(("triggered", args)))
+
+    result = await fallback.submit_fallback_close_async(
+        client,
+        active_entry,
+        mark_price=Decimal("94"),
+        reason="sl_hit",
+    )
+
+    assert result["submitted"] is True
+    assert result["reason"] == "close-confirmed"
+    assert client.close_calls[0]["quantity"] == "0.008"
     assert any(kind == "triggered" for kind, _ in calls)
     assert any(kind == "update" and args[1] == "filled" for kind, args in calls)

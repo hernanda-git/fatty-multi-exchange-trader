@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from fatty_trader.exchanges.bitget.read_model import BitgetPositionState
 from fatty_trader.exchanges.bitget.reconciliation_live import (
+    NativeProtectionExpectation,
     ProtectionReadiness,
     confirm_native_protection,
     evaluate_position_protection,
@@ -113,3 +114,126 @@ def test_native_confirmation_fails_when_plans_unsupported_and_no_stop_loss() -> 
 
     assert report.state is ProtectionState.DEGRADED
     assert report.reason == "missing-stop-loss"
+
+
+def _exact_position() -> list[dict[str, str]]:
+    return [
+        {
+            "symbol": "WLDUSDT",
+            "holdSide": "buy",
+            "total": "91",
+            "marginMode": "isolated",
+            "posMode": "one_way_mode",
+            "stopLossId": "sl-plan-1",
+            "takeProfitId": "tp-plan-1",
+        }
+    ]
+
+
+def _exact_plans() -> list[dict[str, str]]:
+    return [
+        {
+            "symbol": "WLDUSDT",
+            "holdSide": "buy",
+            "planType": "pos_loss",
+            "orderId": "sl-plan-1",
+            "stopLossClientOid": "entry-sl",
+            "triggerPrice": "0.388",
+            "executePrice": "0",
+            "triggerType": "mark_price",
+            "planStatus": "live",
+            "size": "",
+        },
+        {
+            "symbol": "WLDUSDT",
+            "holdSide": "buy",
+            "planType": "pos_profit",
+            "orderId": "tp-plan-1",
+            "stopSurplusClientOid": "entry-tp",
+            "triggerPrice": "0.427",
+            "executePrice": "0",
+            "triggerType": "mark_price",
+            "planStatus": "live",
+            "size": "",
+        },
+    ]
+
+
+def _expectation(**overrides: object) -> NativeProtectionExpectation:
+    values: dict[str, object] = {
+        "symbol": "WLDUSDT",
+        "hold_side": "buy",
+        "quantity": Decimal("91"),
+        "stop_loss": Decimal("0.388"),
+        "take_profit": Decimal("0.427"),
+        "stop_loss_client_oid": "entry-sl",
+        "take_profit_client_oid": "entry-tp",
+        "stop_loss_provider_order_id": "sl-plan-1",
+        "take_profit_provider_order_id": "tp-plan-1",
+    }
+    values.update(overrides)
+    return NativeProtectionExpectation(**values)  # type: ignore[arg-type]
+
+
+def test_exact_native_confirmation_requires_all_provider_protection_fields() -> None:
+    async def position() -> list[dict[str, str]]:
+        return _exact_position()
+
+    async def plans() -> list[dict[str, str]]:
+        return _exact_plans()
+
+    report = asyncio.run(
+        confirm_native_protection(
+            position,
+            plans,
+            expectation=_expectation(),
+        )
+    )
+
+    assert report.state is ProtectionState.VENUE_PROTECTED
+    assert report.observed_quantity == Decimal("91")
+    assert report.reason is None
+
+
+def test_exact_native_confirmation_rejects_wrong_trigger_and_market_mode() -> None:
+    async def position() -> list[dict[str, str]]:
+        return _exact_position()
+
+    async def plans() -> list[dict[str, str]]:
+        rows = _exact_plans()
+        rows[0]["triggerPrice"] = "0.389"
+        rows[1]["executePrice"] = "0.427"
+        return rows
+
+    report = asyncio.run(confirm_native_protection(position, plans, expectation=_expectation()))
+
+    assert report.state is ProtectionState.DEGRADED
+    assert report.reason in {"stop-loss-trigger-mismatch", "take-profit-execute-mode-mismatch"}
+
+
+def test_exact_native_confirmation_rejects_wrong_symbol_or_side() -> None:
+    async def position() -> list[dict[str, str]]:
+        rows = _exact_position()
+        rows[0]["symbol"] = "BTCUSDT"
+        return rows
+
+    async def plans() -> list[dict[str, str]]:
+        return _exact_plans()
+
+    report = asyncio.run(confirm_native_protection(position, plans, expectation=_expectation()))
+
+    assert report.state is ProtectionState.DEGRADED
+    assert report.reason == "position-symbol-mismatch"
+
+
+def test_exact_native_confirmation_does_not_accept_unavailable_plan_read() -> None:
+    async def position() -> list[dict[str, str]]:
+        return _exact_position()
+
+    async def plans() -> list[dict[str, str]]:
+        raise Exception("400172 Parameter verification failed")
+
+    report = asyncio.run(confirm_native_protection(position, plans, expectation=_expectation()))
+
+    assert report.state is ProtectionState.DEGRADED
+    assert report.reason == "provider-plans-unavailable"

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from fatty_trader.exchanges.bitget.live import LiveIntentRecord
+from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore, LiveIntentRecord
 from fatty_trader.execution.bitget_monitor import BitgetMonitor
 from fatty_trader.storage.reconciliation import InMemoryReconciliationRepository
 
@@ -40,7 +40,7 @@ class ReadOnlyVenue:
         self.calls.append("get_order_detail")
         return self.details[client_oid]
 
-    async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+    async def get_fills(self, symbol: str | None = None) -> list[dict[str, str]]:
         self.calls.append("get_fills")
         return self.fills
 
@@ -204,3 +204,38 @@ async def test_unexpected_position_is_latched_even_when_native_protection_exists
 
     assert report.status == "kill-switch-latched"
     assert report.reasons == ("unexpected-position:BTCUSDT",)
+
+
+@pytest.mark.asyncio
+async def test_system_liquidation_fill_is_reconciled_without_global_switch() -> None:
+    venue = ReadOnlyVenue(
+        fills=[
+            {
+                "symbol": "WLDUSDT",
+                "side": "sell",
+                "ordId": "provider-order-1",
+                "tradeId": "provider-fill-1",
+                "fillSz": "91",
+                "fillPx": "0.3841",
+                "fillFee": "-0.02097366",
+                "profit": "-1.17999853",
+                "enterPointSource": "SYS",
+                "tradeSide": "burst_sell_single",
+            }
+        ]
+    )
+    reconciliation = InMemoryReconciliationRepository()
+    intents = InMemoryLiveIntentStore()
+
+    report = await BitgetMonitor(
+        venue,
+        reconciliation,
+        live_intent_store=intents,
+        enforce_kill_switch=False,
+    ).run_once()
+
+    assert report.status == "ok"
+    assert report.provider_exits_reconciled == 1
+    assert reconciliation.kill_switch_active("bitget") is False
+    assert len(intents.fills) == 1
+    assert intents.provider_events[0]["source"] == "SYSTEM_LIQUIDATION"

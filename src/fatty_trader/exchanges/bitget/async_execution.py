@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -16,7 +17,15 @@ from fatty_trader.exchanges.bitget.live import (
     normalize_fill,
     summarize_fills,
 )
-from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
+from fatty_trader.exchanges.bitget.protection_capability import (
+    BitgetProtectionCapability,
+    NativeProtectionState,
+    StreamState,
+)
+from fatty_trader.exchanges.bitget.reconciliation_live import (
+    NativeProtectionExpectation,
+    confirm_native_protection,
+)
 from fatty_trader.exchanges.bitget.validation import validate_order
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionReport, ProtectionState
 from fatty_trader.storage.live_intents import build_emergency_close_intent
@@ -47,7 +56,7 @@ class AsyncBitgetExecutionClient(Protocol):
         take_profit_execute_price: str,
         stop_loss_client_oid: str,
         take_profit_client_oid: str,
-    ) -> dict[str, Any]: ...
+    ) -> list[dict[str, Any]]: ...
 
     async def place_market_close(
         self, *, symbol: str, side: str, quantity: str, client_oid: str
@@ -105,13 +114,40 @@ def _detail_decimal(detail: dict[str, Any], *keys: str) -> Decimal | None:
     return None
 
 
+def _placement_plan_id(placement: list[dict[str, Any]], *, client_oid: str, leg: str) -> str | None:
+    """Find the provider plan ID paired with one leg's returned client OID."""
+    oid_field = f"{leg}ClientOid"
+    for row in placement:
+        returned_oid = row.get(oid_field, row.get("clientOid"))
+        provider_id = row.get("orderId", row.get("planOrderId"))
+        if (
+            returned_oid is not None
+            and str(returned_oid) == client_oid
+            and provider_id is not None
+            and str(provider_id).strip()
+        ):
+            return str(provider_id).strip()
+    return None
+
+
 class AsyncBitgetExecution:
     """Production async execution adapter; POST is followed only by read-back GETs."""
 
-    def __init__(self, client: AsyncBitgetExecutionClient, venue: AsyncBitgetVenue) -> None:
+    def __init__(
+        self,
+        client: AsyncBitgetExecutionClient,
+        venue: AsyncBitgetVenue,
+        *,
+        capability_repository: Any | None = None,
+        environment: str = "DEMO",
+    ) -> None:
         self._client = client
         self._venue = venue
         self._degraded = False
+        self._capability_repository = capability_repository
+        self._environment = environment.strip().upper()
+        if self._environment not in {"DEMO", "LIVE"}:
+            raise ValueError("Bitget execution environment must be DEMO or LIVE")
 
     @property
     def degraded(self) -> bool:
@@ -238,26 +274,56 @@ class AsyncBitgetExecution:
                 ),
             )
         try:
-            await self._client.place_position_tpsl(
+            stop_loss_client_oid = f"{intent.client_oid}-sl"
+            take_profit_client_oid = f"{intent.client_oid}-tp"
+            placement = await self._client.place_position_tpsl(
                 symbol=plan.symbol,
-                hold_side="long" if plan.direction.value == "LONG" else "short",
+                hold_side="buy" if plan.direction.value == "LONG" else "sell",
                 quantity=str(filled_quantity),
                 stop_loss=str(plan.stop_loss),
-                stop_loss_execute_price=str(plan.stop_loss),
+                stop_loss_execute_price="0",
                 take_profit=str(plan.take_profits[0]),
-                take_profit_execute_price=str(plan.take_profits[0]),
-                stop_loss_client_oid=f"{intent.client_oid}-sl",
-                take_profit_client_oid=f"{intent.client_oid}-tp",
+                take_profit_execute_price="0",
+                stop_loss_client_oid=stop_loss_client_oid,
+                take_profit_client_oid=take_profit_client_oid,
+            )
+            if not isinstance(placement, list) or not all(
+                isinstance(row, dict) for row in placement
+            ):
+                raise BitgetApiError("Bitget protection placement response is invalid")
+            stop_loss_provider_order_id = _placement_plan_id(
+                placement, client_oid=stop_loss_client_oid, leg="stopLoss"
+            )
+            take_profit_provider_order_id = _placement_plan_id(
+                placement, client_oid=take_profit_client_oid, leg="stopSurplus"
+            )
+            if stop_loss_provider_order_id is None or take_profit_provider_order_id is None:
+                raise BitgetApiError("Bitget protection placement IDs are incomplete")
+            expectation = NativeProtectionExpectation(
+                symbol=plan.symbol,
+                hold_side="buy" if plan.direction.value == "LONG" else "sell",
+                quantity=filled_quantity,
+                stop_loss=plan.stop_loss,
+                take_profit=plan.take_profits[0],
+                stop_loss_client_oid=stop_loss_client_oid,
+                take_profit_client_oid=take_profit_client_oid,
+                stop_loss_provider_order_id=stop_loss_provider_order_id,
+                take_profit_provider_order_id=take_profit_provider_order_id,
             )
             report = await confirm_native_protection(
                 lambda: self._client.get_single_position(plan.symbol),
                 lambda: self._client.get_pending_plan_orders(plan.symbol),
-                expected_quantity=filled_quantity,
+                expectation=expectation,
             )
         except Exception as exc:
             # Some symbols (e.g. GRASSUSDT) don't support native SL/TP placement (43011).
             # Register for bot-managed fallback TP/SL monitoring instead of emergency-closing.
             if "43011" in str(exc):
+                self._persist_capability(
+                    plan.symbol,
+                    native_state=NativeProtectionState.UNSUPPORTED,
+                    last_error="native-protection-unsupported",
+                )
                 try:
                     from fatty_trader.execution.bitget_fallback_protection import register_fallback
 
@@ -295,9 +361,59 @@ class AsyncBitgetExecution:
                 ProtectionState.FAILED, Decimal("0"), "protection-submit-failed"
             )
         if report.state is ProtectionState.VENUE_PROTECTED:
+            self._persist_capability(
+                plan.symbol,
+                native_state=NativeProtectionState.VERIFIED,
+                last_error=None,
+            )
             return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
+        self._persist_capability(
+            plan.symbol,
+            native_state=NativeProtectionState.FAILED,
+            last_error=report.reason or "native-protection-unconfirmed",
+        )
         self._degraded = True
         return await self._contain(intent, store, report)
+
+    def _persist_capability(
+        self,
+        symbol: str,
+        *,
+        native_state: NativeProtectionState,
+        last_error: str | None,
+    ) -> None:
+        repository = self._capability_repository
+        if repository is None:
+            return
+        get = getattr(repository, "get", None)
+        upsert = getattr(repository, "upsert", None)
+        if not callable(get) or not callable(upsert):
+            return
+        current: Any = get("bitget", self._environment, symbol)
+        upsert(
+            BitgetProtectionCapability(
+                exchange="bitget",
+                environment=self._environment,
+                symbol=symbol,
+                position_mode=current.position_mode if current is not None else "one_way_mode",
+                margin_mode=current.margin_mode if current is not None else "isolated",
+                native_state=native_state,
+                fallback_allowed=current.fallback_allowed if current is not None else False,
+                payload_profile=(
+                    current.payload_profile if current is not None else "classic-v2-position"
+                ),
+                last_verified_at=(
+                    datetime.now(UTC)
+                    if native_state is NativeProtectionState.VERIFIED
+                    else current.last_verified_at
+                    if current is not None
+                    else None
+                ),
+                last_error=last_error,
+                stream_state=current.stream_state if current is not None else StreamState.DISABLED,
+                last_stream_at=current.last_stream_at if current is not None else None,
+            )
+        )
 
     async def _contain(
         self,
@@ -327,12 +443,20 @@ class AsyncBitgetExecution:
                 report.state, report.observed_quantity, "close-quantity-invalid"
             )
         close_intent = build_emergency_close_intent(entry, close_quantity)
-        existing = store.get(close_intent.client_oid)
-        if existing is not None:
-            return AsyncProtectionResult(
-                report.state, report.observed_quantity, report.reason, close_intent.client_oid
-            )
-        store.save(close_intent)
+        claim = getattr(store, "claim", None)
+        if callable(claim):
+            if not claim(close_intent):
+                return AsyncProtectionResult(
+                    report.state, report.observed_quantity, report.reason, close_intent.client_oid
+                )
+        else:
+            # Keep compatibility with legacy test stores, but production stores must expose claim.
+            existing = store.get(close_intent.client_oid)
+            if existing is not None:
+                return AsyncProtectionResult(
+                    report.state, report.observed_quantity, report.reason, close_intent.client_oid
+                )
+            store.save(close_intent)
         try:
             submitted = await self._client.place_market_close(
                 symbol=close_intent.symbol,
@@ -371,19 +495,27 @@ def _open_position_quantity(value: Any) -> Decimal | None:
         value = value.get("data", value.get("positionList", []))
     if isinstance(value, list) and not value:
         return Decimal("0")
-    rows = value if isinstance(value, list) else [value]
+    if not isinstance(value, list):
+        return None
     total = Decimal("0")
     found = False
-    for row in rows:
+    for row in value:
         if not isinstance(row, dict):
             continue
-        raw = row.get("total", row.get("size", row.get("quantity", "0")))
+        raw = next(
+            (row[field] for field in ("total", "size", "quantity") if field in row),
+            None,
+        )
+        if raw is None or str(raw).strip() == "":
+            continue
         try:
-            quantity = abs(Decimal(str(raw or "0")))
+            quantity = Decimal(str(raw))
         except (ArithmeticError, TypeError, ValueError):
             continue
+        if not quantity.is_finite():
+            continue
         found = True
-        total += quantity
+        total += abs(quantity)
     return total if found else None
 
 

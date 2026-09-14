@@ -27,3 +27,37 @@ def test_canary_reservations_have_an_additive_durable_schema() -> None:
     assert version > 6
     assert "CREATE TABLE IF NOT EXISTS" in sql
     assert "dispatch_id UUID PRIMARY KEY REFERENCES dispatches(id)" in sql
+
+
+def test_bitget_protection_capability_migration_is_additive() -> None:
+    matching = [
+        (version, sql) for version, sql in MIGRATIONS if "bitget_protection_capabilities" in sql
+    ]
+
+    assert matching
+    version, sql = matching[-1]
+    assert version > 10
+    assert "CREATE TABLE IF NOT EXISTS bitget_protection_capabilities" in sql
+    for field in (
+        "environment",
+        "native_state",
+        "fallback_allowed",
+        "payload_profile",
+        "stream_state",
+        "last_stream_at",
+    ):
+        assert field in sql
+
+
+def test_provider_reconciliation_migration_is_additive_and_idempotent() -> None:
+    matching = [
+        (version, sql) for version, sql in MIGRATIONS if "provider_reconciliation_events" in sql
+    ]
+
+    assert matching
+    version, sql = matching[-1]
+    assert version > 11
+    assert "CREATE TABLE IF NOT EXISTS provider_reconciliation_events" in sql
+    assert "provider_fill_id" in sql
+    assert "SYSTEM_LIQUIDATION" in sql
+    assert "UNIQUE (exchange, provider_fill_id)" in sql

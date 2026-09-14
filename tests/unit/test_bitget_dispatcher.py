@@ -168,6 +168,28 @@ async def test_persistent_kill_switch_blocks_before_provider_post() -> None:
 
 
 @pytest.mark.asyncio
+async def test_symbol_protection_admission_blocks_before_preflight_without_global_kill_switch() -> (
+    None
+):
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_ for _ in ()).throw(AssertionError("must not preflight")),
+        protection_admission=lambda symbol: (False, "fallback-stream-stale"),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert execution.post_count == 0
+    assert repository.transitions == [("QUEUED", "REJECTED", "fallback-stream-stale")]
+    assert repository.alerts == ["fallback-stream-stale"]
+
+
+@pytest.mark.asyncio
 async def test_valid_dispatch_persists_only_the_explicit_state_order() -> None:
     repository = Repository(_dispatch())
     execution = Execution()

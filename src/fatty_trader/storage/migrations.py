@@ -156,6 +156,62 @@ MIGRATIONS: Final = [
         );
         """,
     ),
+    (
+        11,
+        """
+        CREATE TABLE IF NOT EXISTS bitget_protection_capabilities (
+            exchange TEXT NOT NULL CHECK (exchange IN ('binance', 'bitget')),
+            environment TEXT NOT NULL CHECK (environment IN ('DEMO', 'LIVE')),
+            symbol TEXT NOT NULL,
+            position_mode TEXT NOT NULL,
+            margin_mode TEXT NOT NULL,
+            native_state TEXT NOT NULL CHECK (
+                native_state IN ('UNKNOWN', 'VERIFIED', 'UNSUPPORTED', 'FAILED')
+            ),
+            fallback_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+            payload_profile TEXT NOT NULL,
+            last_verified_at TIMESTAMPTZ,
+            last_error TEXT,
+            stream_state TEXT NOT NULL CHECK (
+                stream_state IN ('DISABLED', 'CONNECTING', 'HEALTHY', 'STALE', 'FAILED')
+            ),
+            last_stream_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (exchange, environment, symbol)
+        );
+        CREATE INDEX IF NOT EXISTS bitget_protection_capabilities_symbol
+        ON bitget_protection_capabilities (exchange, environment, symbol);
+        """,
+    ),
+    (
+        12,
+        """
+        CREATE TABLE IF NOT EXISTS provider_reconciliation_events (
+            id UUID PRIMARY KEY,
+            exchange TEXT NOT NULL CHECK (exchange IN ('binance', 'bitget')),
+            provider_order_id TEXT,
+            provider_fill_id TEXT NOT NULL,
+            client_order_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+            source TEXT NOT NULL CHECK (source IN (
+                'SYSTEM_LIQUIDATION', 'BOT_FALLBACK_CLOSE', 'NATIVE_SL', 'PROVIDER_EXIT'
+            )),
+            quantity NUMERIC NOT NULL CHECK (quantity > 0),
+            price NUMERIC NOT NULL CHECK (price > 0),
+            fee NUMERIC NOT NULL DEFAULT 0 CHECK (fee >= 0),
+            realized_pnl NUMERIC NOT NULL DEFAULT 0,
+            state TEXT NOT NULL CHECK (state IN ('reconciled', 'unknown')),
+            observed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (exchange, provider_fill_id),
+            FOREIGN KEY (exchange, client_order_id)
+                REFERENCES live_order_intents (exchange, client_order_id)
+        );
+        CREATE INDEX IF NOT EXISTS provider_reconciliation_events_symbol_time
+        ON provider_reconciliation_events (exchange, symbol, created_at);
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

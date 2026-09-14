@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 import re
 import shutil
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from fatty_trader.analyzer.codex_runner import CodexRunner
 from fatty_trader.analyzer.postgres_worker import process_received_batch
@@ -113,7 +115,24 @@ def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
     common = ("TRADER_MODE", "SERVICE_NAME", "PGHOST", "PGPORT", "PGDATABASE", "PGUSER")
     allowed_environment = common + credentials
     if name == "dispatcher-bitget":
-        allowed_environment += ("BITGET_MODE", "BITGET_EXECUTION_ENABLED")
+        allowed_environment += (
+            "BITGET_MODE",
+            "BITGET_EXECUTION_ENABLED",
+            "BITGET_PROTECTION_CAPABILITY_GATE_ENABLED",
+            "BITGET_PROTECTION_STALE_SECONDS",
+        )
+    if name == "monitor-bitget":
+        allowed_environment += (
+            "BITGET_MODE",
+            "BITGET_FALLBACK_MUTATIONS_ENABLED",
+            "BITGET_PROTECTION_STREAM_ENABLED",
+            "BITGET_PROTECTION_STREAM_MODE",
+            "BITGET_PROTECTION_STREAM_STALE_SECONDS",
+            "BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS",
+            "BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED",
+            "BITGET_PROTECTION_STREAM_SYMBOLS",
+            "BITGET_PROTECTION_REST_WATCHDOG_SECONDS",
+        )
     return ServiceConfig(
         name, mode, venue_mode, execution_enabled, credentials, allowed_environment
     )
@@ -137,6 +156,122 @@ def _validate_bitget_cutover(environ: Mapping[str, str]) -> None:
         raise ValueError("Bitget clock skew limit must be positive")
 
 
+def build_bitget_protection_admission(
+    environ: Mapping[str, str],
+    *,
+    repository: object | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> Callable[[str], tuple[bool, str]] | None:
+    """Build the optional symbol-local protection admission callback.
+
+    The default is deliberately disabled so the existing dispatcher behavior is
+    unchanged until capability records and a healthy protection lane are deployed.
+    When enabled, an absent or stale capability record blocks only that symbol.
+    """
+    raw_enabled = environ.get("BITGET_PROTECTION_CAPABILITY_GATE_ENABLED", "0").lower()
+    if raw_enabled not in {"0", "1"}:
+        raise ValueError("BITGET_PROTECTION_CAPABILITY_GATE_ENABLED must be 0 or 1")
+    if raw_enabled == "0":
+        return None
+    try:
+        stale_after = float(environ.get("BITGET_PROTECTION_STALE_SECONDS", "5"))
+    except ValueError as exc:
+        raise ValueError("BITGET_PROTECTION_STALE_SECONDS must be positive") from exc
+    if not math.isfinite(stale_after) or stale_after <= 0:
+        raise ValueError("BITGET_PROTECTION_STALE_SECONDS must be positive")
+    environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
+    if environment not in {"DEMO", "LIVE"}:
+        raise ValueError("BITGET_MODE must be DEMO or LIVE")
+    if repository is None:
+        import psycopg
+
+        from fatty_trader.storage.protection_capabilities import (
+            PostgresProtectionCapabilityRepository,
+        )
+
+        repository = PostgresProtectionCapabilityRepository(psycopg.connect)
+    clock = now or (lambda: datetime.now(UTC))
+
+    from fatty_trader.exchanges.bitget.protection_capability import can_admit_symbol
+
+    def admit(symbol: str) -> tuple[bool, str]:
+        capability = repository.get("bitget", environment, symbol)  # type: ignore[attr-defined]
+        if capability is None:
+            return False, "protection-capability-unknown"
+        return can_admit_symbol(
+            capability,
+            now=clock(),
+            stale_after=stale_after,
+            required_environment=environment,
+        )
+
+    return admit
+
+
+def build_bitget_protection_stream(
+    environ: Mapping[str, str],
+    *,
+    repository: object | None = None,
+    transport: object | None = None,
+    clock: Callable[[], float] | None = None,
+    wall_clock: Callable[[], float] | None = None,
+) -> Any | None:
+    """Build the disabled-by-default, observe-only Bitget Classic stream."""
+    raw_enabled = environ.get("BITGET_PROTECTION_STREAM_ENABLED", "0").lower()
+    if raw_enabled not in {"0", "1"}:
+        raise ValueError("BITGET_PROTECTION_STREAM_ENABLED must be 0 or 1")
+    if raw_enabled == "0":
+        return None
+    raw_mutations = environ.get("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", "0").lower()
+    if raw_mutations not in {"0", "1"}:
+        raise ValueError("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED must be 0 or 1")
+    mode = environ.get("BITGET_PROTECTION_STREAM_MODE", "observe").strip().lower()
+    if mode != "observe" or raw_mutations == "1":
+        raise ValueError("Bitget protection stream is observe-only until close path is verified")
+    symbols = tuple(
+        symbol.strip().upper()
+        for symbol in environ.get("BITGET_PROTECTION_STREAM_SYMBOLS", "").split(",")
+        if symbol.strip()
+    )
+    if not symbols:
+        raise ValueError("BITGET_PROTECTION_STREAM_SYMBOLS is required when stream is enabled")
+    environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
+    if environment not in {"DEMO", "LIVE"}:
+        raise ValueError("BITGET_MODE must be DEMO or LIVE")
+    try:
+        stale_after = float(environ.get("BITGET_PROTECTION_STREAM_STALE_SECONDS", "5"))
+        heartbeat_interval = float(environ.get("BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS", "25"))
+    except ValueError as exc:
+        raise ValueError("Bitget protection stream timing values must be positive") from exc
+    if not math.isfinite(stale_after) or stale_after <= 0:
+        raise ValueError("Bitget protection stream stale timeout must be positive")
+    if not math.isfinite(heartbeat_interval) or heartbeat_interval <= 0:
+        raise ValueError("Bitget protection stream heartbeat interval must be positive")
+    if repository is None:
+        import psycopg
+
+        from fatty_trader.storage.protection_capabilities import (
+            PostgresProtectionCapabilityRepository,
+        )
+
+        repository = PostgresProtectionCapabilityRepository(psycopg.connect)
+    from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket
+    from fatty_trader.execution.bitget_protection_stream import BitgetProtectionStreamRuntime
+
+    socket = BitgetClassicWebSocket(
+        api_key=environ.get("BITGET_API_KEY", ""),
+        api_secret=environ.get("BITGET_API_SECRET", ""),
+        passphrase=environ.get("BITGET_API_PASSPHRASE", ""),
+        symbols=symbols,
+        transport=transport,  # type: ignore[arg-type]
+        clock=clock,
+        wall_clock=wall_clock,
+        stale_after=stale_after,
+        heartbeat_interval=heartbeat_interval,
+    )
+    return BitgetProtectionStreamRuntime(socket, repository, environment=environment)
+
+
 def bitget_dispatcher_state(
     environ: Mapping[str, str], *, execution_client_factory: Callable[[], object] | None = None
 ) -> str:
@@ -155,17 +290,23 @@ def build_bitget_execution_runtime(
     *,
     client_factory: Callable[..., object] | None = None,
     intent_store_factory: Callable[[], object] | None = None,
+    capability_repository_factory: Callable[[], object] | None = None,
 ) -> BitgetExecutionRuntime | None:
     """Build the POST-capable graph only after every explicit cutover gate passes."""
     config = service_config("dispatcher-bitget", environ)
     if not config.execution_enabled:
         return None
-    from fatty_trader.exchanges.bitget.async_execution import AsyncBitgetExecution
-    from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
+    from fatty_trader.exchanges.bitget.async_execution import (
+        AsyncBitgetExecution,
+        AsyncBitgetExecutionClient,
+    )
+    from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetClient, AsyncBitgetVenue
     from fatty_trader.exchanges.bitget.client import BitgetRestClient
+    from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
     from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
 
+    using_default_client = client_factory is None
     if client_factory is None:
         client_factory = BitgetRestClient
     if intent_store_factory is None:
@@ -175,16 +316,35 @@ def build_bitget_execution_runtime(
             return PostgresLiveIntentStore(psycopg.connect)
 
         intent_store_factory = default_intent_store_factory
+    if capability_repository_factory is None and using_default_client:
+        import psycopg
+
+        from fatty_trader.storage.protection_capabilities import (
+            PostgresProtectionCapabilityRepository,
+        )
+
+        def default_capability_repository_factory() -> object:
+            return PostgresProtectionCapabilityRepository(psycopg.connect)
+
+        capability_repository_factory = default_capability_repository_factory
     client = client_factory(
         environ["BITGET_API_KEY"],
         environ["BITGET_API_SECRET"],
         environ["BITGET_API_PASSPHRASE"],
         config.venue_mode,
     )
-    venue = AsyncBitgetVenue(client)  # type: ignore[arg-type]
+    venue = AsyncBitgetVenue(cast(AsyncBitgetClient, client))
+    capability_repository = (
+        capability_repository_factory() if capability_repository_factory is not None else None
+    )
     execution = BitgetDispatchExecution(
-        AsyncBitgetExecution(client, venue),  # type: ignore[arg-type]
-        intent_store_factory(),  # type: ignore[arg-type]
+        AsyncBitgetExecution(
+            cast(AsyncBitgetExecutionClient, client),
+            venue,
+            capability_repository=capability_repository,
+            environment=config.venue_mode,
+        ),
+        cast(LiveIntentStoreProtocol, intent_store_factory()),
     )
     return BitgetExecutionRuntime(
         execution=execution,
@@ -240,6 +400,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     import psycopg
 
     runtime = build_bitget_execution_runtime(environ)
+    protection_admission = build_bitget_protection_admission(environ)
     dispatcher = BitgetDispatcher(
         PostgresBitgetDispatchRepository(psycopg.connect),
         gate=DispatchGate(
@@ -258,6 +419,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             if bitget_kill_switch_enforced(environ)
             else None
         ),
+        protection_admission=protection_admission,
     )
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
@@ -275,12 +437,150 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             await runtime.client.aclose()  # type: ignore[attr-defined]
 
 
+async def run_bitget_monitor_loop(
+    monitor: Any,
+    *,
+    interval: float,
+    stream: Any | None = None,
+    watchdog: Any | None = None,
+    watchdog_interval: float | None = None,
+    stop_event: asyncio.Event | None = None,
+) -> None:
+    """Run monitor, optional stream, and optional watchdog with shared shutdown."""
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError("Bitget monitor interval must be positive")
+    effective_watchdog_interval: float | None = None
+    if watchdog is not None:
+        effective_watchdog_interval = interval if watchdog_interval is None else watchdog_interval
+        if not math.isfinite(effective_watchdog_interval) or effective_watchdog_interval <= 0:
+            raise ValueError("Bitget watchdog interval must be positive")
+    stop = stop_event or asyncio.Event()
+    background: list[asyncio.Task[Any]] = []
+    if stream is not None:
+        background.append(asyncio.create_task(stream.run(stop)))
+    if watchdog is not None:
+        assert effective_watchdog_interval is not None
+        background.append(
+            asyncio.create_task(
+                _run_bitget_watchdog_loop(watchdog, effective_watchdog_interval, stop)
+            )
+        )
+    try:
+        while not stop.is_set():
+            report = await monitor.run_once()
+            print(
+                f"service=monitor-bitget state={getattr(report, 'status', 'unknown')} "
+                f"reasons={','.join(getattr(report, 'reasons', ())) or 'none'}",
+                flush=True,
+            )
+            _raise_if_background_failed(background, stop)
+            await _wait_for_stop(stop, interval)
+    finally:
+        stop.set()
+        for task in background:
+            if not task.done():
+                task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
+
+
+async def _run_bitget_watchdog_loop(
+    watchdog: Any, interval: float, stop_event: asyncio.Event
+) -> None:
+    """Run the REST protection watchdog independently of the legacy monitor cadence."""
+    while not stop_event.is_set():
+        report = await watchdog.run_once()
+        print(
+            f"service=monitor-bitget component=protection-watchdog "
+            f"state={getattr(report, 'status', 'unknown')} "
+            f"reasons={','.join(getattr(report, 'reasons', ())) or 'none'}",
+            flush=True,
+        )
+        await _wait_for_stop(stop_event, interval)
+
+
+async def _wait_for_stop(stop_event: asyncio.Event, interval: float) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=interval)
+    except TimeoutError:
+        return
+
+
+def _raise_if_background_failed(
+    background: list[asyncio.Task[Any]], stop_event: asyncio.Event
+) -> None:
+    if stop_event.is_set():
+        return
+    for task in background:
+        if not task.done():
+            continue
+        if task.cancelled():
+            raise RuntimeError("Bitget protection background task was cancelled")
+        exception = task.exception()
+        if exception is not None:
+            raise exception
+        raise RuntimeError("Bitget protection background task stopped unexpectedly")
+
+
+def build_bitget_monitor_protection(
+    environ: Mapping[str, str],
+    client: Any,
+    *,
+    repository: object | None = None,
+    transport: object | None = None,
+    clock: Callable[[], float] | None = None,
+    wall_clock: Callable[[], float] | None = None,
+    now: Callable[[], datetime] | None = None,
+) -> tuple[Any | None, Any | None, float | None]:
+    """Build the optional observe-only stream and its paired REST watchdog."""
+    stream = build_bitget_protection_stream(
+        environ,
+        repository=repository,
+        transport=transport,
+        clock=clock,
+        wall_clock=wall_clock,
+    )
+    if stream is None:
+        return None, None, None
+    watchdog_interval = _positive_seconds(
+        environ,
+        "BITGET_PROTECTION_REST_WATCHDOG_SECONDS",
+        5.0,
+        maximum=60.0,
+    )
+    from fatty_trader.execution.bitget_protection_watchdog import BitgetProtectionWatchdog
+
+    environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
+    watchdog = BitgetProtectionWatchdog(
+        stream.socket,
+        stream.repository,
+        environment=environment,
+        symbols=stream.symbols,
+        read_position=client.get_single_position,
+        now=now or (lambda: datetime.now(UTC)),
+    )
+    return stream, watchdog, watchdog_interval
+
+
+def _positive_seconds(
+    environ: Mapping[str, str], name: str, default: float, *, maximum: float
+) -> float:
+    try:
+        value = float(environ.get(name, str(default)))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be positive") from exc
+    if not math.isfinite(value) or value <= 0 or value > maximum:
+        raise ValueError(f"{name} must be positive and no greater than {maximum:g}")
+    return value
+
+
 async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
     """Run only signed provider GETs and persist fail-closed reconciliation state."""
     import psycopg
 
     from fatty_trader.exchanges.bitget.client import BitgetRestClient
     from fatty_trader.execution.bitget_monitor import BitgetMonitor
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
     from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
     config = service_config("monitor-bitget", environ)
@@ -291,6 +591,7 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         mode=config.venue_mode,
     )
     repository = PostgresReconciliationRepository(psycopg.connect)
+    live_intent_store = PostgresLiveIntentStore(psycopg.connect)
     max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
     if max_clock_skew_ms < 0:
         raise ValueError("BITGET_MAX_CLOCK_SKEW_MS must not be negative")
@@ -303,17 +604,18 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         max_clock_skew_ms=max_clock_skew_ms,
         enforce_kill_switch=bitget_kill_switch_enforced(environ),
         fallback_mutations_enabled=(fallback_raw == "1" and bitget_kill_switch_enforced(environ)),
+        live_intent_store=live_intent_store,
     )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
+    stream, watchdog, watchdog_interval = build_bitget_monitor_protection(environ, client)
     try:
-        while True:
-            report = await monitor.run_once()
-            print(
-                f"service=monitor-bitget mode={config.mode} venue_mode={config.venue_mode} "
-                f"state={report.status} reasons={','.join(report.reasons) or 'none'}",
-                flush=True,
-            )
-            await asyncio.sleep(interval)
+        await run_bitget_monitor_loop(
+            monitor,
+            interval=interval,
+            stream=stream,
+            watchdog=watchdog,
+            watchdog_interval=watchdog_interval,
+        )
     finally:
         await client.aclose()
 

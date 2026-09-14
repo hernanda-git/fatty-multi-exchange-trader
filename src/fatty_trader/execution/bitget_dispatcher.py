@@ -51,6 +51,9 @@ Preflight = (
     Callable[[str], tuple[InstrumentSpec, VenueRiskConfig]]
     | Callable[[str], Awaitable[tuple[InstrumentSpec, VenueRiskConfig]]]
 )
+ProtectionAdmission = (
+    Callable[[str], tuple[bool, str]] | Callable[[str], Awaitable[tuple[bool, str]]]
+)
 
 
 class BitgetDispatcher:
@@ -64,12 +67,14 @@ class BitgetDispatcher:
         execution: EntryExecution | None = None,
         preflight: Preflight,
         kill_switch: KillSwitch | None = None,
+        protection_admission: ProtectionAdmission | None = None,
     ) -> None:
         self._repository = repository
         self._kill_switch = kill_switch
         self._gate = gate or DispatchGate()
         self._execution = execution
         self._preflight = preflight
+        self._protection_admission = protection_admission
 
     async def run_once(self, worker_id: str, lease_seconds: int) -> str:
         dispatch = self._repository.claim(worker_id, lease_seconds)
@@ -89,6 +94,20 @@ class BitgetDispatcher:
         ):
             self._reject(dispatch, "canary-symbol-mismatch")
             return "rejected"
+        if self._protection_admission is not None:
+            try:
+                admission = self._protection_admission(dispatch.pair_token)
+                if isawaitable(admission):
+                    admission = await admission
+                allowed, reason = admission
+                if not isinstance(allowed, bool) or not isinstance(reason, str):
+                    raise ValueError("protection admission response is invalid")
+            except Exception as exc:
+                self._reject(dispatch, f"protection-admission-error:{type(exc).__name__}")
+                return "rejected"
+            if not allowed:
+                self._reject(dispatch, reason.strip() or "protection-admission-denied")
+                return "rejected"
         try:
             signal = CanonicalSignal(
                 source_message_id=1,

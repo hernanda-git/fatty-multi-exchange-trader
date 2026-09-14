@@ -103,6 +103,79 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     def __init__(self, connection_factory: Callable[[], Connection]) -> None:
         self._connection_factory = connection_factory
 
+    def claim(self, record: LiveIntentRecord) -> bool:
+        """Atomically insert an intent and report whether this caller won."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO live_order_intents
+                    (id, exchange, client_order_id, provider_order_id, symbol, side,
+                     role, state, requested_qty, filled_qty)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (exchange, client_order_id) DO NOTHING
+                RETURNING client_order_id
+                """,
+                (
+                    uuid5(NAMESPACE_URL, f"fatty-live:{record.exchange}:{record.client_oid}"),
+                    record.exchange,
+                    record.client_oid,
+                    record.provider_order_id,
+                    record.symbol,
+                    record.side,
+                    record.role,
+                    record.state,
+                    record.requested_qty,
+                    record.filled_qty,
+                ),
+            )
+            claimed = cursor.fetchone() is not None
+            connection.commit()
+            return claimed
+        except Exception:
+            connection.rollback()
+            raise
+
+    def record_provider_event(self, observation: Any, client_oid: str) -> None:
+        """Persist provider source classification without duplicating a fill event."""
+        exchange = str(observation.exchange)
+        provider_fill_id = str(observation.provider_fill_id)
+        payload = observation.payload
+        observed_at = payload.get("fillTime", payload.get("uTime", payload.get("cTime")))
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO provider_reconciliation_events
+                    (id, exchange, provider_order_id, provider_fill_id, client_order_id,
+                     symbol, side, source, quantity, price, fee, realized_pnl, state, observed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'reconciled',
+                        COALESCE(to_timestamp(%s / 1000.0), CURRENT_TIMESTAMP))
+                ON CONFLICT (exchange, provider_fill_id) DO NOTHING
+                """,
+                (
+                    uuid5(NAMESPACE_URL, f"fatty-provider-event:{exchange}:{provider_fill_id}"),
+                    exchange,
+                    observation.provider_order_id,
+                    provider_fill_id,
+                    client_oid,
+                    observation.symbol,
+                    observation.side,
+                    observation.source,
+                    observation.quantity,
+                    observation.price,
+                    observation.fee,
+                    observation.realized_pnl,
+                    observed_at,
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
     def save(self, record: LiveIntentRecord) -> None:
         connection = self._connection_factory()
         try:

@@ -227,17 +227,20 @@ def _fallback_client_oid(fallback_id: str) -> str:
     return f"fb-{str(fallback_id).replace('-', '')[:20]}-close"
 
 
-def _ensure_close_intent(client_oid: str, symbol: str, side: str, quantity: Decimal) -> None:
+def _ensure_close_intent(client_oid: str, symbol: str, side: str, quantity: Decimal) -> bool:
+    """Atomically claim one close intent before any provider POST."""
     intent_id = uuid5(NAMESPACE_URL, f"fatty-fallback-intent:{client_oid}")
-    _db_exec(
+    rows = _db_query(
         """
         INSERT INTO live_order_intents
             (id, exchange, client_order_id, symbol, side, role, state, requested_qty, margin_mode)
         VALUES (%s, 'bitget', %s, %s, %s, 'CLOSE', 'requested', %s, 'ISOLATED')
         ON CONFLICT (exchange, client_order_id) DO NOTHING
+        RETURNING client_order_id
         """,
         (intent_id, client_oid, symbol, side, quantity),
     )
+    return bool(rows)
 
 
 def _update_close_intent(
@@ -258,22 +261,116 @@ def _update_close_intent(
 
 
 def _open_quantity(value: Any) -> Decimal | None:
+    if isinstance(value, dict):
+        value = value.get("data", value.get("positionList"))
     if isinstance(value, list) and not value:
         return Decimal("0")
-    rows = value if isinstance(value, list) else [value]
+    if not isinstance(value, list):
+        return None
     total = Decimal("0")
     found = False
-    for row in rows:
+    for row in value:
         if not isinstance(row, dict):
             continue
-        raw = row.get("total", row.get("size", row.get("quantity", "0")))
+        raw = next(
+            (row[field] for field in ("total", "size", "quantity") if field in row),
+            None,
+        )
+        if raw is None or str(raw).strip() == "":
+            continue
         try:
-            quantity = abs(Decimal(str(raw or "0")))
-        except Exception:
+            quantity = Decimal(str(raw))
+        except (ArithmeticError, TypeError, ValueError):
+            continue
+        if not quantity.is_finite():
             continue
         found = True
-        total += quantity
+        total += abs(quantity)
     return total if found else None
+
+
+async def submit_fallback_close_async(
+    client: Any,
+    entry: dict[str, Any],
+    *,
+    mark_price: Decimal,
+    reason: str,
+) -> dict[str, Any]:
+    """Submit one idempotent reduce-only fallback close and reconcile it."""
+    symbol = str(entry["symbol"])
+    fallback_id = str(entry["id"])
+    direction = str(entry["direction"]).upper()
+    client_oid = _fallback_client_oid(fallback_id)
+    try:
+        positions = await client.get_single_position(symbol)
+        open_quantity = _open_quantity(positions)
+    except Exception:
+        return {
+            "submitted": False,
+            "reason": "provider-position-read-failed",
+            "client_oid": client_oid,
+        }
+    if open_quantity is None:
+        return {"submitted": False, "reason": "provider-position-invalid", "client_oid": client_oid}
+    if open_quantity <= 0:
+        mark_position_flat(fallback_id)
+        return {"submitted": False, "reason": "position-already-flat", "client_oid": client_oid}
+
+    requested_quantity = Decimal(str(entry["quantity"]))
+    quantity = min(requested_quantity, open_quantity)
+    if quantity <= 0:
+        return {"submitted": False, "reason": "close-quantity-invalid", "client_oid": client_oid}
+    side = "SELL" if direction == "LONG" else "BUY"
+    claimed = _ensure_close_intent(client_oid, symbol, side, quantity)
+    if claimed is False:
+        return {"submitted": False, "reason": "close-already-claimed", "client_oid": client_oid}
+    mark_closing(fallback_id, client_oid)
+    try:
+        result = await client.place_market_close(
+            symbol=symbol,
+            side=side,
+            quantity=str(quantity),
+            client_oid=client_oid,
+        )
+    except Exception:
+        _update_close_intent(client_oid, "unknown")
+        return {"submitted": False, "reason": "close-result-unknown", "client_oid": client_oid}
+    if not isinstance(result, dict):
+        _update_close_intent(client_oid, "unknown")
+        return {
+            "submitted": False,
+            "reason": "close-acknowledgement-invalid",
+            "client_oid": client_oid,
+        }
+    provider_order_id = str(result.get("orderId")) if result.get("orderId") is not None else None
+    _update_close_intent(client_oid, "submitted", provider_order_id)
+    mark_closing(fallback_id, client_oid, provider_order_id)
+
+    try:
+        after_close = await client.get_single_position(symbol)
+        flat_after_close = (_open_quantity(after_close) or Decimal("0")) <= 0
+    except Exception:
+        return {
+            "submitted": True,
+            "reason": "close-readback-unknown",
+            "client_oid": client_oid,
+            "order_id": provider_order_id,
+        }
+    if not flat_after_close:
+        return {
+            "submitted": True,
+            "reason": "submitted",
+            "client_oid": client_oid,
+            "order_id": provider_order_id,
+        }
+    mark_triggered(fallback_id, mark_price, reason, provider_order_id or client_oid)
+    _update_close_intent(client_oid, "filled", provider_order_id)
+    return {
+        "submitted": True,
+        "reason": "close-confirmed",
+        "client_oid": client_oid,
+        "order_id": provider_order_id,
+    }
 
 
 async def run_fallback_monitor_async(client: Any) -> list[dict[str, Any]]:
@@ -333,7 +430,11 @@ async def run_fallback_monitor_async(client: Any) -> list[dict[str, Any]]:
 
         quantity = min(entry["quantity"], open_quantity)
         side = "SELL" if direction == "LONG" else "BUY"
-        _ensure_close_intent(client_oid, symbol, side, quantity)
+        claimed = _ensure_close_intent(client_oid, symbol, side, quantity)
+        if claimed is False:
+            logger.info("Fallback close already claimed for %s", symbol)
+            continue
+        mark_closing(fallback_id, client_oid)
         try:
             result = await client.place_market_close(
                 symbol=symbol,

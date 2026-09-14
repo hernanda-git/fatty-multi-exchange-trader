@@ -85,6 +85,9 @@ class BitgetLiveRiskConfig(BaseModel):
     allocation_pct: Decimal = Field(default=Decimal("0.20"), gt=0, le=1)
     max_normal_positions: int = Field(default=5, gt=0)
     liquidation_buffer: Decimal = Field(default=Decimal("0.10"), gt=0, le=1)
+    minimum_liquidation_gap_pct: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    minimum_liquidation_ticks: int = Field(default=0, ge=0)
+    latency_slippage_allowance: Decimal = Field(default=Decimal("0"), ge=0)
 
     @model_validator(mode="after")
     def validate_leverage_range(self) -> "BitgetLiveRiskConfig":

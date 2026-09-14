@@ -187,6 +187,10 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
         stop_loss=stop,
         liquidation_price=liq,
         buffer=data.risk.liquidation_buffer,
+        minimum_gap_pct=data.risk.minimum_liquidation_gap_pct,
+        minimum_ticks=data.risk.minimum_liquidation_ticks,
+        price_tick=data.meta.price_tick,
+        latency_slippage_allowance=data.risk.latency_slippage_allowance,
     ):
         return _skip(
             "sl-guard: stop-loss not safely before liquidation",

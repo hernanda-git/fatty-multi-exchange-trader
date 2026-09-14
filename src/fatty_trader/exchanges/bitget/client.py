@@ -12,6 +12,12 @@ from urllib.parse import urlencode
 
 import httpx
 
+from fatty_trader.exchanges.bitget.protection_contract import (
+    build_position_tpsl_payload,
+    normalize_pending_plan_response,
+    normalize_position_tpsl_response,
+)
+
 BASE_URL = "https://api.bitget.com"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_GET_RETRIES = 2
@@ -352,12 +358,25 @@ class BitgetRestClient:
         symbol: str,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
-    ) -> Any:
+        order_id: str | None = None,
+        client_oid: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Read pending native TP/SL plans for exactly one symbol."""
-        return await self._get(
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": product_type,
+            "marginCoin": margin_coin,
+            "planType": "profit_loss",
+        }
+        if order_id is not None:
+            params["orderId"] = order_id
+        if client_oid is not None:
+            params["clientOid"] = client_oid
+        data = await self._get(
             "/api/v2/mix/order/orders-plan-pending",
-            {"symbol": symbol, "productType": product_type, "marginCoin": margin_coin},
+            params,
         )
+        return normalize_pending_plan_response(data)
 
     async def get_order_detail(
         self,
@@ -497,42 +516,28 @@ class BitgetRestClient:
         take_profit_execute_price: str | None = None,
         stop_loss_client_oid: str | None = None,
         take_profit_client_oid: str | None = None,
+        stop_loss_size: str | None = None,
+        take_profit_size: str | None = None,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
-    ) -> dict[str, Any]:
+        include_delegate_type: bool = False,
+    ) -> list[dict[str, Any]]:
         """Place venue-native mark-price SL/TP for the confirmed position size."""
-        if hold_side not in {"long", "short"}:
-            raise ValueError("Bitget hold side must be long or short")
-        payload: dict[str, str] = {
-            "symbol": symbol.upper(),
-            "productType": product_type,
-            "marginCoin": margin_coin,
-            "size": quantity,
-            "holdSide": hold_side,
-            "delegateType": "normal",
-        }
-        if stop_loss is not None:
-            payload.update(
-                {
-                    "stopLossTriggerPrice": stop_loss,
-                    "stopLossTriggerType": "mark_price",
-                    "stopLossExecutePrice": stop_loss_execute_price or stop_loss,
-                    "stopLossClientOid": stop_loss_client_oid or f"sl-{int(time.time() * 1000)}",
-                }
-            )
-        if take_profit is not None:
-            payload.update(
-                {
-                    "stopSurplusTriggerPrice": take_profit,
-                    "stopSurplusTriggerType": "mark_price",
-                    "stopSurplusExecutePrice": take_profit_execute_price or take_profit,
-                    "stopSurplusClientOid": take_profit_client_oid
-                    or f"tp-{int(time.time() * 1000)}",
-                }
-            )
-        if stop_loss is None and take_profit is None:
-            raise ValueError("at least one of stop_loss or take_profit is required")
+        payload = build_position_tpsl_payload(
+            symbol=symbol,
+            hold_side=hold_side,
+            quantity=quantity,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            stop_loss_execute_price=stop_loss_execute_price,
+            take_profit_execute_price=take_profit_execute_price,
+            stop_loss_client_oid=stop_loss_client_oid,
+            take_profit_client_oid=take_profit_client_oid,
+            stop_loss_size=stop_loss_size,
+            take_profit_size=take_profit_size,
+            product_type=product_type,
+            margin_coin=margin_coin,
+            include_delegate_type=include_delegate_type,
+        )
         data = await self._post("/api/v2/mix/order/place-pos-tpsl", payload)
-        if not isinstance(data, dict):
-            raise BitgetApiError("Bitget protection response is invalid")
-        return data
+        return normalize_position_tpsl_response(data)

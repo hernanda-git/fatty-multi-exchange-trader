@@ -142,6 +142,8 @@ class LiveIntentRecord:
 
 
 class LiveIntentStoreProtocol(Protocol):
+    def claim(self, record: LiveIntentRecord) -> bool: ...
+
     def save(self, record: LiveIntentRecord) -> None: ...
     def get(self, client_oid: str) -> LiveIntentRecord | None: ...
     def update(self, record: LiveIntentRecord) -> None: ...
@@ -155,6 +157,8 @@ class InMemoryLiveIntentStore:
         self._records: dict[str, LiveIntentRecord] = {}
         self.fills: list[tuple[str, dict[str, Any]]] = []
         self._fill_keys: set[tuple[str, str]] = set()
+        self.provider_events: list[dict[str, str]] = []
+        self._provider_event_keys: set[tuple[str, str]] = set()
 
     def save(self, record: LiveIntentRecord) -> None:
         existing = self._records.get(record.client_oid)
@@ -169,6 +173,14 @@ class InMemoryLiveIntentStore:
                 raise ValueError("live intent provider order id conflict")
             return
         self._records[record.client_oid] = replace(record)
+
+    def claim(self, record: LiveIntentRecord) -> bool:
+        """Insert a durable intent and report whether this caller won the claim."""
+        if record.client_oid in self._records:
+            self.save(record)
+            return False
+        self._records[record.client_oid] = replace(record)
+        return True
 
     def get(self, client_oid: str) -> LiveIntentRecord | None:
         record = self._records.get(client_oid)
@@ -200,6 +212,22 @@ class InMemoryLiveIntentStore:
                 continue
             self._fill_keys.add(key)
             self.fills.append((record.client_oid, dict(fill)))
+
+    def record_provider_event(self, observation: Any, client_oid: str) -> None:
+        """Keep one source classification for each provider fill identity."""
+        exchange = str(observation.exchange)
+        provider_fill_id = str(observation.provider_fill_id)
+        key = (exchange, provider_fill_id)
+        if key in self._provider_event_keys:
+            return
+        self._provider_event_keys.add(key)
+        self.provider_events.append(
+            {
+                "exchange": exchange,
+                "provider_fill_id": provider_fill_id,
+                "source": str(observation.source),
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -298,7 +326,10 @@ def normalize_fill(fill: Mapping[str, Any]) -> dict[str, Any]:
         if fee_coin is not None:
             normalized["feeCcy"] = str(fee_coin)
     else:
-        normalized["fee"] = abs(_to_decimal(fill.get("fee", "0")) or Decimal("0"))
+        normalized["fee"] = abs(
+            _to_decimal(fill.get("fee", fill.get("fillFee", fill.get("feeAmount", "0"))))
+            or Decimal("0")
+        )
     return normalized
 
 
