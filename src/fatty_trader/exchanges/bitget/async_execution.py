@@ -50,12 +50,12 @@ class AsyncBitgetExecutionClient(Protocol):
         symbol: str,
         hold_side: str,
         quantity: str,
-        stop_loss: str,
-        stop_loss_execute_price: str,
-        take_profit: str,
-        take_profit_execute_price: str,
-        stop_loss_client_oid: str,
-        take_profit_client_oid: str,
+        stop_loss: str | None,
+        stop_loss_execute_price: str | None,
+        take_profit: str | None,
+        take_profit_execute_price: str | None,
+        stop_loss_client_oid: str | None,
+        take_profit_client_oid: str | None,
     ) -> list[dict[str, Any]]: ...
 
     async def place_market_close(
@@ -275,15 +275,16 @@ class AsyncBitgetExecution:
             )
         try:
             stop_loss_client_oid = f"{intent.client_oid}-sl"
-            take_profit_client_oid = f"{intent.client_oid}-tp"
+            take_profit = plan.take_profits[0] if plan.take_profits else None
+            take_profit_client_oid = f"{intent.client_oid}-tp" if take_profit is not None else None
             placement = await self._client.place_position_tpsl(
                 symbol=plan.symbol,
                 hold_side="buy" if plan.direction.value == "LONG" else "sell",
                 quantity=str(filled_quantity),
                 stop_loss=str(plan.stop_loss),
                 stop_loss_execute_price="0",
-                take_profit=str(plan.take_profits[0]),
-                take_profit_execute_price="0",
+                take_profit=str(take_profit) if take_profit is not None else None,
+                take_profit_execute_price="0" if take_profit is not None else None,
                 stop_loss_client_oid=stop_loss_client_oid,
                 take_profit_client_oid=take_profit_client_oid,
             )
@@ -294,17 +295,21 @@ class AsyncBitgetExecution:
             stop_loss_provider_order_id = _placement_plan_id(
                 placement, client_oid=stop_loss_client_oid, leg="stopLoss"
             )
-            take_profit_provider_order_id = _placement_plan_id(
-                placement, client_oid=take_profit_client_oid, leg="stopSurplus"
+            take_profit_provider_order_id = (
+                _placement_plan_id(placement, client_oid=take_profit_client_oid, leg="stopSurplus")
+                if take_profit_client_oid is not None
+                else None
             )
-            if stop_loss_provider_order_id is None or take_profit_provider_order_id is None:
+            if stop_loss_provider_order_id is None or (
+                take_profit is not None and take_profit_provider_order_id is None
+            ):
                 raise BitgetApiError("Bitget protection placement IDs are incomplete")
             expectation = NativeProtectionExpectation(
                 symbol=plan.symbol,
                 hold_side="buy" if plan.direction.value == "LONG" else "sell",
                 quantity=filled_quantity,
                 stop_loss=plan.stop_loss,
-                take_profit=plan.take_profits[0],
+                take_profit=take_profit,
                 stop_loss_client_oid=stop_loss_client_oid,
                 take_profit_client_oid=take_profit_client_oid,
                 stop_loss_provider_order_id=stop_loss_provider_order_id,

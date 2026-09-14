@@ -32,8 +32,8 @@ def classifier_prompt(text: str) -> str:
         "Classify this arbitrary Telegram text as a trade signal. Return ONLY JSON with keys "
         "actionable, pair, side, entry, stop_loss, take_profits, confidence, reason. "
         "Use null or [] for values absent from the text; never infer or invent prices. "
-        "actionable is true only when pair, side, entry, stop_loss and at least one take profit "
-        "are explicitly present and their geometry is valid.\nTEXT:\n" + text
+        "actionable is true when pair, side, entry and stop_loss are explicitly present and "
+        "their geometry is valid; take_profits is optional and may be [].\nTEXT:\n" + text
     )
 
 
@@ -88,13 +88,7 @@ def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalCla
     reason = str(data.get("reason") or "")
     signal = None
     if actionable:
-        if (
-            pair is None
-            or side not in {"LONG", "SHORT"}
-            or entry is None
-            or stop is None
-            or not take_profits
-        ):
+        if pair is None or side not in {"LONG", "SHORT"} or entry is None or stop is None:
             return SignalClassification(
                 False,
                 pair,

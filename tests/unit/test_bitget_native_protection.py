@@ -157,6 +157,16 @@ def _plan() -> ProtectionPlan:
     )
 
 
+def _plan_stop_only() -> ProtectionPlan:
+    return ProtectionPlan(
+        exchange=Exchange.BITGET,
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        quantity=Decimal("0.008"),
+        stop_loss=Decimal("49000"),
+    )
+
+
 def test_live_intent_store_claims_a_close_identity_only_once() -> None:
     store = InMemoryLiveIntentStore()
     close = LiveIntentRecord(
@@ -192,6 +202,34 @@ async def test_full_or_partial_fill_protection_uses_confirmed_filled_quantity() 
     assert client.protection_calls[0]["stop_loss_execute_price"] == "0"
     assert client.protection_calls[0]["take_profit_execute_price"] == "0"
     assert client.close_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stop_only_protection_does_not_require_take_profit() -> None:
+    client = NativeProtectionClient(
+        position_qty="0.008",
+        plans=[
+            {
+                "planType": "pos_loss",
+                "symbol": "BTCUSDT",
+                "holdSide": "buy",
+                "planStatus": "active",
+                "orderId": "native-plan",
+                "stopLossTriggerPrice": "49000",
+                "stopLossTriggerType": "mark_price",
+                "stopLossExecutePrice": "0",
+            }
+        ],
+    )
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+
+    result = await adapter.protect_filled_position(
+        _intent(), _plan_stop_only(), InMemoryLiveIntentStore()
+    )
+
+    assert result.state is ProtectionState.VENUE_PROTECTED
+    assert client.protection_calls[0]["take_profit"] is None
+    assert client.protection_calls[0]["take_profit_client_oid"] is None
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,44 @@ from fatty_trader.analyzer.integration import AnalysisStatus, analyze_with_fallb
 from fatty_trader.analyzer.trade_management import ManagementAction, parse_source_management
 
 
+def test_shorting_sentence_with_stop_only_is_fallback_parseable() -> None:
+    signal = parse_explicit_signal(
+        "Shorting $WLD here around 0.385\\n\\nStoploss: 0.3938",
+        message_id=16133,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "WLD"
+    assert signal.direction.value == "SHORT"
+    assert signal.entry_price == Decimal("0.385")
+    assert signal.stop_loss == Decimal("0.3938")
+    assert signal.take_profits == ()
+
+
+def test_codex_failure_falls_back_to_stop_only_short_setup() -> None:
+    result = analyze_with_fallback(
+        text="Shorting $WLD here around 0.385\\n\\nStoploss: 0.3938",
+        message_id=16133,
+        codex_runner=lambda _: CodexRunResult(
+            succeeded=False,
+            terminal_failure=True,
+            timed_out=False,
+            exit_code=1,
+            failure_reason="codex exited with status 1",
+            stdout="",
+            stderr="",
+        ),
+    )
+
+    assert result.status is AnalysisStatus.FALLBACK_ACCEPTED
+    assert result.signal is not None
+    assert result.signal.pair_token == "WLD"
+    assert result.signal.direction.value == "SHORT"
+    assert result.signal.entry_price == Decimal("0.385")
+    assert result.signal.stop_loss == Decimal("0.3938")
+    assert result.signal.take_profits == ()
+
+
 def test_explicit_entry_range_and_plural_targets_are_fallback_parseable() -> None:
     signal = parse_explicit_signal(
         "#XPL $XPL LONG TRADE ENTRY: 0.098 - 0.096 TARGET: 0.117 Stoploss: 0.09475",

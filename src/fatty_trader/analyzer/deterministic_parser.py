@@ -12,6 +12,14 @@ _CHANNEL = re.compile(
     r"(?:STOPLOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
+_NATURAL_STOP_ONLY = re.compile(
+    r"^\s*(?P<direction>LONGING|SHORTING|LONG|SHORT)\s+"
+    r"(?:here\s+)?\$?(?P<pair>[A-Z0-9]{2,20})\s+"
+    r"(?:here\s+)?(?:around|at|near)\s+"
+    r"(?P<entry>\d+(?:\.\d+)?).*?"
+    r"(?:STOPLOSS|STOP LOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 _RIGID = re.compile(
     r"^\s*(?P<pair>[A-Z0-9]{2,20})\s+(?P<direction>LONG|SHORT)\s+MARKET\s+"
     r"SL\s+(?P<sl>\d+(?:\.\d+)?)\s+TP\s+(?P<tp>\d+(?:\.\d+)?)\s*$",
@@ -21,16 +29,23 @@ _RIGID = re.compile(
 
 def parse_explicit_signal(text: str, *, message_id: int) -> CanonicalSignal | None:
     """Accept rigid explicit trade syntax without using market data."""
-    match = _CHANNEL.match(text) or _RIGID.match(text)
+    match = _CHANNEL.match(text) or _NATURAL_STOP_ONLY.match(text) or _RIGID.match(text)
     if match is None:
         return None
     try:
-        direction = Direction(match["direction"].upper())
+        direction_text = match["direction"].upper()
+        direction = Direction(
+            direction_text[:5] if direction_text.endswith("ING") else direction_text
+        )
         stop_loss = Decimal(match["sl"])
         target_text = match.groupdict().get("tps") or match.groupdict().get("tp")
-        if not target_text:
+        take_profits = (
+            tuple(Decimal(value) for value in re.findall(r"\d+(?:\.\d+)?", target_text))
+            if target_text
+            else ()
+        )
+        if not match.groupdict().get("entry") and not take_profits:
             return None
-        take_profits = tuple(Decimal(value) for value in re.findall(r"\d+(?:\.\d+)?", target_text))
         entry = (
             Decimal(match["entry"])
             if match.groupdict().get("entry")
