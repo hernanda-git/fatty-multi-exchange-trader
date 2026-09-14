@@ -494,6 +494,10 @@ async def _run_bitget_watchdog_loop(
 ) -> None:
     """Run the REST protection watchdog independently of the legacy monitor cadence."""
     while not stop_event.is_set():
+        refresh_symbols = getattr(watchdog, "refresh_symbols", None)
+        stream_symbols = getattr(watchdog, "stream_symbols", ())
+        if callable(refresh_symbols):
+            refresh_symbols(stream_symbols)
         report = await watchdog.run_once()
         print(
             f"service=monitor-bitget component=protection-watchdog "
@@ -558,11 +562,12 @@ def build_bitget_monitor_protection(
     from fatty_trader.execution.bitget_protection_watchdog import BitgetProtectionWatchdog
 
     environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
+    active_symbols = tuple(stream.symbols)
     watchdog = BitgetProtectionWatchdog(
         stream.socket,
         stream.repository,
         environment=environment,
-        symbols=stream.symbols,
+        symbols=active_symbols,
         read_position=client.get_single_position,
         now=now or (lambda: datetime.now(UTC)),
     )

@@ -49,12 +49,23 @@ class BitgetProtectionWatchdog:
         self._symbols = tuple(
             dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
         )
-        if not self._symbols:
-            raise ValueError("Bitget watchdog requires at least one symbol")
         self._read_position = read_position
         self._now = now
 
+    @property
+    def stream_symbols(self) -> tuple[str, ...]:
+        """Return the current dynamic ticker subscription symbols."""
+        return tuple(getattr(self._socket, "symbols", self._symbols))
+
+    def refresh_symbols(self, symbols: list[str] | tuple[str, ...]) -> None:
+        """Refresh the symbol set from active fallback positions."""
+        self._symbols = tuple(
+            dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
+        )
+
     async def run_once(self) -> WatchdogReport:
+        if not self._symbols:
+            return WatchdogReport(WatchdogStatus.HEALTHY, {})
         stream_fresh_by_symbol: dict[str, bool] = {}
         reasons: list[str] = []
         for symbol in self._symbols:
