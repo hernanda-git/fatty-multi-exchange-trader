@@ -344,33 +344,35 @@ class BitgetClassicWebSocket:
     ) -> None:
         """Run the reader until stopped, reconnecting after protocol/transport errors."""
         attempt = 0
-        while not stop_event.is_set():
-            if self._connection is None or self._state in {
-                WebSocketConnectionState.DISCONNECTED,
-                WebSocketConnectionState.RECONNECTING,
-                WebSocketConnectionState.FAILED,
-            }:
+        try:
+            while not stop_event.is_set():
+                if self._connection is None or self._state in {
+                    WebSocketConnectionState.DISCONNECTED,
+                    WebSocketConnectionState.RECONNECTING,
+                    WebSocketConnectionState.FAILED,
+                }:
+                    try:
+                        if attempt:
+                            await asyncio.sleep(self.reconnect_delay(attempt))
+                        await self.connect()
+                        attempt = 0
+                    except Exception:
+                        attempt += 1
+                        continue
                 try:
-                    if attempt:
-                        await asyncio.sleep(self.reconnect_delay(attempt))
-                    await self.connect()
-                    attempt = 0
+                    await self.send_heartbeat_if_due()
+                    events = await self.receive_once()
+                    for event in events:
+                        await on_event(event)
+                    self.check_freshness()
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     attempt += 1
-                    continue
-            try:
-                await self.send_heartbeat_if_due()
-                events = await self.receive_once()
-                for event in events:
-                    await on_event(event)
-                self.check_freshness()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                attempt += 1
-                await self._close_connection()
-                self._state = WebSocketConnectionState.RECONNECTING
-        await self.close()
+                    await self._close_connection()
+                    self._state = WebSocketConnectionState.RECONNECTING
+        finally:
+            await self.close()
 
     async def _receive_login_ack(self, connection: WebSocketConnection) -> None:
         raw = await connection.recv()

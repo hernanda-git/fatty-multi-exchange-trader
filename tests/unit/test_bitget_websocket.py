@@ -300,6 +300,35 @@ async def test_reconnect_resubscribes_current_dynamic_symbols_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_run_closes_underlying_connection() -> None:
+    class BlockingConnection(FakeConnection):
+        async def recv(self) -> str:
+            if self.incoming:
+                return self.incoming.pop(0)
+            await asyncio.Future()
+            return ""
+
+    connection = BlockingConnection([json.dumps({"event": "login", "code": "0"})])
+    client = BitgetClassicWebSocket(
+        api_key="key",
+        api_secret="secret",
+        passphrase="pass",
+        symbols=["BTCUSDT"],
+        transport=FakeTransport([connection]),
+    )
+    task = asyncio.create_task(client.run(lambda _event: asyncio.sleep(0), asyncio.Event()))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert connection.closed is True
+    assert client.state is WebSocketConnectionState.DISCONNECTED
+
+
+@pytest.mark.asyncio
 async def test_transport_marks_stream_stale_and_sends_text_ping() -> None:
     connection = FakeConnection([json.dumps({"event": "login", "code": "0"})])
     transport = FakeTransport([connection])
