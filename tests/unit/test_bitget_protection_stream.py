@@ -226,3 +226,52 @@ async def test_stream_runtime_syncs_only_active_fallback_symbols() -> None:
     active[:] = ["BTCUSDT"]
     assert await runtime.sync_active_symbols() == (("BTCUSDT",), ("WLDUSDT",))
     assert socket.symbols == ("BTCUSDT",)
+
+
+@pytest.mark.asyncio
+async def test_symbol_source_failure_preserves_existing_subscription() -> None:
+    class FakeSocket:
+        symbols = ("WLDUSDT",)
+
+        async def subscribe_symbols(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            raise AssertionError("subscribe must not run after source failure")
+
+        async def unsubscribe_symbols(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            raise AssertionError("unsubscribe must not run after source failure")
+
+    def failing_source() -> list[str]:
+        raise RuntimeError("temporary database failure")
+
+    runtime = BitgetProtectionStreamRuntime(
+        FakeSocket(),
+        InMemoryProtectionCapabilityRepository(),
+        environment="LIVE",
+        active_symbol_source=failing_source,
+    )
+
+    assert await runtime.sync_active_symbols() == ((), ())
+
+
+@pytest.mark.asyncio
+async def test_symbol_iterator_failure_preserves_existing_subscription() -> None:
+    class FakeSocket:
+        symbols = ("WLDUSDT",)
+
+        async def subscribe_symbols(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            raise AssertionError("subscribe must not run after iterator failure")
+
+        async def unsubscribe_symbols(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            raise AssertionError("unsubscribe must not run after iterator failure")
+
+    def failing_source():
+        yield "BTCUSDT"
+        raise RuntimeError("temporary iterator failure")
+
+    runtime = BitgetProtectionStreamRuntime(
+        FakeSocket(),
+        InMemoryProtectionCapabilityRepository(),
+        environment="LIVE",
+        active_symbol_source=failing_source,
+    )
+
+    assert await runtime.sync_active_symbols() == ((), ())

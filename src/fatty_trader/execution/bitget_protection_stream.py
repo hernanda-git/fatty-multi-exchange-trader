@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,8 @@ from fatty_trader.exchanges.bitget.protection_capability import StreamState
 from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket
 from fatty_trader.exchanges.bitget.ws_models import BitgetWebSocketEvent
 from fatty_trader.execution.bitget_fallback_protection import check_thresholds
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -156,13 +159,21 @@ class BitgetProtectionStreamRuntime:
         """Subscribe active fallback pairs and remove pairs that are no longer active."""
         if self._active_symbol_source is None:
             return (), ()
-        symbols = tuple(
-            dict.fromkeys(
-                symbol.strip().upper()
-                for symbol in self._active_symbol_source()
-                if str(symbol).strip()
+        try:
+            active_symbols = tuple(
+                dict.fromkeys(
+                    symbol.strip().upper()
+                    for symbol in self._active_symbol_source()
+                    if str(symbol).strip()
+                )
             )
-        )
+        except Exception as exc:
+            logger.warning(
+                "Bitget protection stream active-symbol read failed: %s",
+                type(exc).__name__,
+            )
+            return (), ()
+        symbols = active_symbols
         subscribed = await self._socket.subscribe_symbols(symbols)
         current = set(self._socket.symbols)
         stale = tuple(symbol for symbol in current if symbol not in symbols)

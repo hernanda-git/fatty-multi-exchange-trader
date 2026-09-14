@@ -277,6 +277,29 @@ async def test_transport_reconnects_and_resubscribes_after_disconnect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reconnect_resubscribes_current_dynamic_symbols_only() -> None:
+    first = FakeConnection([json.dumps({"event": "login", "code": "0"})])
+    second = FakeConnection([json.dumps({"event": "login", "code": "0"})])
+    transport = FakeTransport([first, second])
+    client = BitgetClassicWebSocket(
+        api_key="key",
+        api_secret="secret",
+        passphrase="pass",
+        symbols=["WLDUSDT"],
+        transport=transport,
+    )
+
+    await client.connect()
+    await client.subscribe_symbols(["BTCUSDT"])
+    await client.unsubscribe_symbols(["WLDUSDT"])
+    await client.reconnect()
+
+    subscription = json.loads(second.sent[-1])
+    ticker_symbols = {arg["instId"] for arg in subscription["args"] if arg["channel"] == "ticker"}
+    assert ticker_symbols == {"BTCUSDT"}
+
+
+@pytest.mark.asyncio
 async def test_transport_marks_stream_stale_and_sends_text_ping() -> None:
     connection = FakeConnection([json.dumps({"event": "login", "code": "0"})])
     transport = FakeTransport([connection])

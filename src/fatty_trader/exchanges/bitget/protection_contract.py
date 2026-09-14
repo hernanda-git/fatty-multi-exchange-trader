@@ -26,11 +26,6 @@ def _positive_decimal(value: Decimal | str, field: str) -> Decimal:
     return parsed
 
 
-def _decimal_text(value: Decimal | str, field: str) -> str:
-    parsed = _positive_decimal(value, field)
-    return format(parsed, "f")
-
-
 def _hold_side(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"long", "buy"}:

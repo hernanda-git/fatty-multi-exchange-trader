@@ -106,7 +106,6 @@ class BitgetClassicWebSocket:
         self._passphrase = passphrase
         self._symbols = tuple(normalized)
         self._endpoint = endpoint
-        self._subscription = subscription
         self._transport = transport or WebsocketsTransport()
         self._clock = clock or time.monotonic
         self._wall_clock = wall_clock or time.time
@@ -173,7 +172,9 @@ class BitgetClassicWebSocket:
             )
             await connection.send(_json(login))
             await self._receive_login_ack(connection)
-            await connection.send(_json(self._subscription))
+            await connection.send(
+                _json(build_subscription_message(self._symbols, allow_empty=True))
+            )
         except Exception:
             self._state = WebSocketConnectionState.FAILED
             await self._close_connection()
