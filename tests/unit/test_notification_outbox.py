@@ -115,6 +115,24 @@ def test_cutover_event_states_that_no_order_was_sent() -> None:
     assert "577ed2b8" not in text
 
 
+def test_provider_flat_reconciliation_explains_what_happened_and_next_state() -> None:
+    text = format_notification_html(
+        {
+            "kind": "execution-event",
+            "dispatch_id": "c0000000-0000-0000-0000-000000000001",
+            "from_state": "UNKNOWN",
+            "to_state": "RECONCILED",
+            "reason": "approved-provider-flat-readback-no-order-or-intent",
+        }
+    )
+
+    assert "Provider flat" in text
+    assert "Tidak ada order" in text
+    assert "Reservation dilepas" in text
+    assert "Tidak ada entry yang diulang" in text
+    assert "c0000000" in text
+
+
 def test_source_tp1_update_is_labeled_as_position_management() -> None:
     text = format_notification_html(
         {

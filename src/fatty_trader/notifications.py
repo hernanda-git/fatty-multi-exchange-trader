@@ -349,6 +349,19 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
             "Tidak ada order dikirim.\n"
             "Alasan: mode DEMO · eksekusi live belum diaktifkan."
         )
+    if reason == "approved-provider-flat-readback-no-order-or-intent":
+        return (
+            "🧹 <b>Rekonsiliasi Dispatch Selesai</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Status  : <code>RECONCILED</code>\n"
+            "Provider flat: posisi dan open order tidak ditemukan\n"
+            "Ledger   : Tidak ada order/intent lokal yang terkait\n"
+            "Aksi     : Reservation dilepas melalui audit transition\n"
+            "Proteksi : Tidak ada posisi aktif yang perlu ditutup\n"
+            "Entry    : Tidak ada entry yang diulang\n"
+            "LIVE     : Gate boleh berjalan setelah approval\n"
+            f"Ref      : <code>{dispatch_id}</code>"
+        )
     state = escape(_safe_value(payload.get("to_state", "diperbarui")))
     return (
         f"📈 <b>Status Eksekusi</b>\n"
