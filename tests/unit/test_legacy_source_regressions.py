@@ -22,6 +22,20 @@ def test_shorting_sentence_with_stop_only_is_fallback_parseable() -> None:
     assert signal.take_profits == ()
 
 
+def test_longing_sentence_with_stop_only_is_fallback_parseable() -> None:
+    signal = parse_explicit_signal(
+        "Longing $BTC here around 64000\\n\\nStoploss: 63000",
+        message_id=16134,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "BTC"
+    assert signal.direction.value == "LONG"
+    assert signal.entry_price == Decimal("64000")
+    assert signal.stop_loss == Decimal("63000")
+    assert signal.take_profits == ()
+
+
 def test_codex_failure_falls_back_to_stop_only_short_setup() -> None:
     result = analyze_with_fallback(
         text="Shorting $WLD here around 0.385\\n\\nStoploss: 0.3938",

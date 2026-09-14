@@ -34,9 +34,12 @@ def parse_explicit_signal(text: str, *, message_id: int) -> CanonicalSignal | No
         return None
     try:
         direction_text = match["direction"].upper()
-        direction = Direction(
-            direction_text[:5] if direction_text.endswith("ING") else direction_text
-        )
+        direction = {
+            "LONGING": Direction.LONG,
+            "SHORTING": Direction.SHORT,
+            "LONG": Direction.LONG,
+            "SHORT": Direction.SHORT,
+        }[direction_text]
         stop_loss = Decimal(match["sl"])
         target_text = match.groupdict().get("tps") or match.groupdict().get("tp")
         take_profits = (
