@@ -109,7 +109,7 @@ class BitgetDispatcher:
                 self._reject(dispatch, reason.strip() or "protection-admission-denied")
                 return "rejected"
         try:
-            signal = CanonicalSignal(
+            CanonicalSignal(
                 source_message_id=1,
                 source_revision="0" * 64,
                 pair_token=dispatch.pair_token,
@@ -118,13 +118,8 @@ class BitgetDispatcher:
                 stop_loss=dispatch.stop_loss,
                 take_profits=dispatch.take_profits,
             )
-            if not signal.take_profits:
-                raise ValueError("missing-take-profits")
         except ValueError as exc:
             self._reject(dispatch, _reason(exc))
-            return "rejected"
-        if not signal.take_profits:
-            self._reject(dispatch, "missing-take-profits")
             return "rejected"
         self._transition(dispatch, "QUEUED", "PREFLIGHT")
         try:

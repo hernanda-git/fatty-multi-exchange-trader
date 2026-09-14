@@ -126,7 +126,7 @@ async def test_closed_gate_blocks_invalid_dispatch_without_provider_post() -> No
 
 
 @pytest.mark.asyncio
-async def test_invalid_geometry_or_missing_take_profit_never_posts_when_gate_is_open() -> None:
+async def test_stop_only_signal_is_sized_and_submitted_when_gate_is_open() -> None:
     repository = Repository(_dispatch(take_profits=()))
     execution = Execution()
     dispatcher = BitgetDispatcher(
@@ -138,9 +138,10 @@ async def test_invalid_geometry_or_missing_take_profit_never_posts_when_gate_is_
 
     result = await dispatcher.run_once("worker", 30)
 
-    assert result == "rejected"
-    assert execution.post_count == 0
-    assert repository.transitions == [("QUEUED", "REJECTED", "missing-take-profits")]
+    assert result == "filled"
+    assert execution.post_count == 1
+    assert ("QUEUED", "PREFLIGHT", None) in repository.transitions
+    assert ("SUBMITTING", "FILLED", None) in repository.transitions
 
 
 @pytest.mark.asyncio
