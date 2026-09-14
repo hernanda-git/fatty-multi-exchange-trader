@@ -96,17 +96,20 @@ def test_protection_stream_is_disabled_by_default() -> None:
     assert build_bitget_protection_stream({}) is None
 
 
-def test_enabled_protection_stream_requires_explicit_symbols() -> None:
-    with pytest.raises(ValueError, match="BITGET_PROTECTION_STREAM_SYMBOLS"):
-        build_bitget_protection_stream(
-            {
-                "BITGET_PROTECTION_STREAM_ENABLED": "1",
-                "BITGET_API_KEY": "key",
-                "BITGET_API_SECRET": "secret",
-                "BITGET_API_PASSPHRASE": "passphrase",
-                "BITGET_MODE": "LIVE",
-            }
-        )
+def test_enabled_protection_stream_can_start_empty_and_sync_active_symbols_dynamically() -> None:
+    stream = build_bitget_protection_stream(
+        {
+            "BITGET_PROTECTION_STREAM_ENABLED": "1",
+            "BITGET_API_KEY": "key",
+            "BITGET_API_SECRET": "secret",
+            "BITGET_API_PASSPHRASE": "passphrase",
+            "BITGET_MODE": "LIVE",
+        },
+        active_symbol_source=lambda: ["BTCUSDT"],
+    )
+
+    assert stream is not None
+    assert stream.symbols == ()
 
 
 def test_stream_mutation_flag_cannot_enable_unimplemented_close_path() -> None:

@@ -189,3 +189,40 @@ async def test_stream_runtime_creates_unknown_capability_before_marking_stream_h
     assert capability.native_state is NativeProtectionState.UNKNOWN
     assert str(capability.stream_state) == "HEALTHY"
     assert capability.last_stream_at == now
+
+
+@pytest.mark.asyncio
+async def test_stream_runtime_syncs_only_active_fallback_symbols() -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self._symbols: tuple[str, ...] = ()
+            self.subscribed: list[tuple[str, ...]] = []
+            self.unsubscribed: list[tuple[str, ...]] = []
+
+        @property
+        def symbols(self) -> tuple[str, ...]:
+            return self._symbols
+
+        async def subscribe_symbols(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            additions = tuple(symbol for symbol in symbols if symbol not in self._symbols)
+            self._symbols += additions
+            self.subscribed.append(additions)
+            return additions
+
+        async def unsubscribe_symbols(self, symbols: tuple[str, ...]) -> tuple[str, ...]:
+            removals = tuple(symbol for symbol in symbols if symbol in self._symbols)
+            self._symbols = tuple(symbol for symbol in self._symbols if symbol not in removals)
+            self.unsubscribed.append(removals)
+            return removals
+
+    socket = FakeSocket()
+    repository = InMemoryProtectionCapabilityRepository()
+    active = ["WLDUSDT"]
+    runtime = BitgetProtectionStreamRuntime(
+        socket, repository, environment="LIVE", active_symbol_source=lambda: active
+    )
+
+    assert await runtime.sync_active_symbols() == (("WLDUSDT",), ())
+    active[:] = ["BTCUSDT"]
+    assert await runtime.sync_active_symbols() == (("BTCUSDT",), ("WLDUSDT",))
+    assert socket.symbols == ("BTCUSDT",)

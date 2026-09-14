@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -109,6 +111,7 @@ class BitgetProtectionStreamRuntime:
         *,
         environment: str,
         now: Callable[[], datetime] | None = None,
+        active_symbol_source: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         self._socket = socket
         self._repository = repository
@@ -116,6 +119,7 @@ class BitgetProtectionStreamRuntime:
         if self._environment not in {"DEMO", "LIVE"}:
             raise ValueError("Bitget protection stream environment must be DEMO or LIVE")
         self._now = now or (lambda: datetime.now(UTC))
+        self._active_symbol_source = active_symbol_source
 
     @property
     def socket(self) -> BitgetClassicWebSocket:
@@ -133,8 +137,37 @@ class BitgetProtectionStreamRuntime:
         return self._socket.symbols
 
     async def run(self, stop_event: Any) -> None:
-        """Run the socket reader; it has no order/cancel/close dependency."""
-        await self._socket.run(self._on_event, stop_event)
+        """Run the reader and sync ticker subscriptions to active fallback positions."""
+        if self._active_symbol_source is None:
+            await self._socket.run(self._on_event, stop_event)
+            return
+        reader = asyncio.create_task(self._socket.run(self._on_event, stop_event))
+        try:
+            while not stop_event.is_set():
+                await self.sync_active_symbols()
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+        finally:
+            if not reader.done():
+                reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+
+    async def sync_active_symbols(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Subscribe active fallback pairs and remove pairs that are no longer active."""
+        if self._active_symbol_source is None:
+            return (), ()
+        symbols = tuple(
+            dict.fromkeys(
+                symbol.strip().upper()
+                for symbol in self._active_symbol_source()
+                if str(symbol).strip()
+            )
+        )
+        subscribed = await self._socket.subscribe_symbols(symbols)
+        current = set(self._socket.symbols)
+        stale = tuple(symbol for symbol in current if symbol not in symbols)
+        unsubscribed = await self._socket.unsubscribe_symbols(stale)
+        return subscribed, unsubscribed
 
     async def _on_event(self, event: BitgetWebSocketEvent) -> None:
         if event.kind != "mark_price":

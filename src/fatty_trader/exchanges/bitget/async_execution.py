@@ -323,6 +323,7 @@ class AsyncBitgetExecution:
                     plan.symbol,
                     native_state=NativeProtectionState.UNSUPPORTED,
                     last_error="native-protection-unsupported",
+                    fallback_allowed=True,
                 )
                 try:
                     from fatty_trader.execution.bitget_fallback_protection import register_fallback
@@ -381,6 +382,7 @@ class AsyncBitgetExecution:
         *,
         native_state: NativeProtectionState,
         last_error: str | None,
+        fallback_allowed: bool | None = None,
     ) -> None:
         repository = self._capability_repository
         if repository is None:
@@ -398,7 +400,13 @@ class AsyncBitgetExecution:
                 position_mode=current.position_mode if current is not None else "one_way_mode",
                 margin_mode=current.margin_mode if current is not None else "isolated",
                 native_state=native_state,
-                fallback_allowed=current.fallback_allowed if current is not None else False,
+                fallback_allowed=(
+                    fallback_allowed
+                    if fallback_allowed is not None
+                    else current.fallback_allowed
+                    if current is not None
+                    else False
+                ),
                 payload_profile=(
                     current.payload_profile if current is not None else "classic-v2-position"
                 ),

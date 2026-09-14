@@ -13,7 +13,7 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -215,6 +215,7 @@ def build_bitget_protection_stream(
     transport: object | None = None,
     clock: Callable[[], float] | None = None,
     wall_clock: Callable[[], float] | None = None,
+    active_symbol_source: Callable[[], Iterable[str]] | None = None,
 ) -> Any | None:
     """Build the disabled-by-default, observe-only Bitget Classic stream."""
     raw_enabled = environ.get("BITGET_PROTECTION_STREAM_ENABLED", "0").lower()
@@ -233,8 +234,7 @@ def build_bitget_protection_stream(
         for symbol in environ.get("BITGET_PROTECTION_STREAM_SYMBOLS", "").split(",")
         if symbol.strip()
     )
-    if not symbols:
-        raise ValueError("BITGET_PROTECTION_STREAM_SYMBOLS is required when stream is enabled")
+
     environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
     if environment not in {"DEMO", "LIVE"}:
         raise ValueError("BITGET_MODE must be DEMO or LIVE")
@@ -269,7 +269,12 @@ def build_bitget_protection_stream(
         stale_after=stale_after,
         heartbeat_interval=heartbeat_interval,
     )
-    return BitgetProtectionStreamRuntime(socket, repository, environment=environment)
+    return BitgetProtectionStreamRuntime(
+        socket,
+        repository,
+        environment=environment,
+        active_symbol_source=active_symbol_source,
+    )
 
 
 def bitget_dispatcher_state(
@@ -531,6 +536,7 @@ def build_bitget_monitor_protection(
     clock: Callable[[], float] | None = None,
     wall_clock: Callable[[], float] | None = None,
     now: Callable[[], datetime] | None = None,
+    active_symbol_source: Callable[[], Iterable[str]] | None = None,
 ) -> tuple[Any | None, Any | None, float | None]:
     """Build the optional observe-only stream and its paired REST watchdog."""
     stream = build_bitget_protection_stream(
@@ -539,6 +545,7 @@ def build_bitget_monitor_protection(
         transport=transport,
         clock=clock,
         wall_clock=wall_clock,
+        active_symbol_source=active_symbol_source,
     )
     if stream is None:
         return None, None, None
@@ -607,7 +614,13 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         live_intent_store=live_intent_store,
     )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
-    stream, watchdog, watchdog_interval = build_bitget_monitor_protection(environ, client)
+    from fatty_trader.execution.bitget_fallback_protection import load_active
+
+    stream, watchdog, watchdog_interval = build_bitget_monitor_protection(
+        environ,
+        client,
+        active_symbol_source=lambda: [entry["symbol"] for entry in load_active()],
+    )
     try:
         await run_bitget_monitor_loop(
             monitor,

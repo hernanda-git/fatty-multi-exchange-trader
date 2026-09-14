@@ -97,7 +97,7 @@ class BitgetClassicWebSocket:
         if reconnect_base_delay <= 0 or reconnect_max_delay < reconnect_base_delay:
             raise ValueError("Bitget websocket reconnect delays are invalid")
         # build_subscription_message validates and deduplicates the symbol set.
-        subscription = build_subscription_message(symbols)
+        subscription = build_subscription_message(symbols, allow_empty=True)
         normalized = [
             str(arg["instId"]) for arg in subscription["args"] if arg["channel"] == "ticker"
         ]
@@ -195,6 +195,59 @@ class BitgetClassicWebSocket:
     async def close(self) -> None:
         await self._close_connection()
         self._state = WebSocketConnectionState.DISCONNECTED
+
+    async def subscribe_symbols(self, symbols: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        """Subscribe ticker channels for newly active symbols, idempotently."""
+        normalized = self._normalize_symbols(symbols)
+        additions = tuple(symbol for symbol in normalized if symbol not in self._symbols)
+        if not additions:
+            return ()
+        self._symbols = (*self._symbols, *additions)
+        if self._connection is not None and self._state in {
+            WebSocketConnectionState.CONNECTED,
+            WebSocketConnectionState.STALE,
+        }:
+            await self._connection.send(
+                _json(
+                    {
+                        "op": "subscribe",
+                        "args": [
+                            {"instType": "mc", "channel": "ticker", "instId": symbol}
+                            for symbol in additions
+                        ],
+                    }
+                )
+            )
+        return additions
+
+    async def unsubscribe_symbols(self, symbols: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        """Unsubscribe ticker channels for symbols with no active fallback position."""
+        normalized = self._normalize_symbols(symbols)
+        removals = tuple(symbol for symbol in normalized if symbol in self._symbols)
+        if not removals:
+            return ()
+        self._symbols = tuple(symbol for symbol in self._symbols if symbol not in removals)
+        self._last_mark_event_at = {
+            symbol: received_at
+            for symbol, received_at in self._last_mark_event_at.items()
+            if symbol in self._symbols
+        }
+        if self._connection is not None and self._state in {
+            WebSocketConnectionState.CONNECTED,
+            WebSocketConnectionState.STALE,
+        }:
+            await self._connection.send(
+                _json(
+                    {
+                        "op": "unsubscribe",
+                        "args": [
+                            {"instType": "mc", "channel": "ticker", "instId": symbol}
+                            for symbol in removals
+                        ],
+                    }
+                )
+            )
+        return removals
 
     async def receive_once(self) -> list[BitgetWebSocketEvent]:
         if self._connection is None or self._state not in {
@@ -342,6 +395,17 @@ class BitgetClassicWebSocket:
         if connection is not None:
             with contextlib.suppress(Exception):
                 await connection.close()
+
+    @staticmethod
+    def _normalize_symbols(symbols: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for raw_symbol in symbols:
+            symbol = str(raw_symbol).strip().upper()
+            if not symbol:
+                raise ValueError("Bitget websocket symbol is required")
+            if symbol not in normalized:
+                normalized.append(symbol)
+        return tuple(normalized)
 
 
 def _json(payload: dict[str, Any]) -> str:

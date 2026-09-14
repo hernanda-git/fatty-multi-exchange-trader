@@ -116,7 +116,9 @@ def build_login_message(
     }
 
 
-def build_subscription_message(symbols: list[str] | tuple[str, ...]) -> dict[str, Any]:
+def build_subscription_message(
+    symbols: list[str] | tuple[str, ...], *, allow_empty: bool = False
+) -> dict[str, Any]:
     """Build the documented Classic public/private subscriptions."""
     normalized_symbols: list[str] = []
     for raw_symbol in symbols:
@@ -125,7 +127,7 @@ def build_subscription_message(symbols: list[str] | tuple[str, ...]) -> dict[str
             raise ValueError("Bitget websocket symbol is required")
         if symbol not in normalized_symbols:
             normalized_symbols.append(symbol)
-    if not normalized_symbols:
+    if not normalized_symbols and not allow_empty:
         raise ValueError("Bitget websocket requires at least one symbol")
     args: list[dict[str, str]] = [
         {"instType": "mc", "channel": "ticker", "instId": symbol} for symbol in normalized_symbols

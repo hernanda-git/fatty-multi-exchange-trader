@@ -227,6 +227,33 @@ async def test_transport_logs_in_subscribes_and_normalizes_without_mutations() -
 
 
 @pytest.mark.asyncio
+async def test_dynamic_ticker_subscription_is_idempotent_and_pair_local() -> None:
+    connection = FakeConnection([json.dumps({"event": "login", "code": "0"})])
+    client = BitgetClassicWebSocket(
+        api_key="key",
+        api_secret="secret",
+        passphrase="pass",
+        symbols=[],
+        transport=FakeTransport([connection]),
+    )
+
+    await client.connect()
+    assert await client.subscribe_symbols(["wldusdt", "WLDUSDT"]) == ("WLDUSDT",)
+    assert await client.subscribe_symbols(["WLDUSDT"]) == ()
+    assert json.loads(connection.sent[-1]) == {
+        "op": "subscribe",
+        "args": [{"instType": "mc", "channel": "ticker", "instId": "WLDUSDT"}],
+    }
+
+    assert await client.unsubscribe_symbols(["WLDUSDT"]) == ("WLDUSDT",)
+    assert client.symbols == ()
+    assert json.loads(connection.sent[-1]) == {
+        "op": "unsubscribe",
+        "args": [{"instType": "mc", "channel": "ticker", "instId": "WLDUSDT"}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_transport_reconnects_and_resubscribes_after_disconnect() -> None:
     first = FakeConnection([json.dumps({"event": "login", "code": "0"})])
     second = FakeConnection([json.dumps({"event": "login", "code": "0"})])
