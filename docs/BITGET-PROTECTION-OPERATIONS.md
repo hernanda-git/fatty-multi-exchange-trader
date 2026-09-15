@@ -7,6 +7,27 @@ It is deliberately read-only with respect to Bitget orders/plans unless a separa
 owner approval explicitly authorizes a canary. A code deployment is not permission
 to place, cancel, close, or mutate a provider order.
 
+A read-only Telegram snapshot is available through the authenticated private
+operator bot command:
+
+```text
+/health
+```
+
+The command reports provider truth, DB ledger counts, provider-vs-DB drift,
+active intents, fallback monitors, protection gates, kill-switch meaning, and
+the latest source message. It does not place, cancel, close, or modify protection.
+
+Interpretation rules:
+
+- **Provider** is authoritative for current positions and pending orders.
+- **DB drift** means local bookkeeping differs; it does not mean the provider is flat.
+- **Execution ENABLED** means a dispatcher may submit; it does not prove a fill.
+- **Kill switch ACTIVE** blocks new dispatches; it does not automatically close an
+  existing position.
+- **FALLBACK** means local protection is being relied on; verify stream freshness
+  and the fallback mutation gate before assuming auto-close is active.
+
 ## 1. Evidence tracks
 
 Report these tracks separately:
