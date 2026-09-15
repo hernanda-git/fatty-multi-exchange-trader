@@ -158,6 +158,20 @@ async def test_unsafe_provider_read_latches_kill_switch_and_deduplicates_alert(
 
 
 @pytest.mark.asyncio
+async def test_missing_protection_is_alert_only_without_fallback_mutations() -> None:
+    venue = ReadOnlyVenue(
+        positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}]
+    )
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.status == "degraded"
+    assert report.reasons == ("missing-stop-loss",)
+    assert repository.kill_switch_active("bitget") is False
+
+
+@pytest.mark.asyncio
 async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
