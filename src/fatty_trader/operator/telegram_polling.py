@@ -51,6 +51,30 @@ class TelegramBotApi:
     def send_reply(self, chat_id: int, text: str) -> None:
         self._post("sendMessage", {"chat_id": chat_id, "text": text[:4000]})
 
+    def set_my_commands(self) -> None:
+        commands = [
+            {"command": "help", "description": "show operator commands"},
+            {"command": "health", "description": "full read-only health"},
+            {"command": "status", "description": "concise provider status"},
+            {"command": "positions", "description": "open positions"},
+            {"command": "orders", "description": "pending orders"},
+            {"command": "balance", "description": "available balance"},
+            {"command": "price", "description": "ticker for a symbol"},
+            {"command": "reconcile", "description": "provider vs DB drift"},
+            {"command": "protection", "description": "SL/TP protection state"},
+            {"command": "fills", "description": "recent fills"},
+            {"command": "intents", "description": "recent durable intents"},
+            {"command": "dispatches", "description": "dispatch lifecycle"},
+            {"command": "signals", "description": "recent source signals"},
+            {"command": "close", "description": "close a position"},
+            {"command": "cancel", "description": "cancel pending orders"},
+            {"command": "setsl", "description": "set native stop loss"},
+            {"command": "settp", "description": "set native take profit"},
+            {"command": "open", "description": "open a guarded position"},
+            {"command": "trade", "description": "open a Bitget trade"},
+        ]
+        self._post("setMyCommands", {"commands": commands})
+
     def _post(self, method: str, payload: dict[str, Any]) -> Any:
         try:
             response = self._client.post(f"{self._prefix}/{method}", json=payload)

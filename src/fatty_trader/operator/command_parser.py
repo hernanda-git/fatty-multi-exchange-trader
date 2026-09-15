@@ -74,6 +74,16 @@ class HealthCommand:
     pass
 
 
+@dataclass(frozen=True)
+class HelpCommand:
+    pass
+
+
+@dataclass(frozen=True)
+class DiagnosticCommand:
+    kind: str
+
+
 def parse_trade(text: str) -> TradeCommand:
     parts = text.split()
     if len(parts) < 8 or parts[:2] != ["/trade", parts[1]]:
@@ -131,11 +141,17 @@ def parse_operator_command(
     | OrdersCommand
     | BalanceCommand
     | HealthCommand
+    | HelpCommand
+    | DiagnosticCommand
+    | TradeCommand
 ):
     if not text or not text.strip():
         raise CommandError("empty command")
     parts = text.strip().split()
     head = parts[0].lower()
+
+    if head == "/trade":
+        return parse_trade(text)
 
     if head == "/price":
         if len(parts) != 2:
@@ -258,6 +274,25 @@ def parse_operator_command(
         if len(parts) != 1:
             raise CommandError("/health takes no arguments")
         return HealthCommand()
+
+    if head in {"/help", "/start"}:
+        if len(parts) != 1:
+            raise CommandError(f"{head} takes no arguments")
+        return HelpCommand()
+
+    diagnostic_commands = {
+        "/status": "status",
+        "/reconcile": "reconcile",
+        "/protection": "protection",
+        "/fills": "fills",
+        "/intents": "intents",
+        "/dispatches": "dispatches",
+        "/signals": "signals",
+    }
+    if head in diagnostic_commands:
+        if len(parts) != 1:
+            raise CommandError(f"{head} takes no arguments")
+        return DiagnosticCommand(diagnostic_commands[head])
 
     if head == "/balance":
         if len(parts) != 1:

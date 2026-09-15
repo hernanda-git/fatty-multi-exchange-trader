@@ -731,7 +731,10 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
 
     from fatty_trader.exchanges.bitget.client import BitgetRestClient
     from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
-    from fatty_trader.operator.health import build_operator_health_report
+    from fatty_trader.operator.health import (
+        build_operator_diagnostic,
+        build_operator_health_report,
+    )
     from fatty_trader.operator.live_commands import OperatorCommandService
     from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
     from fatty_trader.operator.update_receipts import PostgresTelegramUpdateReceiptStore
@@ -774,8 +777,10 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
             stream_mutations_enabled=environ.get("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", "0"),
             capability_gate_enabled=environ.get("BITGET_PROTECTION_CAPABILITY_GATE_ENABLED", "0"),
         ),
+        diagnostic_reader=lambda kind: build_operator_diagnostic(kind, gateway, psycopg.connect),
     )
     api = TelegramBotApi(environ["TG_BOT_TOKEN"])
+    api.set_my_commands()
     poller = TelegramCommandPoller(
         command_service=commands,
         fetch_updates=api.fetch_updates,

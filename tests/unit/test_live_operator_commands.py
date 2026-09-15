@@ -110,6 +110,55 @@ def make_service() -> tuple[OperatorCommandService, FakeLiveGateway]:
     return svc, gw
 
 
+def test_open_is_blocked_when_operator_mutations_are_disabled() -> None:
+    gateway = FakeLiveGateway()
+    service = OperatorCommandService(gateway=gateway, operator_id=1)
+
+    with pytest.raises(CommandError, match="mutations are disabled"):
+        service.handle(
+            "/open BTCUSDT LONG margin=10 leverage=10 entry=market sl=59000 tp=62000",
+            sender_id=1,
+            is_private=True,
+            is_forwarded=False,
+        )
+    assert gateway.last_open is None
+
+
+def test_help_lists_read_only_and_mutating_commands() -> None:
+    service, _ = make_service()
+    result = service.handle("/help", sender_id=1, is_private=True, is_forwarded=False)
+    assert "/health" in result
+    assert "/reconcile" in result
+    assert "/close SYMBOL" in result
+
+
+def test_diagnostic_command_uses_read_only_reader() -> None:
+    gateway = FakeLiveGateway()
+    service = OperatorCommandService(
+        gateway=gateway,
+        operator_id=1,
+        diagnostic_reader=lambda kind: f"DIAGNOSTIC:{kind}",
+    )
+    assert (
+        service.handle("/fills", sender_id=1, is_private=True, is_forwarded=False)
+        == "DIAGNOSTIC:fills"
+    )
+    assert gateway.close_calls == []
+    assert gateway.cancel_calls == []
+
+
+def test_trade_command_is_wired_to_bitget_open_path() -> None:
+    service, gateway = make_service()
+    result = service.handle(
+        "/trade bitget LONG BTCUSDT margin=10 leverage=20 entry=market sl=59000 tp=62000",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+    assert "BTCUSDT" in result
+    assert gateway.last_open is not None
+
+
 def test_price_command_returns_formatted_alert() -> None:
     svc, gw = make_service()
     alert = svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)

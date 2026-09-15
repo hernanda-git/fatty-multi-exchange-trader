@@ -12,12 +12,15 @@ from fatty_trader.operator.command_parser import (
     CancelCommand,
     CloseCommand,
     CommandError,
+    DiagnosticCommand,
     HealthCommand,
+    HelpCommand,
     OpenCommand,
     OrdersCommand,
     PositionsCommand,
     PriceCommand,
     SetProtectionCommand,
+    TradeCommand,
     parse_operator_command,
 )
 
@@ -68,6 +71,7 @@ class OperatorCommandService:
         mutations_enabled: bool = False,
         now: float | None = None,
         health_reader: Callable[[], str] | None = None,
+        diagnostic_reader: Callable[[str], str] | None = None,
     ) -> None:
         self._gw = gateway
         self._operator_id = operator_id
@@ -75,6 +79,7 @@ class OperatorCommandService:
         self._mutations_enabled = mutations_enabled
         self._now = now
         self._health_reader = health_reader
+        self._diagnostic_reader = diagnostic_reader
         self._confirm_token: str | None = None
         self._pending: _PendingConfirmation | None = None
 
@@ -130,12 +135,20 @@ class OperatorCommandService:
             return self._on_balance()
         if isinstance(command, HealthCommand):
             return self._on_health()
+        if isinstance(command, HelpCommand):
+            return self._on_help()
+        if isinstance(command, DiagnosticCommand):
+            return self._on_diagnostic(command)
         if isinstance(command, PositionsCommand):
             return self._on_positions()
         if isinstance(command, OrdersCommand):
             return self._on_orders()
         if isinstance(command, OpenCommand):
+            self._require_mutations_enabled()
             return self._on_open(command)
+        if isinstance(command, TradeCommand):
+            self._require_mutations_enabled()
+            return self._on_trade(command)
         if isinstance(command, CancelCommand):
             self._require_mutations_enabled()
             return self._on_cancel(command)
@@ -173,6 +186,38 @@ class OperatorCommandService:
             "Meaning: command path can read the provider now.\n"
             "Scope: provider only; use the scheduled report for full Compose service health."
         )
+
+    def _on_help(self) -> str:
+        return (
+            "<b>FATTY OPERATOR COMMANDS</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>READ-ONLY</b>\n"
+            "/health — full provider/DB health\n"
+            "/status — concise runtime status\n"
+            "/positions — open provider positions\n"
+            "/orders — pending provider orders\n"
+            "/balance — available balance\n"
+            "/price SYMBOL — current ticker\n"
+            "/reconcile — provider vs DB drift\n"
+            "/protection — native/fallback protection\n"
+            "/fills — recent provider fills\n"
+            "/intents — recent durable intents\n"
+            "/dispatches — recent dispatch lifecycle\n"
+            "/signals — recent source/canonical signals\n\n"
+            "<b>MUTATING · CONFIRMATION REQUIRED</b>\n"
+            "/close SYMBOL | all\n"
+            "/cancel SYMBOL | all | order_id=ID\n"
+            "/setsl SYMBOL PRICE\n"
+            "/settp SYMBOL PRICE\n"
+            "/open SYMBOL LONG|SHORT margin=… leverage=… entry=market|limit:PRICE sl=… tp=…\n"
+            "/trade bitget LONG SYMBOL margin=… leverage=… entry=market sl=… tp=…\n\n"
+            "Mutations require the live operator gate and explicit confirmation."
+        )
+
+    def _on_diagnostic(self, command: DiagnosticCommand) -> str:
+        if self._diagnostic_reader is None:
+            raise CommandError("diagnostic reader is not configured")
+        return self._diagnostic_reader(command.kind)
 
     def _on_positions(self) -> str:
         positions = self._gw.get_positions()
@@ -222,6 +267,26 @@ class OperatorCommandService:
         )
         if result.get("error"):
             return f"SKIP {result['symbol']} reason={result['error']}"
+        return (
+            f"OPEN {result['symbol']} {result['side']} qty={result['qty']} "
+            f"lev={result['leverage']} entry={result['entry']} id={result['order_id']} "
+            f"state={result['state']}"
+        )
+
+    def _on_trade(self, command: TradeCommand) -> str:
+        if command.exchanges != ("bitget",):
+            raise CommandError("operator /trade currently supports bitget only")
+        result = self._gw.open_position(
+            symbol=command.pair,
+            direction=command.direction,
+            quantity=command.margin,
+            leverage=command.leverage or 1,
+            entry=command.entry,
+            stop_loss=command.stop_loss,
+            take_profits=command.take_profits,
+        )
+        if result.get("error"):
+            return f"SKIP {result.get('symbol', command.pair)} reason={result['error']}"
         return (
             f"OPEN {result['symbol']} {result['side']} qty={result['qty']} "
             f"lev={result['leverage']} entry={result['entry']} id={result['order_id']} "

@@ -263,3 +263,97 @@ def build_operator_health_report(
             ]
         )
     return "\n".join(lines)[:3900]
+
+
+def build_operator_diagnostic(
+    kind: str,
+    gateway: Any,
+    connection_factory: Callable[[], Any],
+) -> str:
+    """Render a bounded, read-only operator diagnostic card."""
+    title = {
+        "status": "STATUS",
+        "reconcile": "RECONCILIATION",
+        "protection": "PROTECTION",
+        "fills": "RECENT FILLS",
+        "intents": "RECENT INTENTS",
+        "dispatches": "RECENT DISPATCHES",
+        "signals": "RECENT SIGNALS",
+    }.get(kind)
+    if title is None:
+        raise ValueError(f"unknown diagnostic: {kind}")
+    lines = [f"<b>FATTY · {title}</b>", "━━━━━━━━━━━━━━━━━━━━"]
+    try:
+        positions = gateway.get_positions()
+        orders = gateway.get_orders()
+    except Exception as exc:
+        positions, orders = [], []
+        lines.append(f"Provider read 🔴 FAILED · {_safe(type(exc).__name__)}")
+    if kind == "status":
+        lines.extend(
+            [
+                f"Provider positions: <code>{len(positions)}</code>",
+                f"Pending orders: <code>{len(orders)}</code>",
+                "Scope: read-only provider snapshot.",
+            ]
+        )
+        return "\n".join(lines)
+    queries = {
+        "reconcile": """
+            SELECT (SELECT count(*) FROM positions WHERE closed_at IS NULL),
+                   (SELECT count(*) FROM live_order_intents WHERE exchange='bitget'
+                    AND state NOT IN ('filled','rejected','cancelled','reconciled')),
+                   (SELECT count(*) FROM fallback_protection WHERE exchange='bitget'
+                    AND state IN ('active','closing'))
+        """,
+        "protection": """
+            SELECT symbol, native_state, fallback_allowed, stream_state, last_error
+            FROM bitget_protection_capabilities WHERE environment='LIVE'
+            ORDER BY updated_at DESC LIMIT 10
+        """,
+        "fills": """
+            SELECT symbol, side, role, filled_qty::text, filled_price::text, filled_at
+            FROM live_order_intents WHERE state='filled'
+            ORDER BY updated_at DESC LIMIT 10
+        """,
+        "intents": """
+            SELECT symbol, side, role, state, requested_qty::text, filled_qty::text,
+                   provider_order_id FROM live_order_intents
+            ORDER BY updated_at DESC LIMIT 10
+        """,
+        "dispatches": """
+            SELECT d.state, d.terminal_reason, d.updated_at, tm.message_id
+            FROM dispatches d LEFT JOIN canonical_signals cs ON cs.id=d.source_id
+            LEFT JOIN telegram_messages tm ON tm.id=cs.message_id
+            ORDER BY d.updated_at DESC LIMIT 10
+        """,
+        "signals": """
+            SELECT tm.message_id, tm.intake_state, left(replace(tm.raw_text, E'\\n', ' '), 120),
+                   cs.pair_token, cs.direction
+            FROM telegram_messages tm LEFT JOIN canonical_signals cs ON cs.message_id=tm.id
+            ORDER BY tm.received_at DESC, tm.message_id DESC LIMIT 10
+        """,
+    }
+    try:
+        rows = _query_all(connection_factory, queries[kind])
+    except Exception as exc:
+        lines.append(f"Database read 🔴 FAILED · {_safe(type(exc).__name__)}")
+        return "\n".join(lines)
+    if kind == "reconcile":
+        db_positions, active_intents, fallback = rows[0] if rows else ("?", "?", "?")
+        lines.extend(
+            [
+                f"Provider positions: <code>{len(positions)}</code>",
+                f"DB open positions: <code>{db_positions}</code>",
+                f"State: {'⚠️ DRIFT' if str(db_positions) != str(len(positions)) else '✅ MATCH'}",
+                f"Active intents: <code>{active_intents}</code>",
+                f"Fallback monitors: <code>{fallback}</code>",
+                "Provider is authoritative; this command never rewrites the ledger.",
+            ]
+        )
+        return "\n".join(lines)
+    for row in rows:
+        lines.append(" · ".join(_safe(value) for value in row))
+    if not rows:
+        lines.append("No records.")
+    return "\n".join(lines)
