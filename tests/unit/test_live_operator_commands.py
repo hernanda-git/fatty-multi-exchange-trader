@@ -220,8 +220,8 @@ def test_positions_shows_native_sl_and_tp() -> None:
     alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
 
     assert "WLDUSDT LONG" in alert
-    assert "SL=0.47" in alert
-    assert "TP=0.51" in alert
+    assert "Native SL  0.47" in alert
+    assert "Native TP  0.51" in alert
 
 
 def test_setsl_requires_confirmation_and_updates_only_sl() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from html import escape
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -23,6 +24,10 @@ from fatty_trader.operator.command_parser import (
     TradeCommand,
     parse_operator_command,
 )
+
+
+def _safe(value: Any) -> str:
+    return escape(str(value), quote=False)
 
 
 class LiveGateway(Protocol):
@@ -223,18 +228,31 @@ class OperatorCommandService:
         positions = self._gw.get_positions()
         if not positions:
             return "Tidak ada posisi terbuka"
-        rows = []
+        rows = ["<b>OPEN POSITIONS · PROVIDER</b>", "━━━━━━━━━━━━━━━━━━━━"]
         for p in positions:
-            symbol = p.get("symbol")
-            side = p.get("side")
-            size = p.get("size")
-            entry = p.get("entry")
-            stop_loss = p.get("stop_loss") or "none"
-            take_profit = p.get("take_profit") or "none"
-            rows.append(
-                f"{symbol} {side} size={size} entry={entry} SL={stop_loss} TP={take_profit}"
+            symbol = _safe(p.get("symbol"))
+            side = _safe(p.get("side"))
+            native_sl = _safe(p.get("stop_loss") or "MISSING")
+            native_tp = _safe(p.get("take_profit") or "MISSING")
+            protection = "🟢 NATIVE" if p.get("stop_loss") or p.get("take_profit") else "🟡 CHECK"
+            rows.extend(
+                [
+                    f"<b>{symbol} {side}</b>",
+                    "<pre>"
+                    f"Size       {_safe(p.get('size'))}\n"
+                    f"Entry      {_safe(p.get('entry'))}\n"
+                    f"Mark       {_safe(p.get('mark') or 'N/A')}\n"
+                    f"uPnL       {_safe(p.get('unrealized_pl') or 'N/A')}\n"
+                    f"Leverage   {_safe(p.get('leverage') or 'N/A')}x · "
+                    f"{_safe(p.get('margin_mode') or 'N/A')}\n"
+                    f"Liq price  {_safe(p.get('liquidation_price') or 'N/A')}\n"
+                    f"Native SL  {native_sl}\n"
+                    f"Native TP  {native_tp}\n"
+                    f"Protection {protection}"
+                    "</pre>",
+                ]
             )
-        return "Posisi terbuka\n" + "\n".join(rows)
+        return "\n".join(rows)[:3900]
 
     def _on_orders(self) -> str:
         orders = self._gw.get_orders()
