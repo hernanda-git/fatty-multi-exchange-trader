@@ -312,7 +312,7 @@ def build_operator_diagnostic(
             ORDER BY updated_at DESC LIMIT 10
         """,
         "fills": """
-            SELECT symbol, side, role, filled_qty::text, filled_price::text, filled_at
+            SELECT symbol, side, role, filled_qty::text, filled_price::text, updated_at
             FROM live_order_intents WHERE state='filled'
             ORDER BY updated_at DESC LIMIT 10
         """,
