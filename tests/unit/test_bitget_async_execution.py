@@ -154,3 +154,28 @@ async def test_unreadable_order_detail_with_matching_fill_is_filled() -> None:
     assert result.status is LiveOrderStatus.FILLED
     assert result.filled_qty == Decimal("0.001")
     assert result.provider_order_id == "provider-1"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_order_detail_without_fill_is_rejected() -> None:
+    class MissingOrderClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+    client = MissingOrderClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord(
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-0011223344556677",
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_qty=Decimal("0.001"),
+    )
+
+    result = await adapter.submit_entry(intent)
+
+    assert result.status is LiveOrderStatus.REJECTED
+    assert result.filled_qty == Decimal("0")

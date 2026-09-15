@@ -183,6 +183,7 @@ class AsyncBitgetExecution:
     async def reconcile_intent(
         self, intent: LiveIntentRecord, submitted: dict[str, Any] | None = None
     ) -> AsyncExecutionResult:
+        detail_not_found = False
         try:
             detail = await self._client.get_order_detail(
                 intent.symbol, client_oid=intent.client_oid
@@ -190,6 +191,7 @@ class AsyncBitgetExecution:
         except BitgetApiError as exc:
             if "40109" in str(exc) or "cannot be found" in str(exc):
                 detail = {}
+                detail_not_found = True
             else:
                 raise
         fills = await self._client.get_fills(intent.symbol)
@@ -218,7 +220,11 @@ class AsyncBitgetExecution:
                 status = LiveOrderStatus.PARTIAL
             else:
                 status = (
-                    LiveOrderStatus.ACCEPTED if submitted is not None else LiveOrderStatus.UNKNOWN
+                    LiveOrderStatus.REJECTED
+                    if detail_not_found
+                    else LiveOrderStatus.ACCEPTED
+                    if submitted is not None
+                    else LiveOrderStatus.UNKNOWN
                 )
             return AsyncExecutionResult(
                 client_oid=intent.client_oid,
