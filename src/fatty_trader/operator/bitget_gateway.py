@@ -135,6 +135,12 @@ class BitgetOperatorGateway:
             payload.get("available", payload.get("availableBalance")), "available balance"
         )
 
+    def get_account_snapshot(self) -> dict[str, Any]:
+        payload = self._run(self._client.get_account())
+        if not isinstance(payload, Mapping):
+            raise ValueError("Bitget account response is invalid")
+        return dict(payload)
+
     def get_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
         payload = self._run(self._client.get_all_positions())
         expected_symbol = symbol.upper() if symbol else None
@@ -165,6 +171,13 @@ class BitgetOperatorGateway:
                         row.get("stopSurplusTriggerPrice", row.get("presetStopSurplusPrice")),
                         "position take profit",
                     ),
+                    "mark": row.get("markPrice"),
+                    "unrealized_pl": row.get("unrealizedPL"),
+                    "leverage": row.get("leverage"),
+                    "margin_mode": row.get("marginMode"),
+                    "liquidation_price": row.get("liquidationPrice"),
+                    "stop_loss_id": row.get("stopLossId"),
+                    "take_profit_id": row.get("takeProfitId"),
                 }
             )
         return positions

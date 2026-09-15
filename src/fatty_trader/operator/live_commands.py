@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
@@ -11,6 +12,7 @@ from fatty_trader.operator.command_parser import (
     CancelCommand,
     CloseCommand,
     CommandError,
+    HealthCommand,
     OpenCommand,
     OrdersCommand,
     PositionsCommand,
@@ -65,12 +67,14 @@ class OperatorCommandService:
         require_confirmation: bool = True,
         mutations_enabled: bool = False,
         now: float | None = None,
+        health_reader: Callable[[], str] | None = None,
     ) -> None:
         self._gw = gateway
         self._operator_id = operator_id
         self._require_confirmation = require_confirmation
         self._mutations_enabled = mutations_enabled
         self._now = now
+        self._health_reader = health_reader
         self._confirm_token: str | None = None
         self._pending: _PendingConfirmation | None = None
 
@@ -124,6 +128,8 @@ class OperatorCommandService:
             return self._on_price(command)
         if isinstance(command, BalanceCommand):
             return self._on_balance()
+        if isinstance(command, HealthCommand):
+            return self._on_health()
         if isinstance(command, PositionsCommand):
             return self._on_positions()
         if isinstance(command, OrdersCommand):
@@ -152,6 +158,21 @@ class OperatorCommandService:
     def _on_balance(self) -> str:
         balance = self._gw.get_balance()
         return f"Saldo tersedia: {balance}"
+
+    def _on_health(self) -> str:
+        if self._health_reader is not None:
+            return self._health_reader()
+        positions = self._gw.get_positions()
+        orders = self._gw.get_orders()
+        return (
+            "🩺 <b>HEALTH ON-DEMAND</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"Provider read: ✅ OK\n"
+            f"Positions: {len(positions)}\n"
+            f"Pending orders: {len(orders)}\n"
+            "Meaning: command path can read the provider now.\n"
+            "Scope: provider only; use the scheduled report for full Compose service health."
+        )
 
     def _on_positions(self) -> str:
         positions = self._gw.get_positions()

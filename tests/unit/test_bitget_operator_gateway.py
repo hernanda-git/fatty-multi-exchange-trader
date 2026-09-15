@@ -98,6 +98,13 @@ def test_read_only_methods_return_sanitized_provider_dtos() -> None:
             "entry": Decimal("60000"),
             "stop_loss": None,
             "take_profit": None,
+            "mark": None,
+            "unrealized_pl": None,
+            "leverage": None,
+            "margin_mode": "isolated",
+            "liquidation_price": None,
+            "stop_loss_id": None,
+            "take_profit_id": None,
         }
     ]
     assert gateway.get_orders() == [

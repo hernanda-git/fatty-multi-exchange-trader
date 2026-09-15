@@ -127,6 +127,22 @@ def test_operator_mutations_are_closed_until_live_cutover_enables_them() -> None
     assert gateway.protection_calls == []
 
 
+def test_health_command_uses_read_only_report_reader() -> None:
+    gateway = FakeLiveGateway()
+    service = OperatorCommandService(
+        gateway=gateway,
+        operator_id=1,
+        health_reader=lambda: "HEALTH REPORT",
+    )
+
+    assert (
+        service.handle("/health", sender_id=1, is_private=True, is_forwarded=False)
+        == "HEALTH REPORT"
+    )
+    assert gateway.close_calls == []
+    assert gateway.cancel_calls == []
+
+
 def test_balance_command_shows_available() -> None:
     svc, gw = make_service()
     alert = svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=False)
