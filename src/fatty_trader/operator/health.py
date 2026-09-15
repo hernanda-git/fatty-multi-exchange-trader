@@ -312,9 +312,11 @@ def build_operator_diagnostic(
             ORDER BY updated_at DESC LIMIT 10
         """,
         "fills": """
-            SELECT symbol, side, role, filled_qty::text, filled_price::text, updated_at
-            FROM live_order_intents WHERE state='filled'
-            ORDER BY updated_at DESC LIMIT 10
+            SELECT f.symbol, coalesce(i.side, '?'), coalesce(i.role, '?'),
+                   f.quantity::text, f.price::text, f.fee::text,
+                   f.realized_pnl::text, f.filled_at
+            FROM fills f LEFT JOIN live_order_intents i ON i.client_order_id=f.client_order_id
+            ORDER BY f.filled_at DESC LIMIT 10
         """,
         "intents": """
             SELECT symbol, side, role, state, requested_qty::text, filled_qty::text,
