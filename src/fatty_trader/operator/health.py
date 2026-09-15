@@ -55,6 +55,11 @@ def build_operator_health_report(
     mode: str,
     venue_mode: str,
     execution_enabled: bool,
+    fallback_mutations_enabled: str = "UNKNOWN",
+    stream_enabled: str = "UNKNOWN",
+    stream_mode: str = "UNKNOWN",
+    stream_mutations_enabled: str = "UNKNOWN",
+    capability_gate_enabled: str = "UNKNOWN",
 ) -> str:
     """Read provider/DB state and explain what each status means."""
     try:
@@ -128,6 +133,10 @@ def build_operator_health_report(
         "<b>SYSTEM</b>",
         f"Runtime     <code>{_safe(mode)}</code> · venue <code>{_safe(venue_mode)}</code>",
         f"Execution   <code>{'ENABLED' if execution_enabled else 'DISABLED'}</code>",
+        f"Fallback mut <code>{_safe(fallback_mutations_enabled)}</code>",
+        f"Stream      <code>{_safe(stream_enabled)} · {_safe(stream_mode)}</code>",
+        f"Stream mut  <code>{_safe(stream_mutations_enabled)}</code>",
+        f"Capability  <code>{_safe(capability_gate_enabled)}</code>",
         "Command    ✅ operator bot responding",
         "",
     ]

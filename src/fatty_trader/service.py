@@ -768,6 +768,11 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
             mode=environ.get("TRADER_MODE", "DEMO"),
             venue_mode=mode,
             execution_enabled=environ.get("BITGET_EXECUTION_ENABLED", "0") == "1",
+            fallback_mutations_enabled=environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0"),
+            stream_enabled=environ.get("BITGET_PROTECTION_STREAM_ENABLED", "0"),
+            stream_mode=environ.get("BITGET_PROTECTION_STREAM_MODE", "observe"),
+            stream_mutations_enabled=environ.get("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", "0"),
+            capability_gate_enabled=environ.get("BITGET_PROTECTION_CAPABILITY_GATE_ENABLED", "0"),
         ),
     )
     api = TelegramBotApi(environ["TG_BOT_TOKEN"])
