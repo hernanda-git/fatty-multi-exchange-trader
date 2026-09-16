@@ -755,13 +755,6 @@ def format_report(
         f"Reconcile  {status_mark(provider_reconciliation)} {_html(provider_reconciliation)}\n"
         f"Kill switch {_html(kill_display)}</pre>",
         "",
-        "<b>HOW TO READ THIS REPORT</b>",
-        "<pre>Provider = Bitget truth; DB = local ledger.\n"
-        "DRIFT = provider and DB disagree; it is not automatically flat.\n"
-        "Execution ENABLED = new dispatches may submit; it is not a fill proof.\n"
-        "Kill switch ACTIVE = new entries blocked; existing positions stay open.\n"
-        "FALLBACK = local protection path; it needs a fresh stream and mutation gate.</pre>",
-        "",
         f"<b>🤖 CODEX QUOTA</b> <code>{_html(codex.get('status', 'N/A'))} · "
         f"{_html(codex.get('plan', 'N/A'))}</code>",
         "<pre>5h        "
