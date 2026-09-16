@@ -21,6 +21,7 @@ def provider_position() -> dict[str, str]:
         "marginMode": "isolated",
         "liquidationPrice": "0.386647193124",
         "unrealizedPL": "-0.3913",
+        "marginSize": "1.2034",
         "stopLoss": "",
         "stopLossId": "",
         "takeProfit": "",
@@ -104,6 +105,7 @@ def test_report_separates_provider_position_from_db_position() -> None:
                 "leverage": "30",
                 "margin_mode": "isolated",
                 "unrealized_pl": "-0.3913",
+                "margin_used": "1.2034",
             }
         ],
         pending_orders=[],

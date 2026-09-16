@@ -5,7 +5,8 @@ import os
 import sys
 
 sys.path.insert(0, "/app/src")
-from fatty_trader.exchanges.bitget.client import BitgetRestClient
+
+from fatty_trader.exchanges.bitget.client import BitgetRestClient  # noqa: E402, I001
 
 async def main():
     client = BitgetRestClient(
@@ -16,7 +17,20 @@ async def main():
     )
     try:
         acct = await client.get_account("BTCUSDT")
-        print(f"{acct.get('accountEquity', 'N/A')}|{acct.get('available', 'N/A')}|{acct.get('unrealizedPL', 'N/A')}")
+        print(
+            "|".join(
+                str(acct.get(key) if acct.get(key) is not None else "N/A")
+                for key in (
+                    "accountEquity",
+                    "available",
+                    "unrealizedPL",
+                    "locked",
+                    "isolatedMargin",
+                    "crossedMargin",
+                    "marginMode",
+                )
+            )
+        )
     finally:
         await client.aclose()
 

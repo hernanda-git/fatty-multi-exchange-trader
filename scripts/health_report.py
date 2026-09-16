@@ -124,7 +124,15 @@ def get_account() -> dict:
         return {}
     parts = raw.split("|")
     if len(parts) >= 3:
-        return {"equity": parts[0], "available": parts[1], "unrealized_pl": parts[2]}
+        return {
+            "equity": parts[0],
+            "available": parts[1],
+            "unrealized_pl": parts[2],
+            "locked": parts[3] if len(parts) > 3 else "N/A",
+            "isolated_margin": parts[4] if len(parts) > 4 else "N/A",
+            "crossed_margin": parts[5] if len(parts) > 5 else "N/A",
+            "margin_mode": parts[6] if len(parts) > 6 else "N/A",
+        }
     return {}
 
 
@@ -211,6 +219,9 @@ def load_positions(provider_state: dict[str, Any] | None = None) -> list[dict] |
                 "entry_price": fmt_price(row.get("openPriceAvg")),
                 "mark_price": fmt_price(row.get("markPrice")),
                 "unrealized_pl": row.get("unrealizedPL", "N/A"),
+                # Bitget's position margin is the amount actually committed by
+                # the open position; account.available alone does not expose it.
+                "margin_used": row.get("marginSize", row.get("margin", "N/A")),
                 "leverage": str(row.get("leverage", "?")),
                 "margin_mode": str(row.get("marginMode", "N/A")).lower(),
                 "liquidation_price": fmt_price(row.get("liquidationPrice")),
@@ -552,6 +563,24 @@ def fmt_pnl(val) -> tuple[str, str]:
         return "➖", str(val)
 
 
+def margin_used(positions, account: dict[str, Any]) -> Decimal | None | str:
+    """Return provider margin committed by open positions."""
+    if positions is None:
+        return "UNKNOWN"
+    if not positions:
+        return Decimal("0")
+    values = [_decimal(position.get("margin_used")) for position in positions]
+    known_position = [value for value in values if value is not None]
+    if len(known_position) == len(values):
+        return sum(known_position, Decimal("0"))
+    account_values = [
+        _decimal(account.get("isolated_margin")),
+        _decimal(account.get("crossed_margin")),
+    ]
+    known = [value for value in account_values if value is not None]
+    return sum(known, Decimal("0")) if known else None
+
+
 def _format_timestamp(iso_string: str) -> str:
     if not iso_string:
         return "?"
@@ -684,6 +713,7 @@ def format_report(
     provider_reconciliation = _reconciliation_summary(
         positions, {**metrics, "provider_positions": provider_count}
     )
+    committed_margin = margin_used(positions, account)
 
     kill_state = str(metrics.get("kill_switch", "UNKNOWN")).upper()
     if kill_state == "ACTIVE":
@@ -749,6 +779,7 @@ def format_report(
             "<pre>Equity     "
             f"{_html(fmt_amount(account.get('equity')))} USDT\n"
             f"Available  {_html(fmt_amount(account.get('available')))} USDT\n"
+            f"Margin used {_html(fmt_amount(committed_margin))} USDT\n"
             f"Open uPnL   {account_icon} {_html(account_upnl)} USDT</pre>"
         )
     else:
