@@ -368,7 +368,15 @@ def _bitget_dispatch_preflight(venue: Any, environ: Mapping[str, str]) -> Callab
             raise ValueError("dispatch symbol failed Bitget symbol validation")
         snapshot = await venue.preflight(symbol)
         metadata = snapshot.metadata
-        allocation = snapshot.available_balance * allocation_pct
+        available_balance = snapshot.available_balance
+        if available_balance <= 0:
+            raise ValueError(
+                "Bitget available USDT margin is zero; fund the configured LIVE account "
+                "before enabling execution"
+            )
+        allocation = available_balance * allocation_pct
+        if allocation <= 0:
+            raise ValueError("Bitget calculated risk allocation must be positive")
         return (
             InstrumentSpec(
                 exchange=Exchange.BITGET,
