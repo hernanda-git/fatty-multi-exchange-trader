@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 
@@ -28,7 +29,7 @@ class BalanceAdmission:
     reservation_id: UUID | None = None
 
     @classmethod
-    def rejected(cls, reason: str) -> "BalanceAdmission":
+    def rejected(cls, reason: str) -> BalanceAdmission:
         return cls(False, reason=reason)
 
 
@@ -59,7 +60,10 @@ class PostgresBitgetMarginReservationRepository:
     ) -> BalanceAdmission:
         if exchange != "bitget":
             return BalanceAdmission.rejected("unsupported-exchange")
-        if any(not value.is_finite() or value <= 0 for value in (total_balance, available_balance, equity, planned_margin_usdt)):
+        if any(
+            not value.is_finite() or value <= 0
+            for value in (total_balance, available_balance, equity, planned_margin_usdt)
+        ):
             return BalanceAdmission.rejected("invalid-balance-snapshot")
         if not headroom.is_finite() or headroom <= 0 or headroom > 1:
             return BalanceAdmission.rejected("invalid-balance-headroom")
@@ -85,11 +89,20 @@ class PostgresBitgetMarginReservationRepository:
             cursor.execute(
                 """
                 INSERT INTO balance_snapshots
-                    (id, exchange, total_balance, available_balance, equity, margin_coin, captured_at)
+                    (id, exchange, total_balance, available_balance, equity,
+                     margin_coin, captured_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (snapshot_id, exchange, total_balance, available_balance, equity, margin_coin, observed_at),
+                (
+                    snapshot_id,
+                    exchange,
+                    total_balance,
+                    available_balance,
+                    equity,
+                    margin_coin,
+                    observed_at,
+                ),
             )
             returned_snapshot = cursor.fetchone()
             if returned_snapshot is not None:
@@ -115,8 +128,15 @@ class PostgresBitgetMarginReservationRepository:
                 VALUES (%s, %s, %s, %s, %s, %s, 'reserved', CURRENT_TIMESTAMP + %s::interval)
                 RETURNING id
                 """,
-                (reservation_id, exchange, dispatch_id, client_order_id, snapshot_id,
-                 planned_margin_usdt, f"{ttl.total_seconds()} seconds"),
+                (
+                    reservation_id,
+                    exchange,
+                    dispatch_id,
+                    client_order_id,
+                    snapshot_id,
+                    planned_margin_usdt,
+                    f"{ttl.total_seconds()} seconds",
+                ),
             )
             returned_reservation = cursor.fetchone()
             if returned_reservation is not None:
@@ -129,8 +149,11 @@ class PostgresBitgetMarginReservationRepository:
 
     def resolve(self, reservation_id: UUID, outcome: str) -> None:
         state = {
-            "FILLED": "consumed", "PARTIAL": "consumed", "REJECTED": "released",
-            "CANCELLED": "released", "UNKNOWN": "unknown",
+            "FILLED": "consumed",
+            "PARTIAL": "consumed",
+            "REJECTED": "released",
+            "CANCELLED": "released",
+            "UNKNOWN": "unknown",
         }.get(outcome.upper())
         if state is None:
             raise ValueError("unknown margin reservation outcome")

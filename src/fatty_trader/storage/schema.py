@@ -192,7 +192,9 @@ CREATE TABLE IF NOT EXISTS live_order_intents (
     leverage NUMERIC CHECK (leverage IS NULL OR leverage > 0),
     margin_mode TEXT CHECK (margin_mode IS NULL OR margin_mode IN ('ISOLATED', 'CROSS')),
     planned_margin_usdt NUMERIC CHECK (planned_margin_usdt IS NULL OR planned_margin_usdt > 0),
-    planned_notional_usdt NUMERIC CHECK (planned_notional_usdt IS NULL OR planned_notional_usdt > 0),
+    planned_notional_usdt NUMERIC CHECK (
+        planned_notional_usdt IS NULL OR planned_notional_usdt > 0
+    ),
     balance_snapshot_id UUID,
     margin_reservation_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

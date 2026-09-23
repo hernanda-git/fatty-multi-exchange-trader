@@ -50,7 +50,9 @@ class BitgetDispatchExecution:
         self._execution = execution
         self._store = store
 
-    async def submit_entry(self, dispatch: BitgetDispatch, submission: BitgetEntrySubmission) -> str:
+    async def submit_entry(
+        self, dispatch: BitgetDispatch, submission: BitgetEntrySubmission
+    ) -> str:
         intent = self._intent(dispatch, submission)
         claim = getattr(self._store, "claim", None)
         try:

@@ -157,7 +157,9 @@ class LiveIntentRecord:
             self.balance_snapshot_id,
             self.margin_reservation_id,
         )
-        if any(value is not None for value in evidence) and any(value is None for value in evidence):
+        if any(value is not None for value in evidence) and any(
+            value is None for value in evidence
+        ):
             raise ValueError("ENTRY intent admission evidence must be complete")
         if self.planned_leverage is not None and self.planned_leverage < 1:
             raise ValueError("ENTRY planned leverage must be positive")

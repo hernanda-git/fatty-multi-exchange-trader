@@ -6,8 +6,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
-
 import pytest
 
 from fatty_trader.exchanges.bitget.async_execution import (
@@ -20,6 +18,7 @@ from fatty_trader.exchanges.bitget.live import (
     LiveIntentStoreProtocol,
     LiveOrderStatus,
 )
+from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
