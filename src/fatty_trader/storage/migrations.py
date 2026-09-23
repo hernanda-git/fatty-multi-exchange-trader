@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Versioned, additive, idempotent migrations for durable trading state.
 
 Convention: ``MIGRATIONS`` is an append-only list of ``(version, sql)``
@@ -250,8 +251,23 @@ MIGRATIONS: Final = [
         ON bitget_margin_reservations (exchange, state, expires_at);
         """,
     ),
+    (
+        15,
+        """
+        CREATE TABLE IF NOT EXISTS bitget_post_fill_reconciliations (
+            id UUID PRIMARY KEY,
+            exchange TEXT NOT NULL CHECK (exchange = 'bitget'), client_order_id TEXT NOT NULL,
+            planned_leverage NUMERIC NOT NULL, planned_margin_usdt NUMERIC NOT NULL,
+            planned_notional_usdt NUMERIC, observed_leverage NUMERIC, observed_margin_mode TEXT,
+            observed_quantity NUMERIC, observed_entry_price NUMERIC, observed_mark_price NUMERIC,
+            observed_margin_usdt NUMERIC, status TEXT NOT NULL CHECK (status IN ('matched','within_tolerance','mismatch','unavailable')),
+            reason TEXT, observed_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS bitget_post_fill_reconciliations_latest
+        ON bitget_post_fill_reconciliations (exchange, created_at DESC);
+        """,
+    ),
 ]
-
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
 # Anything else is re-raised so real failures stay loud.

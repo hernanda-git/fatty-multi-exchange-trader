@@ -46,6 +46,26 @@ class AsyncBitgetVenue:
     def __init__(self, client: AsyncBitgetClient) -> None:
         self._client = client
 
+    async def active_position_count(self) -> int:
+        """Count non-flat provider positions across symbols for sizing admission."""
+        get_all_positions = getattr(self._client, "get_all_positions", None)
+        if not callable(get_all_positions):
+            raise ValueError("Bitget client cannot read all positions for admission")
+        payload = await get_all_positions()
+        rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise ValueError("Bitget all-positions response must be a list")
+        count = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Bitget all-positions response contains invalid row")
+            try:
+                if abs(Decimal(str(row.get("total", "0")))) > 0:
+                    count += 1
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError("Bitget all-positions response has invalid total") from exc
+        return count
+
     async def ensure_leverage(
         self, symbol: str, planned_leverage: int, *, propagation_delay_seconds: float = 2.0
     ) -> BitgetAccountState:

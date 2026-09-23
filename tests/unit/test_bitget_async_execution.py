@@ -338,3 +338,85 @@ async def test_matching_fill_with_unconsumed_fill_cursor_stays_unknown() -> None
     result = await adapter.reconcile_intent(intent)
 
     assert result.status is LiveOrderStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_confirmed_fill_persists_provider_observed_margin_and_leverage() -> None:
+    class PositionClient(FakeAsyncClient):
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            return [
+                {
+                    "symbol": symbol,
+                    "holdSide": "long",
+                    "total": "0.001",
+                    "openPriceAvg": "50000",
+                    "markPrice": "50010",
+                    "marginSize": "10",
+                    "marginMode": "isolated",
+                    "leverage": "20",
+                }
+            ]
+
+    class Reconciliations:
+        def __init__(self) -> None:
+            self.observations: list[Any] = []
+
+        def record(self, observation: Any) -> None:
+            self.observations.append(observation)
+
+    client = PositionClient()
+    reconciliations = Reconciliations()
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), reconciliation_repository=reconciliations
+    )
+
+    await adapter.submit_entry(_admitted_intent())
+
+    assert len(reconciliations.observations) == 1
+    observation = reconciliations.observations[0]
+    assert observation.status == "matched"
+    assert observation.planned_leverage == 20
+    assert observation.planned_margin_usdt == Decimal("10")
+    assert observation.observed_leverage == Decimal("20")
+    assert observation.observed_margin_usdt == Decimal("10")
+    assert observation.observed_margin_mode == "ISOLATED"
+    assert observation.observed_quantity == Decimal("0.001")
+
+
+@pytest.mark.asyncio
+async def test_post_fill_leverage_mismatch_latches_future_entries_closed() -> None:
+    class MismatchClient(FakeAsyncClient):
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            return [
+                {
+                    "symbol": symbol,
+                    "holdSide": "long",
+                    "total": "0.001",
+                    "openPriceAvg": "50000",
+                    "markPrice": "50010",
+                    "marginSize": "10",
+                    "marginMode": "isolated",
+                    "leverage": "21",
+                }
+            ]
+
+    class Reconciliations:
+        def __init__(self) -> None:
+            self.observations: list[Any] = []
+
+        def record(self, observation: Any) -> None:
+            self.observations.append(observation)
+
+    client = MismatchClient()
+    reconciliations = Reconciliations()
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), reconciliation_repository=reconciliations
+    )
+
+    await adapter.submit_entry(_admitted_intent())
+
+    assert reconciliations.observations[0].status == "mismatch"
+    assert adapter.degraded is True
+    with pytest.raises(RuntimeError, match="degraded"):
+        await adapter.submit_entry(_admitted_intent())
+    assert len(client.entry_calls) == 1

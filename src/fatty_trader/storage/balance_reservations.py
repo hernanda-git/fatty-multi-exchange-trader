@@ -147,7 +147,56 @@ class PostgresBitgetMarginReservationRepository:
             connection.rollback()
             raise
 
+    def record(self, observation: Any) -> None:
+        """Append a provider post-fill observation without synthesizing absent fields."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """INSERT INTO bitget_post_fill_reconciliations
+                (id, exchange, client_order_id, planned_leverage, planned_margin_usdt,
+                 planned_notional_usdt, observed_leverage, observed_margin_mode,
+                 observed_quantity, observed_entry_price, observed_mark_price,
+                 observed_margin_usdt, status, reason, observed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    uuid4(),
+                    observation.exchange,
+                    observation.client_order_id,
+                    observation.planned_leverage,
+                    observation.planned_margin_usdt,
+                    observation.planned_notional_usdt,
+                    observation.observed_leverage,
+                    observation.observed_margin_mode,
+                    observation.observed_quantity,
+                    observation.observed_entry_price,
+                    observation.observed_mark_price,
+                    observation.observed_margin_usdt,
+                    observation.status,
+                    observation.reason,
+                    observation.observed_at,
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
     def resolve(self, reservation_id: UUID, outcome: str) -> None:
+        normalized = outcome.upper()
+        if normalized in {"ACKNOWLEDGED", "SUBMITTED"}:
+            connection = self._connection_factory()
+            try:
+                cursor = connection.cursor()
+                cursor.execute(
+                    "UPDATE bitget_margin_reservations SET state = state WHERE id = %s",
+                    (reservation_id,),
+                )
+                connection.commit()
+                return
+            except Exception:
+                connection.rollback()
+                raise
         state = {
             "FILLED": "consumed",
             "PARTIAL": "consumed",

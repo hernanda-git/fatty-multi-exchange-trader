@@ -22,6 +22,7 @@ from fatty_trader.exchanges.bitget.protection_capability import (
     NativeProtectionState,
     StreamState,
 )
+from fatty_trader.exchanges.bitget.read_model import read_position_state
 from fatty_trader.exchanges.bitget.reconciliation import classify_missing_detail
 from fatty_trader.exchanges.bitget.reconciliation_live import (
     NativeProtectionExpectation,
@@ -32,6 +33,8 @@ from fatty_trader.storage.live_intents import build_emergency_close_intent
 
 
 class AsyncBitgetExecutionClient(Protocol):
+    async def get_account(self, symbol: str) -> Any: ...
+
     async def place_entry_order(
         self, *, symbol: str, side: str, quantity: str, client_oid: str
     ) -> dict[str, Any]: ...
@@ -85,6 +88,27 @@ class AsyncProtectionResult:
     observed_quantity: Decimal
     reason: str | None = None
     emergency_close_oid: str | None = None
+
+
+@dataclass(frozen=True)
+class PostFillReconciliation:
+    """Append-only comparison of durable admission against provider position truth."""
+
+    exchange: str
+    client_order_id: str
+    symbol: str
+    planned_leverage: int
+    planned_margin_usdt: Decimal
+    planned_notional_usdt: Decimal | None
+    observed_leverage: Decimal | None
+    observed_margin_mode: str | None
+    observed_quantity: Decimal | None
+    observed_entry_price: Decimal | None
+    observed_mark_price: Decimal | None
+    observed_margin_usdt: Decimal | None
+    status: str
+    reason: str | None
+    observed_at: datetime
 
 
 def _matching_fills(
@@ -141,12 +165,14 @@ class AsyncBitgetExecution:
         venue: AsyncBitgetVenue,
         *,
         capability_repository: Any | None = None,
+        reconciliation_repository: Any | None = None,
         environment: str = "DEMO",
     ) -> None:
         self._client = client
         self._venue = venue
         self._degraded = False
         self._capability_repository = capability_repository
+        self._reconciliation_repository = reconciliation_repository
         self._environment = environment.strip().upper()
         if self._environment not in {"DEMO", "LIVE"}:
             raise ValueError("Bitget execution environment must be DEMO or LIVE")
@@ -186,8 +212,97 @@ class AsyncBitgetExecution:
                 client_oid=intent.client_oid,
             )
         except (BitgetUnknownResultError, TimeoutError):
-            return await self.reconcile_intent(intent)
-        return await self.reconcile_intent(intent, submitted)
+            result = await self.reconcile_intent(intent)
+        else:
+            result = await self.reconcile_intent(intent, submitted)
+        await self._reconcile_post_fill(intent, result)
+        return result
+
+    async def _reconcile_post_fill(
+        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+    ) -> None:
+        if (
+            result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}
+            or intent.role != "ENTRY"
+        ):
+            return
+        if intent.planned_leverage is None or intent.planned_margin_usdt is None:
+            return
+        try:
+            position = await read_position_state(self._client, intent.symbol)
+            if position is None:
+                observation = PostFillReconciliation(
+                    intent.exchange,
+                    intent.client_oid,
+                    intent.symbol,
+                    intent.planned_leverage,
+                    intent.planned_margin_usdt,
+                    intent.planned_notional_usdt,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "unavailable",
+                    "position-unavailable",
+                    datetime.now(UTC),
+                )
+            else:
+                mode = position.margin_mode.upper()
+                if (
+                    position.leverage != Decimal(intent.planned_leverage)
+                    or mode != intent.margin_mode
+                ):
+                    status, reason = "mismatch", "leverage-or-margin-mode-mismatch"
+                elif position.margin_usdt is None:
+                    status, reason = "unavailable", "provider-margin-unavailable"
+                elif position.margin_usdt == intent.planned_margin_usdt:
+                    status, reason = "matched", None
+                elif abs(position.margin_usdt - intent.planned_margin_usdt) <= Decimal("0.01"):
+                    status, reason = "within_tolerance", "margin-rounding-or-fee-tolerance"
+                else:
+                    status, reason = "mismatch", "margin-mismatch"
+                observation = PostFillReconciliation(
+                    intent.exchange,
+                    intent.client_oid,
+                    intent.symbol,
+                    intent.planned_leverage,
+                    intent.planned_margin_usdt,
+                    intent.planned_notional_usdt,
+                    position.leverage,
+                    mode,
+                    position.quantity,
+                    position.entry_price,
+                    position.mark_price,
+                    position.margin_usdt,
+                    status,
+                    reason,
+                    datetime.now(UTC),
+                )
+        except Exception as exc:
+            observation = PostFillReconciliation(
+                intent.exchange,
+                intent.client_oid,
+                intent.symbol,
+                intent.planned_leverage,
+                intent.planned_margin_usdt,
+                intent.planned_notional_usdt,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "unavailable",
+                f"provider-position-read-failed:{type(exc).__name__}",
+                datetime.now(UTC),
+            )
+        record = getattr(self._reconciliation_repository, "record", None)
+        if callable(record):
+            record(observation)
+        if observation.status == "mismatch":
+            self._degraded = True
 
     async def reconcile_intent(
         self, intent: LiveIntentRecord, submitted: dict[str, Any] | None = None

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501
 """Periodic health report for Fatty Bitget.
 
 Rich Telegram HTML report modeled after the original telegram_health_report.sh format.
@@ -368,7 +369,10 @@ def load_db_metrics() -> dict:
         " AND state IN ('active','closing')), "
         "(SELECT CASE WHEN active THEN 'ACTIVE' "
         " WHEN reason LIKE 'released:%' THEN 'RELEASED' ELSE 'INACTIVE' END "
-        " FROM venue_kill_switches WHERE scope = 'bitget')"
+        " FROM venue_kill_switches WHERE scope = 'bitget'), "
+        "(SELECT COALESCE(json_object_agg(state, count), '{}'::json) FROM (SELECT state, count(*) FROM bitget_margin_reservations WHERE exchange = 'bitget' GROUP BY state) r), "
+        "(SELECT EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - max(captured_at)))::text FROM balance_snapshots WHERE exchange = 'bitget'), "
+        "(SELECT status FROM bitget_post_fill_reconciliations WHERE exchange = 'bitget' ORDER BY created_at DESC LIMIT 1)"
     )
     return {
         "messages": row.get("col0", "0"),
@@ -379,6 +383,9 @@ def load_db_metrics() -> dict:
         "active_intents": row.get("col5", "0"),
         "fallback_positions": row.get("col6", "0"),
         "kill_switch": row.get("col7", "UNKNOWN"),
+        "reservation_totals": row.get("col8", "{}"),
+        "newest_balance_snapshot_age_seconds": row.get("col9", "N/A"),
+        "latest_post_fill_reconciliation": row.get("col10", "N/A"),
     }
 
 
@@ -947,6 +954,9 @@ def format_report(
         f"provider {_html(provider_pending_value)} {pending_recon_icon}\n"
         f"Orders total   {_html(metrics.get('total_orders', '0'))}\n"
         f"Active intents {_html(metrics.get('active_intents', '0'))}\n"
+        f"Reservations    {_html(metrics.get('reservation_totals', '{}'))}\n"
+        f"Snapshot age    {_html(metrics.get('newest_balance_snapshot_age_seconds', 'N/A'))} sec\n"
+        f"Post-fill       {_html(metrics.get('latest_post_fill_reconciliation', 'N/A'))}\n"
         f"Fallback mon.  {_html(metrics.get('fallback_positions', '0'))} active</pre>"
     )
     L.append("")

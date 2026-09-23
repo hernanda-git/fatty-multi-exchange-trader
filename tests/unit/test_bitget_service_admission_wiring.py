@@ -41,6 +41,9 @@ class Venue:
         assert symbol == "PENDLEUSDT"
         return self.snapshot
 
+    async def active_position_count(self) -> int:
+        return 0
+
 
 class Reservations:
     def __init__(self) -> None:
@@ -96,3 +99,27 @@ async def test_production_preflight_reserves_the_exact_admission_before_dispatch
     assert reservations.kwargs is not None
     assert reservations.kwargs["planned_margin_usdt"] == admission.submission.planned_margin_usdt
     assert reservations.kwargs["client_order_id"].startswith("live-bitget-PENDLEUSDT-")
+
+
+@pytest.mark.asyncio
+async def test_production_preflight_uses_authoritative_active_position_count() -> None:
+    class ActiveVenue(Venue):
+        async def active_position_count(self) -> int:
+            return 5
+
+    venue = ActiveVenue()
+    venue.snapshot.account = venue.snapshot.account.__class__(
+        available=Decimal("100"),
+        total_balance=Decimal("100"),
+        equity=Decimal("100"),
+        margin_coin="USDT",
+        observed_at=datetime.now(UTC),
+        margin_mode="isolated",
+        position_mode="one_way_mode",
+        long_leverage=Decimal("20"),
+        short_leverage=Decimal("20"),
+    )
+    with pytest.raises(ValueError, match="sizing rejected"):
+        await _bitget_dispatch_preflight(venue, {}, reservation_repository=Reservations())(
+            _dispatch()
+        )

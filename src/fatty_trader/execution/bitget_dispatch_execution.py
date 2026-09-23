@@ -146,6 +146,15 @@ class BitgetDispatchExecution:
             take_profits=dispatch.take_profits,
         )
 
+    def release_reservation(self, submission: BitgetEntrySubmission) -> None:
+        """Release admission only when dispatcher rejects before any entry POST."""
+        if self._reservations is None:
+            return
+        resolve = getattr(self._reservations, "resolve", None)
+        if not callable(resolve):
+            raise TypeError("margin reservation repository lacks resolve")
+        resolve(submission.margin_reservation_id, "REJECTED")
+
     def _resolve_reservation(self, intent: LiveIntentRecord, outcome: str) -> None:
         if self._reservations is None or intent.margin_reservation_id is None:
             return

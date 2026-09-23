@@ -59,3 +59,4 @@ def test_claim_persists_entry_admission_fields() -> None:
     assert record.planned_leverage in connection.cursor_value.params
     assert record.planned_margin_usdt in connection.cursor_value.params
     assert record.margin_reservation_id in connection.cursor_value.params
+    assert connection.cursor_value.statement.count("%s") == len(connection.cursor_value.params)

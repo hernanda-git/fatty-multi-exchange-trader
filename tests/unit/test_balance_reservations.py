@@ -99,3 +99,15 @@ def test_reserve_returns_rejection_without_creating_margin_reservation() -> None
     assert "INSERT INTO bitget_margin_reservations" not in "\n".join(
         statement for statement, _ in connection.cursor_value.calls
     )
+
+
+def test_acknowledged_order_keeps_margin_reservation_active() -> None:
+    connection = Connection()
+    repository = PostgresBitgetMarginReservationRepository(lambda: connection)
+
+    repository.resolve(UUID("87654321-4321-8765-4321-876543218765"), "ACKNOWLEDGED")
+
+    assert connection.committed is True
+    statement, params = connection.cursor_value.calls[-1]
+    assert "state = state" in statement
+    assert params == (UUID("87654321-4321-8765-4321-876543218765"),)

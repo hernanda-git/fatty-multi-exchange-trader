@@ -351,6 +351,7 @@ def build_bitget_execution_runtime(
             cast(AsyncBitgetExecutionClient, client),
             venue,
             capability_repository=capability_repository,
+            reconciliation_repository=reservation_repository,
             environment=config.venue_mode,
         ),
         cast(LiveIntentStoreProtocol, intent_store_factory()),
@@ -432,6 +433,16 @@ def _bitget_dispatch_preflight(
         risk = BitgetLiveRiskConfig(
             min_leverage=min_leverage, max_leverage=max_leverage, allocation_pct=allocation_pct
         )
+        active_position_count = getattr(venue, "active_position_count", None)
+        if not callable(active_position_count):
+            raise ValueError("Bitget venue cannot read all active positions for admission")
+        active_positions = await active_position_count()
+        if (
+            isinstance(active_positions, bool)
+            or not isinstance(active_positions, int)
+            or active_positions < 0
+        ):
+            raise ValueError("Bitget active position count is invalid")
         decision = plan_live_position(
             LiveSizingInput(
                 meta=metadata,
@@ -439,7 +450,7 @@ def _bitget_dispatch_preflight(
                 available_usdt=available_balance,
                 entry=snapshot.current_price,
                 direction=Direction(dispatch.direction),
-                active_positions=0,
+                active_positions=active_positions,
                 stop_loss=dispatch.stop_loss,
             )
         )

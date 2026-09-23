@@ -115,7 +115,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                      role, state, requested_qty, filled_qty, leverage, margin_mode,
                      planned_margin_usdt, planned_notional_usdt, balance_snapshot_id,
                      margin_reservation_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (exchange, client_order_id) DO NOTHING
                 RETURNING client_order_id
                 """,

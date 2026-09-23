@@ -190,6 +190,7 @@ class BitgetDispatcher:
                     limit_context=snapshot.limit_context,
                 )
             except Exception as exc:
+                self._release_admission(submission)
                 self._reject_from(
                     dispatch, "PREFLIGHT", f"entry-routing-error:{type(exc).__name__}"
                 )
@@ -197,14 +198,17 @@ class BitgetDispatcher:
         self._transition(dispatch, "PREFLIGHT", "SIZED")
         self._transition(dispatch, "SIZED", "VALIDATED")
         if self._execution is None:
+            self._release_admission(submission)
             self._reject_from(dispatch, "VALIDATED", "missing-execution-client")
             return "rejected"
         if route is not None and not callable(getattr(self._execution, "submit_entry_route", None)):
+            self._release_admission(submission)
             self._reject_from(dispatch, "VALIDATED", "entry-routing-unsupported")
             return "rejected"
         if self._gate.canary_max_orders > 0 and not self._repository.reserve_canary_entry(
             dispatch.id, "bitget", self._gate.canary_max_orders
         ):
+            self._release_admission(submission)
             self._reject_from(dispatch, "VALIDATED", "canary-order-cap-reached")
             return "rejected"
         self._transition(dispatch, "VALIDATED", "SUBMITTING")
@@ -249,6 +253,21 @@ class BitgetDispatcher:
             "PARTIALLY_FILLED": "partial",
             "REJECTED": "rejected",
         }[target]
+
+    def _release_admission(self, submission: BitgetEntrySubmission | None) -> None:
+        """Return margin only for a local rejection proven to precede provider POST."""
+        if submission is None or self._execution is None:
+            return
+        release = getattr(self._execution, "release_reservation", None)
+        if not callable(release):
+            return
+        try:
+            release(submission)
+        except Exception as exc:
+            # A release failure must not make a rejected pre-POST admission spendable.
+            self._repository.alert(
+                submission.margin_reservation_id, f"margin-release-error:{type(exc).__name__}"
+            )
 
     def _transition(
         self, dispatch: BitgetDispatch, expected: str, target: str, reason: str | None = None

@@ -68,3 +68,26 @@ async def test_terminal_rejection_releases_durable_margin_reservation() -> None:
 
     assert status == "REJECTED"
     assert reservations.outcomes == ["REJECTED"]
+
+
+@pytest.mark.asyncio
+async def test_acknowledged_entry_retains_margin_reservation_for_later_reconciliation() -> None:
+    class AcknowledgedExecution(Execution):
+        async def submit_entry(self, intent):
+            return AsyncExecutionResult(
+                intent.client_oid,
+                LiveOrderStatus.ACCEPTED,
+                Decimal("0"),
+                None,
+                Decimal("0"),
+                None,
+                (),
+            )
+
+    reservations = Reservations()
+    status = await BitgetDispatchExecution(
+        AcknowledgedExecution(), InMemoryLiveIntentStore(), reservation_repository=reservations
+    ).submit_entry(_dispatch(), _submission())
+
+    assert status == "ACKNOWLEDGED"
+    assert reservations.outcomes == ["ACKNOWLEDGED"]
