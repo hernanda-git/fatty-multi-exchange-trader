@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -9,7 +10,12 @@ import pytest
 from fatty_trader.domain.enums import Exchange, MarginMode
 from fatty_trader.domain.models import InstrumentSpec, VenueRiskConfig
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
-from fatty_trader.execution.bitget_dispatcher import BitgetDispatcher, DispatchGate
+from fatty_trader.execution.bitget_dispatcher import (
+    BitgetDispatcher,
+    DispatchGate,
+    EntryRoutingSnapshot,
+)
+from fatty_trader.execution.entry_routing import EntryMode, LimitEntryContext
 
 
 class Repository:
@@ -104,6 +110,8 @@ def test_pair_token_is_normalized_to_bitget_usdt_symbol() -> None:
 
     assert _bitget_symbol("pump") == "PUMPUSDT"
     assert _bitget_symbol("SUSHIUSDT") == "SUSHIUSDT"
+    assert _bitget_symbol("BONK") == "1000BONKUSDT"
+    assert _bitget_symbol("BONKUSDT") == "1000BONKUSDT"
 
 
 @pytest.mark.asyncio
@@ -326,3 +334,76 @@ async def test_atomic_canary_reservation_rejects_at_cap_before_provider_post() -
     assert result == "rejected"
     assert execution.post_count == 0
     assert repository.transitions[-1] == ("VALIDATED", "REJECTED", "canary-order-cap-reached")
+
+
+@pytest.mark.asyncio
+async def test_context_aware_normal_pullback_fails_closed_without_routed_execution() -> None:
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        entry_routing=lambda _: EntryRoutingSnapshot(
+            market_price=Decimal("64000"),
+            limit_context=LimitEntryContext(
+                provider_acknowledged=False,
+                was_working=False,
+                observed_at=datetime.now(UTC),
+                near_entry_mark=None,
+                prior_mark=None,
+            ),
+        ),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert execution.post_count == 0
+    assert repository.transitions[-1] == (
+        "VALIDATED",
+        "REJECTED",
+        "entry-routing-unsupported",
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_aware_near_limit_route_is_passed_to_routed_execution() -> None:
+    @dataclass
+    class RoutedExecution:
+        route: object | None = None
+
+        async def submit_entry_route(
+            self, dispatch: BitgetDispatch, quantity: Decimal, route: object
+        ) -> str:
+            self.route = route
+            assert quantity == Decimal("0.004")
+            return "FILLED"
+
+    repository = Repository(_dispatch())
+    execution = RoutedExecution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        entry_routing=lambda _: EntryRoutingSnapshot(
+            market_price=Decimal("64200"),
+            limit_context=LimitEntryContext(
+                provider_acknowledged=True,
+                was_working=True,
+                observed_at=datetime.now(UTC),
+                near_entry_mark=Decimal("64000"),
+                prior_mark=Decimal("64000"),
+            ),
+        ),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "filled"
+    assert execution.route is not None
+    assert execution.route.mode is EntryMode.NEAR_LIMIT_SPLIT_MARKET_LIMIT
+    assert execution.route.market_quantity == Decimal("0.001")
+    assert execution.route.limit_quantity == Decimal("0.003")

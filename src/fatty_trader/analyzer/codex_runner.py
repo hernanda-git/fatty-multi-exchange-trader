@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from threading import Thread
 from typing import BinaryIO, Protocol, cast
@@ -80,19 +80,25 @@ class CodexRunner:
         self._config = config or CodexRunnerConfig()
         self._popen_factory = popen_factory or cast(Callable[..., _Process], subprocess.Popen)
 
-    def run(self, prompt: str) -> CodexRunResult:
+    def build_argv(self, prompt: str, *, image_paths: Sequence[str] = ()) -> list[str]:
+        argv = [
+            self._config.executable,
+            "exec",
+            "--skip-git-repo-check",
+            "--model",
+            self._config.model,
+            "-c",
+            f'model_reasoning_effort="{self._config.reasoning_effort}"',
+        ]
+        argv.append(prompt)
+        for image_path in image_paths:
+            argv.extend(("--image", image_path))
+        return argv
+
+    def run(self, prompt: str, *, image_paths: Sequence[str] = ()) -> CodexRunResult:
         try:
             process = self._popen_factory(
-                [
-                    self._config.executable,
-                    "exec",
-                    "--skip-git-repo-check",
-                    "--model",
-                    self._config.model,
-                    "-c",
-                    f'model_reasoning_effort="{self._config.reasoning_effort}"',
-                    prompt,
-                ],
+                self.build_argv(prompt, image_paths=image_paths),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

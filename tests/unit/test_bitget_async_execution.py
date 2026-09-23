@@ -29,6 +29,9 @@ class FakeAsyncClient:
     async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
         return []
 
+    async def get_pending_orders(self, symbol: str) -> list[dict[str, str]]:
+        return []
+
     async def get_contracts(self) -> list[dict[str, str]]:
         return [
             {
@@ -157,12 +160,18 @@ async def test_unreadable_order_detail_with_matching_fill_is_filled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unreadable_order_detail_without_fill_is_rejected() -> None:
+async def test_40109_without_fill_is_rejected_only_after_flat_and_no_pending_reads() -> None:
     class MissingOrderClient(FakeAsyncClient):
         async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
             raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
 
         async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+        async def get_pending_orders(self, symbol: str) -> list[dict[str, str]]:
             return []
 
     client = MissingOrderClient()
@@ -179,3 +188,126 @@ async def test_unreadable_order_detail_without_fill_is_rejected() -> None:
 
     assert result.status is LiveOrderStatus.REJECTED
     assert result.filled_qty == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_40109_without_fill_and_non_flat_position_stays_unknown() -> None:
+    class NonFlatClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            return [{"symbol": symbol, "total": "0.001"}]
+
+    client = NonFlatClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord("bitget", "oid", "BTCUSDT", "BUY", requested_qty=Decimal("0.001"))
+
+    result = await adapter.reconcile_intent(intent)
+
+    assert result.status is LiveOrderStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_40109_without_fill_and_pending_order_stays_unknown() -> None:
+    class PendingClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+        async def get_pending_orders(self, symbol: str) -> list[dict[str, str]]:
+            return [{"symbol": symbol, "orderId": "pending-1"}]
+
+    client = PendingClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord("bitget", "oid", "BTCUSDT", "BUY", requested_qty=Decimal("0.001"))
+
+    result = await adapter.reconcile_intent(intent)
+
+    assert result.status is LiveOrderStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_40109_without_fill_and_read_failure_stays_unknown() -> None:
+    class FailingPositionClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            raise BitgetApiError("position read failed")
+
+    client = FailingPositionClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord("bitget", "oid", "BTCUSDT", "BUY", requested_qty=Decimal("0.001"))
+
+    result = await adapter.reconcile_intent(intent)
+
+    assert result.status is LiveOrderStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_matching_fill_can_terminalize_missing_detail_after_complete_reads() -> None:
+    class MatchingFillClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return [
+                {
+                    "fillId": "fill-1",
+                    "orderId": "provider-1",
+                    "price": "50000",
+                    "size": "0.001",
+                }
+            ]
+
+    client = MatchingFillClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord(
+        "bitget",
+        "oid",
+        "BTCUSDT",
+        "BUY",
+        requested_qty=Decimal("0.001"),
+        provider_order_id="provider-1",
+    )
+
+    result = await adapter.reconcile_intent(intent)
+
+    assert result.status is LiveOrderStatus.FILLED
+
+
+@pytest.mark.asyncio
+async def test_matching_fill_with_unconsumed_fill_cursor_stays_unknown() -> None:
+    class PaginatedFillClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            raise BitgetApiError("Bitget error 40109: cannot be found", code="40109")
+
+        async def get_fills(self, symbol: str) -> dict[str, Any]:
+            return {
+                "fillList": [{"orderId": "provider-1", "price": "50000", "size": "0.001"}],
+                "endId": "next-page",
+            }
+
+    client = PaginatedFillClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord(
+        "bitget",
+        "oid",
+        "BTCUSDT",
+        "BUY",
+        requested_qty=Decimal("0.001"),
+        provider_order_id="provider-1",
+    )
+
+    result = await adapter.reconcile_intent(intent)
+
+    assert result.status is LiveOrderStatus.UNKNOWN

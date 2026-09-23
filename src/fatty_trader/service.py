@@ -723,6 +723,7 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             runner=runner,
             limit=batch_size,
             exchanges=enabled_dispatch_exchanges(environ),
+            image_analysis_enabled=environ.get("BITGET_IMAGE_ANALYSIS_ENABLED", "0") == "1",
         )
         mode = environ.get("TRADER_MODE", "DEMO").upper()
         print(

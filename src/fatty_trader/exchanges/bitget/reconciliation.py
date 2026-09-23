@@ -19,28 +19,157 @@ from fatty_trader.exchanges.bitget.live import (
 )
 
 
+@dataclass(frozen=True)
+class AmbiguousOrderResult:
+    status: LiveOrderStatus
+    filled_qty: Decimal
+    avg_price: Decimal | None
+    fee: Decimal
+    provider_order_id: str | None
+    provider_fill_ids: tuple[str, ...]
+    provider_fills: tuple[dict[str, Any], ...]
+
+
+def _complete_fills(value: Any) -> tuple[list[dict[str, Any]], bool]:
+    if isinstance(value, list):
+        return value, all(isinstance(fill, dict) for fill in value)
+    if isinstance(value, dict):
+        rows = value.get("fillList")
+        if isinstance(rows, list) and all(isinstance(fill, dict) for fill in rows):
+            return rows, not value.get("endId")
+    return [], False
+
+
+def _flat_position(value: Any, symbol: str) -> bool | None:
+    if isinstance(value, dict):
+        value = value.get("data", value.get("positionList"))
+    if not isinstance(value, list):
+        return None
+    for row in value:
+        if not isinstance(row, dict):
+            return None
+        if row.get("symbol", symbol) != symbol:
+            continue
+        raw = next((row.get(key) for key in ("total", "size", "quantity") if key in row), None)
+        if raw is None:
+            return None
+        try:
+            if abs(Decimal(str(raw))) > 0:
+                return False
+        except (ArithmeticError, TypeError, ValueError):
+            return None
+    return True
+
+
+def _no_pending_orders(value: Any, symbol: str) -> bool | None:
+    if isinstance(value, dict):
+        value = value.get("entrustedList", value.get("data"))
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        return None
+    return not any(row.get("symbol", symbol) == symbol for row in value)
+
+
+async def classify_missing_detail(
+    intent: LiveIntentRecord,
+    *,
+    read_fills: Callable[[str], Awaitable[Any]],
+    read_position: Callable[[str], Awaitable[Any]],
+    read_pending_orders: Callable[[str], Awaitable[Any]],
+    provider_order_id: str | None = None,
+    missing_order_confirmed: bool = False,
+) -> AmbiguousOrderResult:
+    """Classify missing detail using only complete, consistent GET readbacks."""
+    try:
+        fills, complete = _complete_fills(await read_fills(intent.symbol))
+        position = await read_position(intent.symbol)
+        pending = await read_pending_orders(intent.symbol)
+    except Exception:
+        fills, complete, position, pending = [], False, None, None
+    matching = [
+        normalize_fill(fill)
+        for fill in fills
+        if fill.get("clientOid", fill.get("client_oid")) == intent.client_oid
+        or (
+            provider_order_id is not None
+            and str(fill.get("orderId", fill.get("order_id"))) == provider_order_id
+        )
+    ]
+    filled_qty, avg_price, fee, fill_ids = summarize_fills(matching)
+    flat = _flat_position(position, intent.symbol) is True
+    no_pending = _no_pending_orders(pending, intent.symbol) is True
+    safe = complete and flat and no_pending
+    status = (
+        LiveOrderStatus.FILLED
+        if safe and filled_qty >= intent.requested_qty
+        else LiveOrderStatus.PARTIAL
+        if safe and filled_qty > 0
+        else LiveOrderStatus.REJECTED
+        if safe and missing_order_confirmed
+        else LiveOrderStatus.UNKNOWN
+    )
+    return AmbiguousOrderResult(
+        status,
+        filled_qty,
+        avg_price,
+        fee,
+        provider_order_id,
+        fill_ids,
+        tuple(matching),
+    )
+
+
 async def reconcile_unknown_intent(
     intent: LiveIntentRecord,
     *,
     read_order_detail: Callable[[str, str], Awaitable[Any]],
     read_fills: Callable[[str], Awaitable[Any]],
+    read_position: Callable[[str], Awaitable[Any]],
+    read_pending_orders: Callable[[str], Awaitable[Any]],
 ) -> LiveIntentRecord:
     """Refresh one durable unknown intent using provider GET reads only."""
+    detail_not_found = False
     try:
         detail = await read_order_detail(intent.symbol, intent.client_oid)
     except BitgetApiError as exc:
         if exc.code == "40109" or "cannot be found" in str(exc).lower():
             detail = {}
+            detail_not_found = True
         else:
             raise
-    fills = await read_fills(intent.symbol)
     if not isinstance(detail, dict):
         raise ValueError("provider-order-detail-invalid")
+    provider_order_id = detail.get("orderId", detail.get("providerOrderId"))
+    if not detail:
+        outcome = await classify_missing_detail(
+            intent,
+            read_fills=read_fills,
+            read_position=read_position,
+            read_pending_orders=read_pending_orders,
+            provider_order_id=(
+                str(provider_order_id)
+                if provider_order_id is not None
+                else intent.provider_order_id
+            ),
+            missing_order_confirmed=detail_not_found,
+        )
+        intent.filled_qty = outcome.filled_qty
+        intent.avg_price = outcome.avg_price
+        intent.fee = outcome.fee
+        intent.provider_fill_ids = outcome.provider_fill_ids
+        intent.provider_fills = outcome.provider_fills
+        intent.provider_order_id = outcome.provider_order_id or intent.provider_order_id
+        intent.state = {
+            LiveOrderStatus.FILLED: "filled",
+            LiveOrderStatus.PARTIAL: "partially_filled",
+            LiveOrderStatus.REJECTED: "rejected",
+            LiveOrderStatus.UNKNOWN: "unknown",
+        }[outcome.status]
+        return intent
+    fills = await read_fills(intent.symbol)
     if isinstance(fills, dict):
         fills = fills.get("fillList", [])
     if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
         raise ValueError("provider-fills-invalid")
-    provider_order_id = detail.get("orderId", detail.get("providerOrderId"))
     if provider_order_id is not None:
         intent.provider_order_id = str(provider_order_id)
     matching_fills = [

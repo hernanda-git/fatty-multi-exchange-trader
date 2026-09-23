@@ -78,6 +78,9 @@ services:
       TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
       TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
+      TELEGRAM_MEDIA_ROOT: /app/runtime/media
+    volumes:
+      - ./data/media:/app/runtime/media
     depends_on:
       init:
         condition: service_completed_successfully
@@ -100,6 +103,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       CODEX_HOME: /app/runtime/codex-home
       CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}
+      BITGET_IMAGE_ANALYSIS_ENABLED: ${BITGET_IMAGE_ANALYSIS_ENABLED:-1}
     volumes:
       - ./runtime/codex-home:/app/runtime/codex-home
       - ${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json:/app/runtime/codex-home/auth.json:ro
@@ -266,7 +270,7 @@ services:
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
       BITGET_MODE: ${BITGET_MODE:-DEMO}
-      BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
+      BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
     depends_on:
       init:

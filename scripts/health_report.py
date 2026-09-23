@@ -8,10 +8,17 @@ Runs on host, uses docker compose exec for DB + Bitget API access.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import urllib.error
 import urllib.request
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc  # noqa: UP017
 from decimal import Decimal, InvalidOperation
 from html import escape
 from pathlib import Path
@@ -662,10 +669,20 @@ def get_codex_usage() -> dict:
         tmp.write_text(json.dumps(fresh), encoding="utf-8")
         tmp.rename(cache_path)
         return {"status": "LIVE", **fresh}
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            return {
+                "status": "AUTH_FAILED",
+                "plan": "N/A",
+                "5h": "N/A",
+                "7d": "N/A",
+                "reset": "N/A",
+                "refreshed": "auth failed",
+                "error": f"Codex usage API HTTP {exc.code}; re-authentication required",
+            }
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            return {"status": "STALE", **cached}
+            return {"status": "STALE", **cached, "error": f"Codex usage API HTTP {exc.code}"}
         except Exception:
             return {
                 "status": "N/A",
@@ -674,6 +691,22 @@ def get_codex_usage() -> dict:
                 "7d": "N/A",
                 "reset": "N/A",
                 "refreshed": "never",
+                "error": f"Codex usage API HTTP {exc.code}",
+            }
+    except Exception as exc:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            error = f"Codex usage unavailable: {type(exc).__name__}"
+            return {"status": "STALE", **cached, "error": error}
+        except Exception:
+            return {
+                "status": "N/A",
+                "plan": "N/A",
+                "5h": "N/A",
+                "7d": "N/A",
+                "reset": "N/A",
+                "refreshed": "never",
+                "error": f"Codex usage unavailable: {type(exc).__name__}",
             }
 
 
@@ -702,7 +735,12 @@ def format_report(
 
     provider_known = positions is not None and pending_orders is not None
     service_unhealthy = _count(services.get("unhealthy")) > 0
-    overall = "🟢 ONLINE" if provider_known and not service_unhealthy else "⚠️ DEGRADED"
+    codex_unhealthy = codex.get("status") in {"AUTH_FAILED", "N/A"}
+    overall = (
+        "🟢 ONLINE"
+        if provider_known and not service_unhealthy and not codex_unhealthy
+        else "⚠️ DEGRADED"
+    )
     execution_raw = str(modes.get("execution_enabled", "UNKNOWN"))
     execution = {"1": "ENABLED", "0": "DISABLED"}.get(execution_raw, execution_raw)
     provider_count = len(positions) if positions is not None else "UNKNOWN"
@@ -761,7 +799,9 @@ def format_report(
         f"{_html(codex.get('5h'))}\n"
         f"7d        {_html(codex.get('7d'))}\n"
         f"Reset     {_html(codex.get('reset'))}\n"
-        f"Updated   {_html(codex.get('refreshed'))}</pre>",
+        f"Updated   {_html(codex.get('refreshed'))}"
+        + (f"\nReason    {_html(codex.get('error'))}" if codex.get("error") else "")
+        + "</pre>",
         "",
         "<b>💰 ACCOUNT</b> <code>Bitget LIVE</code>",
     ]
@@ -987,13 +1027,15 @@ def format_report(
 
 
 def send_direct(html: str) -> bool:
-    BOT_TOKEN = "8535529687:AAHxftfVgdTjwbiRh1F9QVAYwTWc4ioy0-c"
-    CHAT_ID = "5894116684"
+    bot_token = os.environ.get("TG_BOT_TOKEN", "").strip()
+    chat_id = os.environ.get("TELEGRAM_TARGET_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        return False
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = json.dumps(
             {
-                "chat_id": CHAT_ID,
+                "chat_id": chat_id,
                 "text": html,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,

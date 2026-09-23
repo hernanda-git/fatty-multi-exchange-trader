@@ -15,6 +15,14 @@ from fatty_trader.exchanges.bitget.reconciliation import (
 )
 
 
+async def _flat_position(_: str) -> list[dict[str, Any]]:
+    return []
+
+
+async def _no_pending(_: str) -> list[dict[str, Any]]:
+    return []
+
+
 class FakeReconcilerClient:
     """Minimal fake satisfying the Reconciler's client protocol."""
 
@@ -219,6 +227,8 @@ async def test_unknown_intent_handles_40109_with_existing_provider_order_id() ->
         intent,
         read_order_detail=detail,
         read_fills=fills,
+        read_position=_flat_position,
+        read_pending_orders=_no_pending,
     )
 
     assert result.state == "filled"
@@ -252,6 +262,8 @@ async def test_filled_detail_without_fill_quantity_stays_unknown() -> None:
         intent,
         read_order_detail=detail,
         read_fills=fills,
+        read_position=_flat_position,
+        read_pending_orders=_no_pending,
     )
 
     assert result.state == "unknown"

@@ -9,12 +9,18 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunResult
-from fatty_trader.analyzer.integration import analyze_with_fallback
+from fatty_trader.analyzer.image_analysis import (
+    analyze_image_json,
+    management_from_image_json,
+    signal_from_image_json,
+)
+from fatty_trader.analyzer.integration import AnalysisResult, AnalysisStatus, analyze_with_fallback
 from fatty_trader.analyzer.trade_management import parse_source_management
 from fatty_trader.intake.persistence import RawTelegramMessage
 
 _SELECT_RECEIVED = """
-SELECT id, channel_id, message_id, revision_hash, raw_text, received_at
+SELECT id, channel_id, message_id, revision_hash, raw_text, received_at,
+       has_media, media_path, media_sha256, media_mime_type, media_size_bytes
 FROM telegram_messages
 WHERE intake_state = 'RECEIVED'
 ORDER BY received_at, message_id
@@ -56,6 +62,7 @@ def process_received_batch(
     runner: Callable[[str], CodexRunResult] | CodexRunner | None = None,
     limit: int = 10,
     exchanges: tuple[str, ...] = ("binance", "bitget"),
+    image_analysis_enabled: bool = False,
 ) -> int:
     """Process one bounded transaction and fan out only to enabled engines."""
     if limit < 1:
@@ -69,21 +76,62 @@ def process_received_batch(
             cursor.execute(_SELECT_RECEIVED, (limit,))
             rows = cursor.fetchall()
             for row in rows:
-                message_uuid, channel_id, message_id, revision, raw_text, received_at = row
+                if len(row) >= 11:
+                    (
+                        message_uuid,
+                        channel_id,
+                        message_id,
+                        revision,
+                        raw_text,
+                        received_at,
+                        has_media,
+                        media_path,
+                        media_sha256,
+                        media_mime_type,
+                        media_size_bytes,
+                    ) = row
+                else:
+                    message_uuid, channel_id, message_id, revision, raw_text, received_at = row
+                    has_media = False
+                    media_path = media_sha256 = media_mime_type = media_size_bytes = None
                 message = RawTelegramMessage(
                     channel_id=channel_id,
                     message_id=message_id,
                     revision_hash=revision,
                     raw_text=raw_text,
                     received_at=received_at,
+                    has_media=has_media,
+                    media_path=media_path,
+                    media_sha256=media_sha256,
+                    media_mime_type=media_mime_type,
+                    media_size_bytes=media_size_bytes,
                 )
                 try:
-                    result = analyze_with_fallback(
-                        text=message.raw_text,
-                        message_id=message.message_id,
-                        codex_runner=_runner_callable(analysis_runner),
-                    )
+                    image_result: dict[str, Any] | None = None
+                    if image_analysis_enabled and message.has_media and message.media_path:
+                        image_result = analyze_image_json(
+                            text=message.raw_text,
+                            message_id=message.message_id,
+                            image_path=message.media_path,
+                            runner=_image_runner(analysis_runner),
+                        )
+                        result = AnalysisResult(
+                            AnalysisStatus.CODEX_SUCCEEDED,
+                            signal_from_image_json(
+                                image_result,
+                                message_id=message.message_id,
+                                source_revision=revision,
+                            ),
+                        )
+                    else:
+                        result = analyze_with_fallback(
+                            text=message.raw_text,
+                            message_id=message.message_id,
+                            codex_runner=_runner_callable(analysis_runner),
+                        )
                     management = parse_source_management(message.raw_text)
+                    if management is None and image_result is not None:
+                        management = management_from_image_json(image_result)
                     if management is not None:
                         cursor.execute(
                             _MANAGEMENT_INSERT,
@@ -132,7 +180,9 @@ def process_received_batch(
                             uuid4(),
                             f"analysis:{message_uuid}:{revision}",
                             json.dumps(
-                                {
+                                image_result
+                                if image_result is not None
+                                else {
                                     "kind": "signal-analysis",
                                     "source_message_id": message_id,
                                     "source_text": message.raw_text,
@@ -178,3 +228,11 @@ def _runner_callable(
     if callable(runner):
         return runner
     return runner.run
+
+
+def _image_runner(
+    runner: Callable[[str], CodexRunResult] | CodexRunner,
+) -> Callable[[str, tuple[str, ...]], CodexRunResult]:
+    if isinstance(runner, CodexRunner):
+        return lambda prompt, image_paths: runner.run(prompt, image_paths=image_paths)
+    return runner  # type: ignore[return-value]

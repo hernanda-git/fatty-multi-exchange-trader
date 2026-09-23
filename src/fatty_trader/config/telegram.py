@@ -13,6 +13,7 @@ class TelegramSettings:
     session_string: str = field(repr=False)
     channels: tuple[str, ...]
     target_chat_id: int | None = None
+    media_root: str = "/data/media"
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> TelegramSettings:
@@ -37,4 +38,11 @@ class TelegramSettings:
         raw_target = values.get("TELEGRAM_TARGET_CHAT_ID", "").strip()
         if not raw_target or not raw_target.lstrip("-").isdigit() or int(raw_target) == 0:
             raise ValueError("TELEGRAM_TARGET_CHAT_ID must be a non-zero numeric value")
-        return cls(int(raw_id), api_hash, session, channels, int(raw_target))
+        return cls(
+            int(raw_id),
+            api_hash,
+            session,
+            channels,
+            int(raw_target),
+            values.get("TELEGRAM_MEDIA_ROOT", "/data/media").strip() or "/data/media",
+        )

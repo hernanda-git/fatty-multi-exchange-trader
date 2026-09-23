@@ -19,6 +19,10 @@ class RawTelegramMessage:
     received_at: datetime
     reply_to_message_id: int | None = None
     has_media: bool = False
+    media_path: str | None = None
+    media_sha256: str | None = None
+    media_mime_type: str | None = None
+    media_size_bytes: int | None = None
 
 
 class RawMessageRepository(Protocol):
@@ -63,8 +67,9 @@ class PostgresRawMessageRepository:
     def save_if_new(self, message: RawTelegramMessage) -> RawTelegramMessage:
         statement = """
             INSERT INTO telegram_messages (
-                id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state
-            ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED')
+                id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state,
+                has_media, media_path, media_sha256, media_mime_type, media_size_bytes
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED', %s, %s, %s, %s, %s)
             ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
         """
         with closing(self._connection_factory()) as connection:
@@ -78,6 +83,11 @@ class PostgresRawMessageRepository:
                         message.revision_hash,
                         message.received_at,
                         message.raw_text,
+                        message.has_media,
+                        message.media_path,
+                        message.media_sha256,
+                        message.media_mime_type,
+                        message.media_size_bytes,
                     ),
                 )
             connection.commit()
@@ -87,8 +97,9 @@ class PostgresRawMessageRepository:
         """Atomically retain a source update; analysis owns the operator notification."""
         statement = """
             INSERT INTO telegram_messages (
-                id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state
-            ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED')
+                id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state,
+                has_media, media_path, media_sha256, media_mime_type, media_size_bytes
+            ) VALUES (%s, %s, %s, %s, %s, %s, 'RECEIVED', %s, %s, %s, %s, %s)
             ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
             RETURNING id
         """
@@ -103,6 +114,11 @@ class PostgresRawMessageRepository:
                         message.revision_hash,
                         message.received_at,
                         message.raw_text,
+                        message.has_media,
+                        message.media_path,
+                        message.media_sha256,
+                        message.media_mime_type,
+                        message.media_size_bytes,
                     ),
                 )
                 row = cursor.fetchone()

@@ -6,12 +6,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from inspect import isawaitable
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal, InstrumentSpec, VenueRiskConfig
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
+from fatty_trader.execution.entry_routing import EntryRoute, LimitEntryContext, route_entry
 from fatty_trader.risk.sizing import minimum_safe_plan
 
 
@@ -28,6 +29,7 @@ class DispatchRepository(Protocol):
 
     def alert(self, dispatch_id: UUID, reason: str) -> None: ...
     def reserve_canary_entry(self, dispatch_id: UUID, exchange: str, max_orders: int) -> bool: ...
+    def release_canary_entry(self, dispatch_id: UUID, exchange: str) -> None: ...
 
 
 class KillSwitch(Protocol):
@@ -36,6 +38,12 @@ class KillSwitch(Protocol):
 
 class EntryExecution(Protocol):
     async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str: ...
+
+
+class RoutedEntryExecution(Protocol):
+    async def submit_entry_route(
+        self, dispatch: BitgetDispatch, quantity: Decimal, route: EntryRoute
+    ) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,19 @@ Preflight = (
 ProtectionAdmission = (
     Callable[[str], tuple[bool, str]] | Callable[[str], Awaitable[tuple[bool, str]]]
 )
+EntryRoutingContext = (
+    Callable[[str], "EntryRoutingSnapshot"] | Callable[[str], Awaitable["EntryRoutingSnapshot"]]
+)
+
+
+@dataclass(frozen=True)
+class EntryRoutingSnapshot:
+    """Read-only provider evidence used for one context-aware route decision."""
+
+    market_price: Decimal
+    limit_context: LimitEntryContext | None
+    late_threshold_pct: Decimal = Decimal("0.005")
+    near_limit_threshold_pct: Decimal | None = None
 
 
 class BitgetDispatcher:
@@ -68,6 +89,7 @@ class BitgetDispatcher:
         preflight: Preflight,
         kill_switch: KillSwitch | None = None,
         protection_admission: ProtectionAdmission | None = None,
+        entry_routing: EntryRoutingContext | None = None,
     ) -> None:
         self._repository = repository
         self._kill_switch = kill_switch
@@ -75,6 +97,7 @@ class BitgetDispatcher:
         self._execution = execution
         self._preflight = preflight
         self._protection_admission = protection_admission
+        self._entry_routing = entry_routing
 
     async def run_once(self, worker_id: str, lease_seconds: int) -> str:
         dispatch = self._repository.claim(worker_id, lease_seconds)
@@ -128,10 +151,35 @@ class BitgetDispatcher:
         except Exception as exc:
             self._reject_from(dispatch, "PREFLIGHT", _reason(exc))
             return "rejected"
+        route: EntryRoute | None = None
+        if self._entry_routing is not None:
+            try:
+                snapshot = self._entry_routing(dispatch.pair_token)
+                if isawaitable(snapshot):
+                    snapshot = await snapshot
+                if not isinstance(snapshot, EntryRoutingSnapshot):
+                    raise ValueError("entry routing snapshot is invalid")
+                route = route_entry(
+                    direction=Direction(dispatch.direction),
+                    signal_entry=dispatch.entry_price,
+                    market_price=snapshot.market_price,
+                    total_quantity=plan.quantity,
+                    late_threshold_pct=snapshot.late_threshold_pct,
+                    near_limit_threshold_pct=snapshot.near_limit_threshold_pct,
+                    limit_context=snapshot.limit_context,
+                )
+            except Exception as exc:
+                self._reject_from(
+                    dispatch, "PREFLIGHT", f"entry-routing-error:{type(exc).__name__}"
+                )
+                return "rejected"
         self._transition(dispatch, "PREFLIGHT", "SIZED")
         self._transition(dispatch, "SIZED", "VALIDATED")
         if self._execution is None:
             self._reject_from(dispatch, "VALIDATED", "missing-execution-client")
+            return "rejected"
+        if route is not None and not callable(getattr(self._execution, "submit_entry_route", None)):
+            self._reject_from(dispatch, "VALIDATED", "entry-routing-unsupported")
             return "rejected"
         if self._gate.canary_max_orders > 0 and not self._repository.reserve_canary_entry(
             dispatch.id, "bitget", self._gate.canary_max_orders
@@ -140,7 +188,11 @@ class BitgetDispatcher:
             return "rejected"
         self._transition(dispatch, "VALIDATED", "SUBMITTING")
         try:
-            status = await self._execution.submit_entry(dispatch, plan.quantity)
+            if route is None:
+                status = await self._execution.submit_entry(dispatch, plan.quantity)
+            else:
+                routed_submit = cast(RoutedEntryExecution, self._execution).submit_entry_route
+                status = await routed_submit(dispatch, plan.quantity, route)
         except TimeoutError:
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
@@ -148,6 +200,7 @@ class BitgetDispatcher:
             reason = f"provider-readback-error:{type(exc).__name__}"
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", reason)
             self._repository.alert(dispatch.id, reason)
+            self._repository.release_canary_entry(dispatch.id, "bitget")
             return "unknown"
         target = {
             "ACKNOWLEDGED": "ACKNOWLEDGED",
@@ -202,11 +255,20 @@ async def _resolve_preflight(
     return result
 
 
+_BITGET_SYMBOL_ALIASES = {
+    # Bitget lists BONK perpetuals under the 1000BONK contract symbol.
+    "BONK": "1000BONKUSDT",
+    "BONKUSDT": "1000BONKUSDT",
+}
+
+
 def _bitget_symbol(pair_token: str) -> str:
     symbol = pair_token.upper().strip()
     if not symbol:
         raise ValueError("dispatch symbol is required")
-    return symbol if symbol.endswith("USDT") else f"{symbol}USDT"
+    return _BITGET_SYMBOL_ALIASES.get(
+        symbol, symbol if symbol.endswith("USDT") else f"{symbol}USDT"
+    )
 
 
 def _reason(exc: Exception) -> str:

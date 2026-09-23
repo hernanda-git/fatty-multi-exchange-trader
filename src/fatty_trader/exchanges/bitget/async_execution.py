@@ -22,6 +22,7 @@ from fatty_trader.exchanges.bitget.protection_capability import (
     NativeProtectionState,
     StreamState,
 )
+from fatty_trader.exchanges.bitget.reconciliation import classify_missing_detail
 from fatty_trader.exchanges.bitget.reconciliation_live import (
     NativeProtectionExpectation,
     confirm_native_protection,
@@ -41,6 +42,8 @@ class AsyncBitgetExecutionClient(Protocol):
     async def get_fills(self, symbol: str) -> Any: ...
 
     async def get_single_position(self, symbol: str) -> Any: ...
+
+    async def get_pending_orders(self, symbol: str) -> Any: ...
 
     async def get_pending_plan_orders(self, symbol: str) -> Any: ...
 
@@ -194,6 +197,32 @@ class AsyncBitgetExecution:
                 detail_not_found = True
             else:
                 raise
+        if detail_not_found:
+            provider_order_id = (
+                (submitted or {}).get("orderId")
+                or (submitted or {}).get("providerOrderId")
+                or intent.provider_order_id
+            )
+            outcome = await classify_missing_detail(
+                intent,
+                read_fills=self._client.get_fills,
+                read_position=self._client.get_single_position,
+                read_pending_orders=self._client.get_pending_orders,
+                provider_order_id=(
+                    str(provider_order_id) if provider_order_id is not None else None
+                ),
+                missing_order_confirmed=True,
+            )
+            return AsyncExecutionResult(
+                client_oid=intent.client_oid,
+                status=outcome.status,
+                filled_qty=outcome.filled_qty,
+                avg_price=outcome.avg_price,
+                fee=outcome.fee,
+                provider_order_id=outcome.provider_order_id,
+                provider_fill_ids=outcome.provider_fill_ids,
+                provider_fills=outcome.provider_fills,
+            )
         fills = await self._client.get_fills(intent.symbol)
         if isinstance(fills, dict):
             fills = fills.get("fillList", [])
@@ -363,9 +392,8 @@ class AsyncBitgetExecution:
                         filled_quantity,
                         "fallback-registration-failed",
                     )
-                self._degraded = True
                 return AsyncProtectionResult(
-                    ProtectionState.DEGRADED,
+                    ProtectionState.BOT_FALLBACK,
                     filled_quantity,
                     "native-protection-unsupported-fallback-registered",
                 )

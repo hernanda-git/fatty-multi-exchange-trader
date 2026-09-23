@@ -30,6 +30,24 @@ def test_valid_live_config_uses_frozen_defaults() -> None:
     assert config.allocation_pct == Decimal("0.20")
     assert config.max_normal_positions == 5
     assert config.liquidation_buffer > 0
+    assert config.late_entry_threshold_pct == Decimal("0.005")
+    assert config.near_limit_threshold_pct == Decimal("0.005")
+    assert config.just_departed_window_seconds == 60
+    assert config.residual_limit_enabled is False
+
+
+def test_entry_routing_thresholds_must_be_valid() -> None:
+    with pytest.raises(ValidationError):
+        BitgetLiveConfig(**_creds(late_entry_threshold_pct=Decimal("0")))
+    with pytest.raises(ValidationError):
+        BitgetLiveConfig(**_creds(near_limit_threshold_pct=Decimal("1")))
+    with pytest.raises(ValidationError):
+        BitgetLiveConfig(**_creds(just_departed_window_seconds=0))
+
+
+def test_residual_limit_is_closed_by_default_and_explicitly_configurable() -> None:
+    assert BitgetLiveConfig(**_creds()).residual_limit_enabled is False
+    assert BitgetLiveConfig(**_creds(residual_limit_enabled=True)).residual_limit_enabled is True
 
 
 def test_non_isolated_margin_mode_is_rejected() -> None:

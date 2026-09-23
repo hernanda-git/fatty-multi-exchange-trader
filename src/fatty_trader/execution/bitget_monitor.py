@@ -128,6 +128,8 @@ class BitgetMonitor:
                         symbol, client_oid=oid
                     ),
                     read_fills=self._client.get_fills,
+                    read_position=lambda symbol: self._client.get_single_position(symbol),
+                    read_pending_orders=lambda _symbol: self._client.get_pending_orders(),
                 )
                 self._repository.update_intent(reconciled)
             except Exception:

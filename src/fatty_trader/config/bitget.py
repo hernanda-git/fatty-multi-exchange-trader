@@ -71,6 +71,10 @@ class BitgetLiveConfig(BaseModel):
     minimum_liquidation_gap_pct: Decimal = Field(default=Decimal("0"), ge=0, le=1)
     minimum_liquidation_ticks: int = Field(default=0, ge=0)
     latency_slippage_allowance: Decimal = Field(default=Decimal("0"), ge=0)
+    late_entry_threshold_pct: Decimal = Field(default=Decimal("0.005"), gt=0, lt=1)
+    near_limit_threshold_pct: Decimal = Field(default=Decimal("0.005"), gt=0, lt=1)
+    just_departed_window_seconds: int = Field(default=60, gt=0)
+    residual_limit_enabled: bool = False
 
     @field_validator("api_key", "api_secret", "passphrase", mode="before")
     @classmethod

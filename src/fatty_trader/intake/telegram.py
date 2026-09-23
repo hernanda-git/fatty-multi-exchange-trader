@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from html import escape
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from telethon import events
 
 from fatty_trader.config.telegram import TelegramSettings
+from fatty_trader.intake.media import persist_media_bytes
 from fatty_trader.intake.persistence import (
     RawMessageRepository,
     RawTelegramMessage,
@@ -34,6 +36,40 @@ class TelegramIntake:
     def ingest(self, *, channel_id: int, message: Any) -> RawTelegramMessage:
         item = self._build_message(channel_id=channel_id, message=message)
         return self._repository.save_if_new(item)
+
+    async def ingest_async(
+        self, *, channel_id: int, message: Any, media_root: str, persist: bool = True
+    ) -> RawTelegramMessage:
+        item = self._build_message(channel_id=channel_id, message=message)
+        if not item.has_media:
+            return self._repository.save_if_new(item) if persist else item
+        try:
+            destination = Path(media_root) / "downloads" / str(channel_id) / str(item.message_id)
+            destination.mkdir(parents=True, exist_ok=True)
+            downloaded = await message.download_media(file=str(destination / "source"))
+            if downloaded:
+                raw = Path(str(downloaded)).read_bytes()
+                mime_type = str(getattr(getattr(message, "file", None), "mime_type", "image/jpeg"))
+                artifact = persist_media_bytes(
+                    media_root,
+                    channel_id=channel_id,
+                    message_id=item.message_id,
+                    revision_hash=item.revision_hash,
+                    mime_type=mime_type,
+                    data=raw,
+                )
+                item = item.__class__(
+                    **{
+                        **item.__dict__,
+                        "media_path": str(artifact.path),
+                        "media_sha256": artifact.sha256,
+                        "media_mime_type": artifact.mime_type,
+                        "media_size_bytes": artifact.size_bytes,
+                    }
+                )
+        except (OSError, ValueError):
+            pass
+        return self._repository.save_if_new(item) if persist else item
 
     def _build_message(self, *, channel_id: int, message: Any) -> RawTelegramMessage:
         raw_text = str(getattr(message, "message", "") or "")
@@ -77,7 +113,12 @@ class TelegramForwarder:
         self._intake = TelegramIntake(repository)
 
     async def handle_message(self, channel_id: int, message: Any) -> None:
-        item = self._intake._build_message(channel_id=channel_id, message=message)
+        item = await self._intake.ingest_async(
+            channel_id=channel_id,
+            message=message,
+            media_root=self._settings.media_root,
+            persist=False,
+        )
         enqueued = self._intake._repository.save_and_enqueue_forward(item)
         if enqueued:
             print(

@@ -123,6 +123,19 @@ class PostgresBitgetDispatchRepository:
             connection.rollback()
             raise
 
+    def release_canary_entry(self, dispatch_id: UUID, exchange: str) -> None:
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "DELETE FROM canary_entry_reservations WHERE dispatch_id = %s AND exchange = %s",
+                (dispatch_id, exchange),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
     def transition(
         self,
         dispatch_id: UUID,

@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS telegram_messages (
     revision_hash CHAR(64) NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     raw_text TEXT NOT NULL,
+    has_media BOOLEAN NOT NULL DEFAULT FALSE,
+    media_path TEXT,
+    media_sha256 CHAR(64),
+    media_mime_type TEXT,
+    media_size_bytes INTEGER,
     intake_state TEXT NOT NULL CHECK (
         intake_state IN ('RECEIVED', 'ANALYZED', 'FAILED', 'EXPIRED')
     ),

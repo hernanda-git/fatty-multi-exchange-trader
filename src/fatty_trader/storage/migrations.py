@@ -212,6 +212,16 @@ MIGRATIONS: Final = [
         ON provider_reconciliation_events (exchange, symbol, created_at);
         """,
     ),
+    (
+        13,
+        """
+        ALTER TABLE telegram_messages ADD COLUMN has_media BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE telegram_messages ADD COLUMN media_path TEXT;
+        ALTER TABLE telegram_messages ADD COLUMN media_sha256 CHAR(64);
+        ALTER TABLE telegram_messages ADD COLUMN media_mime_type TEXT;
+        ALTER TABLE telegram_messages ADD COLUMN media_size_bytes INTEGER;
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
