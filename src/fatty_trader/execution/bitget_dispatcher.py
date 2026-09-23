@@ -6,11 +6,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from inspect import isawaitable
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal, InstrumentSpec, VenueRiskConfig
+from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
 from fatty_trader.execution.entry_routing import EntryRoute, LimitEntryContext, route_entry
 from fatty_trader.risk.sizing import minimum_safe_plan
@@ -37,7 +38,9 @@ class KillSwitch(Protocol):
 
 
 class EntryExecution(Protocol):
-    async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str: ...
+    async def submit_entry(
+        self, dispatch: BitgetDispatch, submission: BitgetEntrySubmission
+    ) -> str: ...
 
 
 class RoutedEntryExecution(Protocol):
@@ -55,9 +58,18 @@ class DispatchGate:
     canary_symbol: str | None = None
 
 
+@dataclass(frozen=True)
+class BitgetAdmission:
+    """The only production handoff from fresh balance admission to execution."""
+
+    submission: BitgetEntrySubmission
+
+
 Preflight = (
-    Callable[[str], tuple[InstrumentSpec, VenueRiskConfig]]
-    | Callable[[str], Awaitable[tuple[InstrumentSpec, VenueRiskConfig]]]
+    Callable[[BitgetDispatch], BitgetAdmission | tuple[InstrumentSpec, VenueRiskConfig]]
+    | Callable[
+        [BitgetDispatch], Awaitable[BitgetAdmission | tuple[InstrumentSpec, VenueRiskConfig]]
+    ]
 )
 ProtectionAdmission = (
     Callable[[str], tuple[bool, str]] | Callable[[str], Awaitable[tuple[bool, str]]]
@@ -146,8 +158,17 @@ class BitgetDispatcher:
             return "rejected"
         self._transition(dispatch, "QUEUED", "PREFLIGHT")
         try:
-            spec, risk = await _resolve_preflight(self._preflight, dispatch.pair_token)
-            plan = minimum_safe_plan(spec=spec, config=risk, reference_price=dispatch.entry_price)
+            preflight = await _resolve_preflight(self._preflight, dispatch)
+            if isinstance(preflight, BitgetAdmission):
+                submission = preflight.submission
+                plan_quantity = submission.quantity
+            else:
+                spec, risk = preflight
+                plan = minimum_safe_plan(
+                    spec=spec, config=risk, reference_price=dispatch.entry_price
+                )
+                submission = None
+                plan_quantity = plan.quantity
         except Exception as exc:
             self._reject_from(dispatch, "PREFLIGHT", _reason(exc))
             return "rejected"
@@ -163,7 +184,7 @@ class BitgetDispatcher:
                     direction=Direction(dispatch.direction),
                     signal_entry=dispatch.entry_price,
                     market_price=snapshot.market_price,
-                    total_quantity=plan.quantity,
+                    total_quantity=plan_quantity,
                     late_threshold_pct=snapshot.late_threshold_pct,
                     near_limit_threshold_pct=snapshot.near_limit_threshold_pct,
                     limit_context=snapshot.limit_context,
@@ -189,10 +210,14 @@ class BitgetDispatcher:
         self._transition(dispatch, "VALIDATED", "SUBMITTING")
         try:
             if route is None:
-                status = await self._execution.submit_entry(dispatch, plan.quantity)
+                if submission is None:
+                    # Compatibility only: the production service always returns BitgetAdmission.
+                    status = await cast(Any, self._execution).submit_entry(dispatch, plan_quantity)
+                else:
+                    status = await self._execution.submit_entry(dispatch, submission)
             else:
                 routed_submit = cast(RoutedEntryExecution, self._execution).submit_entry_route
-                status = await routed_submit(dispatch, plan.quantity, route)
+                status = await routed_submit(dispatch, plan_quantity, route)
         except TimeoutError:
             self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
@@ -247,9 +272,9 @@ class BitgetDispatcher:
 
 
 async def _resolve_preflight(
-    preflight: Preflight, symbol: str
-) -> tuple[InstrumentSpec, VenueRiskConfig]:
-    result = preflight(symbol)
+    preflight: Preflight, dispatch: BitgetDispatch
+) -> BitgetAdmission | tuple[InstrumentSpec, VenueRiskConfig]:
+    result = preflight(dispatch)
     if isawaitable(result):
         return await result
     return result

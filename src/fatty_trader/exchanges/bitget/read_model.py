@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
@@ -17,6 +18,10 @@ class BitgetReadClient(Protocol):
 @dataclass(frozen=True)
 class BitgetAccountState:
     available: Decimal
+    total_balance: Decimal
+    equity: Decimal
+    margin_coin: str
+    observed_at: datetime
     margin_mode: str
     position_mode: str
     long_leverage: Decimal
@@ -67,6 +72,10 @@ async def read_account_state(client: BitgetReadClient, symbol: str) -> BitgetAcc
         raise BitgetReadModelError("Bitget account response must be an object")
     return BitgetAccountState(
         available=_required_decimal(payload, "available"),
+        total_balance=_required_decimal(payload, "usdtEquity"),
+        equity=_required_decimal(payload, "accountEquity"),
+        margin_coin=_required_text(payload, "marginCoin").upper(),
+        observed_at=datetime.now(UTC),
         margin_mode=_required_text(payload, "marginMode").lower(),
         position_mode=_required_text(payload, "posMode"),
         long_leverage=_required_decimal(payload, "isolatedLongLever"),

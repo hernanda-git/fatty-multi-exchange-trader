@@ -15,6 +15,9 @@ class Client:
         assert symbol == "BTCUSDT"
         return {
             "available": "12.34",
+            "usdtEquity": "15.00",
+            "accountEquity": "14.50",
+            "marginCoin": "USDT",
             "marginMode": "isolated",
             "posMode": "one_way_mode",
             "isolatedLongLever": "20",

@@ -18,6 +18,9 @@ class Client:
     ) -> None:
         self._account = {
             "available": "100",
+            "usdtEquity": "100",
+            "accountEquity": "100",
+            "marginCoin": "USDT",
             "marginMode": margin_mode,
             "posMode": pos_mode,
             "isolatedLongLever": long_leverage,

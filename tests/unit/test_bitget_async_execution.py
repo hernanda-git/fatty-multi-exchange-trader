@@ -20,6 +20,9 @@ class FakeAsyncClient:
     async def get_account(self, symbol: str) -> dict[str, str]:
         return {
             "available": "100",
+            "usdtEquity": "100",
+            "accountEquity": "100",
+            "marginCoin": "USDT",
             "marginMode": "isolated",
             "posMode": "one_way_mode",
             "isolatedLongLever": "20",

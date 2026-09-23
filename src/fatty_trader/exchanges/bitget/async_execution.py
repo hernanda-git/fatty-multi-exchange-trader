@@ -27,7 +27,6 @@ from fatty_trader.exchanges.bitget.reconciliation_live import (
     NativeProtectionExpectation,
     confirm_native_protection,
 )
-from fatty_trader.exchanges.bitget.validation import validate_order
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionReport, ProtectionState
 from fatty_trader.storage.live_intents import build_emergency_close_intent
 
@@ -172,18 +171,13 @@ class AsyncBitgetExecution:
             or intent.margin_reservation_id is None
         ):
             raise ValueError("Bitget entry lacks durable isolated-margin admission evidence")
-        snapshot = await self._venue.preflight(intent.symbol)
+        # The dispatcher has already validated quantity against the single fresh
+        # admission snapshot. Do not perform a second account/balance preflight here:
+        # it would re-open the TOCTOU window after durable reservation.
         if intent.role == "ENTRY":
             planned_leverage = intent.planned_leverage
             assert planned_leverage is not None
             await self._venue.ensure_leverage(intent.symbol, planned_leverage)
-        validate_order(
-            intent.symbol,
-            intent.side,
-            snapshot.current_price,
-            intent.requested_qty,
-            snapshot.metadata,
-        )
         try:
             submitted = await self._client.place_entry_order(
                 symbol=intent.symbol,

@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -14,6 +15,10 @@ class Venue:
         self.snapshot = BitgetPreflightSnapshot(
             account=BitgetAccountState(
                 available=Decimal(available),
+                total_balance=Decimal(available),
+                equity=Decimal(available),
+                margin_coin="USDT",
+                observed_at=datetime.now(UTC),
                 margin_mode="isolated",
                 position_mode="one_way_mode",
                 long_leverage=Decimal("20"),

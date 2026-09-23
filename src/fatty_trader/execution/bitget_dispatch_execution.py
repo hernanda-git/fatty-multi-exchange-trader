@@ -46,9 +46,16 @@ class BitgetDispatchExecution:
     this adapter returns ``UNKNOWN`` for operator reconciliation.
     """
 
-    def __init__(self, execution: AsyncDispatchExecution, store: LiveIntentStoreProtocol) -> None:
+    def __init__(
+        self,
+        execution: AsyncDispatchExecution,
+        store: LiveIntentStoreProtocol,
+        *,
+        reservation_repository: object | None = None,
+    ) -> None:
         self._execution = execution
         self._store = store
+        self._reservations = reservation_repository
 
     async def submit_entry(
         self, dispatch: BitgetDispatch, submission: BitgetEntrySubmission
@@ -76,14 +83,16 @@ class BitgetDispatchExecution:
                     intent = existing
                     result = await self._execution.reconcile_intent(intent)
         except Exception:
-            # Best-effort: reject the intent so the canary cap can recover.
+            # A POST/read-back failure is ambiguous: retain margin as unknown, never release it.
             try:
-                intent.state = "rejected"
+                intent.state = "unknown"
                 self._store.update(intent)
+                self._resolve_reservation(intent, "UNKNOWN")
             except Exception:
                 pass
             raise
         self._persist_readback(intent, result)
+        self._resolve_reservation(intent, _dispatcher_status(result.status))
         if result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}:
             return _dispatcher_status(result.status)
         protection = await self._execution.protect_filled_position(
@@ -96,9 +105,7 @@ class BitgetDispatchExecution:
         return _dispatcher_status(result.status)
 
     @staticmethod
-    def _intent(dispatch: BitgetDispatch, submission: BitgetEntrySubmission) -> LiveIntentRecord:
-        if submission.quantity <= 0:
-            raise ValueError("dispatch quantity must be positive")
+    def client_oid(dispatch: BitgetDispatch) -> str:
         side = "BUY" if dispatch.direction == Direction.LONG.value else "SELL"
         token = dispatch.id.hex[:16]
         if dispatch.source_channel_id is not None and dispatch.source_message_id is not None:
@@ -107,9 +114,16 @@ class BitgetDispatchExecution:
                 f"fatty-bitget-entry:{dispatch.source_channel_id}:{dispatch.source_message_id}:"
                 f"{dispatch.pair_token}:{side}",
             ).hex[:16]
+        return f"live-bitget-{dispatch.pair_token}-{token}"
+
+    @staticmethod
+    def _intent(dispatch: BitgetDispatch, submission: BitgetEntrySubmission) -> LiveIntentRecord:
+        if submission.quantity <= 0:
+            raise ValueError("dispatch quantity must be positive")
+        side = "BUY" if dispatch.direction == Direction.LONG.value else "SELL"
         return LiveIntentRecord(
             exchange=Exchange.BITGET.value,
-            client_oid=f"live-bitget-{dispatch.pair_token}-{token}",
+            client_oid=BitgetDispatchExecution.client_oid(dispatch),
             symbol=dispatch.pair_token,
             side=side,
             requested_qty=submission.quantity,
@@ -131,6 +145,15 @@ class BitgetDispatchExecution:
             stop_loss=dispatch.stop_loss,
             take_profits=dispatch.take_profits,
         )
+
+    def _resolve_reservation(self, intent: LiveIntentRecord, outcome: str) -> None:
+        if self._reservations is None or intent.margin_reservation_id is None:
+            return
+        resolve = getattr(self._reservations, "resolve", None)
+        if not callable(resolve):
+            raise TypeError("margin reservation repository lacks resolve")
+        # Repository updates are idempotent; resolution is after durable intent persistence.
+        resolve(intent.margin_reservation_id, outcome)
 
     def _persist_readback(self, intent: LiveIntentRecord, result: AsyncExecutionResult) -> None:
         if result.client_oid != intent.client_oid:

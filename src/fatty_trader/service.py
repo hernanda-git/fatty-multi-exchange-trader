@@ -22,8 +22,8 @@ from typing import Any, cast
 from fatty_trader.analyzer.codex_runner import CodexRunner
 from fatty_trader.analyzer.postgres_worker import process_received_batch
 from fatty_trader.config.telegram import TelegramSettings
-from fatty_trader.domain.enums import Exchange, MarginMode
-from fatty_trader.domain.models import InstrumentSpec, VenueRiskConfig
+from fatty_trader.domain.enums import Direction, Exchange, MarginMode
+from fatty_trader.domain.models import BitgetLiveRiskConfig, InstrumentSpec, VenueRiskConfig
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
@@ -57,7 +57,7 @@ class BitgetExecutionRuntime:
     """Owned enabled-only dependencies for the live Bitget dispatcher."""
 
     execution: object
-    preflight: Callable[[str], Any]
+    preflight: Callable[[Any], Any]
     client: object
 
 
@@ -301,6 +301,8 @@ def build_bitget_execution_runtime(
     config = service_config("dispatcher-bitget", environ)
     if not config.execution_enabled:
         return None
+    import psycopg
+
     from fatty_trader.exchanges.bitget.async_execution import (
         AsyncBitgetExecution,
         AsyncBitgetExecutionClient,
@@ -309,6 +311,7 @@ def build_bitget_execution_runtime(
     from fatty_trader.exchanges.bitget.client import BitgetRestClient
     from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
     from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
+    from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
 
     using_default_client = client_factory is None
@@ -342,6 +345,7 @@ def build_bitget_execution_runtime(
     capability_repository = (
         capability_repository_factory() if capability_repository_factory is not None else None
     )
+    reservation_repository = PostgresBitgetMarginReservationRepository(psycopg.connect)
     execution = BitgetDispatchExecution(
         AsyncBitgetExecution(
             cast(AsyncBitgetExecutionClient, client),
@@ -350,54 +354,134 @@ def build_bitget_execution_runtime(
             environment=config.venue_mode,
         ),
         cast(LiveIntentStoreProtocol, intent_store_factory()),
+        reservation_repository=reservation_repository,
     )
     return BitgetExecutionRuntime(
         execution=execution,
-        preflight=_bitget_dispatch_preflight(venue, environ),
+        preflight=_bitget_dispatch_preflight(
+            venue, environ, reservation_repository=reservation_repository
+        ),
         client=client,
     )
 
 
-def _bitget_dispatch_preflight(venue: Any, environ: Mapping[str, str]) -> Callable[[str], Any]:
+def _bitget_dispatch_preflight(
+    venue: Any, environ: Mapping[str, str], *, reservation_repository: Any | None = None
+) -> Callable[[Any], Any]:
+    """Return a fail-closed admission factory; production always reserves first."""
     allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
     max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "50"))
-    default_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
+    min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
+    max_age_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_AGE_SECONDS", "5"))
+    ttl_seconds = Decimal(environ.get("BITGET_BALANCE_RESERVATION_TTL_SECONDS", "30"))
+    if not (Decimal("0") < allocation_pct <= Decimal("1")):
+        raise ValueError("BITGET_ALLOCATION_PCT must be in (0, 1]")
+    if min_leverage < 20 or max_leverage < min_leverage or max_leverage > 50:
+        raise ValueError("Bitget live leverage bounds must be within [20, 50]")
+    if max_age_seconds <= 0 or ttl_seconds <= 0:
+        raise ValueError("Bitget balance age and reservation TTL must be positive")
 
-    async def preflight(symbol: str) -> tuple[InstrumentSpec, VenueRiskConfig]:
-        if not re.fullmatch(r"^[A-Z0-9]{2,20}$", symbol):
+    async def preflight(dispatch: Any) -> Any:
+        symbol = dispatch.pair_token if hasattr(dispatch, "pair_token") else dispatch
+        if not isinstance(symbol, str) or not re.fullmatch(r"^[A-Z0-9]{2,20}$", symbol):
             raise ValueError("dispatch symbol failed Bitget symbol validation")
         snapshot = await venue.preflight(symbol)
         metadata = snapshot.metadata
-        available_balance = snapshot.available_balance
+        account = snapshot.account
+        available_balance = account.available
         if available_balance <= 0:
             raise ValueError(
-                "Bitget available USDT margin is zero; fund the configured LIVE account "
-                "before enabling execution"
+                "Bitget available USDT margin is zero; fund the configured "
+                "LIVE account before enabling execution"
             )
-        allocation = available_balance * allocation_pct
-        if allocation <= 0:
-            raise ValueError("Bitget calculated risk allocation must be positive")
-        return (
-            InstrumentSpec(
-                exchange=Exchange.BITGET,
-                symbol=metadata.symbol,
-                qty_step=metadata.size_step,
-                min_qty=metadata.min_order_qty,
-                min_notional=metadata.min_notional,
-                max_leverage=min(metadata.max_leverage, max_leverage),
-                contract_multiplier=metadata.contract_value,
-            ),
-            VenueRiskConfig(
-                exchange=Exchange.BITGET,
-                base_margin_usdt=allocation,
-                default_leverage=default_leverage,
-                max_leverage=min(metadata.max_leverage, max_leverage),
-                max_auto_margin_usdt=allocation,
-                free_margin_usdt=snapshot.available_balance,
-                free_margin_headroom_pct=allocation_pct,
-                max_position_notional_usdt=allocation * Decimal(max_leverage),
-                margin_mode=MarginMode.ISOLATED,
-            ),
+        if reservation_repository is None:
+            # Test/legacy seam only; runtime wires the durable admission branch below.
+            allocation = available_balance * allocation_pct
+            return (
+                InstrumentSpec(
+                    exchange=Exchange.BITGET,
+                    symbol=metadata.symbol,
+                    qty_step=metadata.size_step,
+                    min_qty=metadata.min_order_qty,
+                    min_notional=metadata.min_notional,
+                    max_leverage=min(metadata.max_leverage, max_leverage),
+                    contract_multiplier=metadata.contract_value,
+                ),
+                VenueRiskConfig(
+                    exchange=Exchange.BITGET,
+                    base_margin_usdt=allocation,
+                    default_leverage=min_leverage,
+                    max_leverage=min(metadata.max_leverage, max_leverage),
+                    max_auto_margin_usdt=allocation,
+                    free_margin_usdt=available_balance,
+                    free_margin_headroom_pct=allocation_pct,
+                    max_position_notional_usdt=allocation * Decimal(max_leverage),
+                    margin_mode=MarginMode.ISOLATED,
+                ),
+            )
+        observed_at = account.observed_at
+        if datetime.now(UTC) - observed_at > __import__("datetime").timedelta(
+            seconds=float(max_age_seconds)
+        ):
+            raise ValueError("Bitget balance snapshot is stale")
+        from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
+        from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
+        from fatty_trader.execution.bitget_dispatcher import BitgetAdmission
+        from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
+
+        risk = BitgetLiveRiskConfig(
+            min_leverage=min_leverage, max_leverage=max_leverage, allocation_pct=allocation_pct
+        )
+        decision = plan_live_position(
+            LiveSizingInput(
+                meta=metadata,
+                risk=risk,
+                available_usdt=available_balance,
+                entry=snapshot.current_price,
+                direction=Direction(dispatch.direction),
+                active_positions=0,
+                stop_loss=dispatch.stop_loss,
+            )
+        )
+        if (
+            not decision.accepted
+            or decision.quantity is None
+            or decision.leverage is None
+            or decision.margin_usdt is None
+            or decision.notional_usdt is None
+        ):
+            raise ValueError(f"Bitget live sizing rejected: {decision.reason}")
+        client_order_id = BitgetDispatchExecution.client_oid(dispatch)
+        admission = reservation_repository.reserve(
+            exchange="bitget",
+            dispatch_id=dispatch.id,
+            client_order_id=client_order_id,
+            total_balance=account.total_balance,
+            available_balance=available_balance,
+            equity=account.equity,
+            margin_coin=account.margin_coin,
+            observed_at=observed_at,
+            planned_margin_usdt=decision.margin_usdt,
+            headroom=Decimal("1"),
+            ttl=__import__("datetime").timedelta(seconds=float(ttl_seconds)),
+        )
+        if (
+            not admission.accepted
+            or admission.snapshot_id is None
+            or admission.reservation_id is None
+        ):
+            raise ValueError(f"Bitget margin admission rejected: {admission.reason or 'unknown'}")
+        return BitgetAdmission(
+            BitgetEntrySubmission(
+                quantity=decision.quantity,
+                effective_leverage=decision.leverage,
+                planned_margin_usdt=decision.margin_usdt,
+                planned_notional_usdt=decision.notional_usdt,
+                margin_mode="ISOLATED",
+                balance_snapshot_id=admission.snapshot_id,
+                margin_reservation_id=admission.reservation_id,
+                observed_at=observed_at,
+            )
         )
 
     return preflight
