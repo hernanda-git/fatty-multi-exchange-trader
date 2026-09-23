@@ -85,9 +85,14 @@ def test_reserve_returns_rejection_without_creating_margin_reservation() -> None
         exchange="bitget",
         dispatch_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
         client_order_id="live-bitget-BTCUSDT-1",
-        total_balance=Decimal("100"), available_balance=Decimal("100"), equity=Decimal("100"),
-        margin_coin="USDT", observed_at=datetime.now(UTC), planned_margin_usdt=Decimal("10"),
-        headroom=Decimal("0.5"), ttl=timedelta(seconds=30),
+        total_balance=Decimal("100"),
+        available_balance=Decimal("100"),
+        equity=Decimal("100"),
+        margin_coin="USDT",
+        observed_at=datetime.now(UTC),
+        planned_margin_usdt=Decimal("10"),
+        headroom=Decimal("0.5"),
+        ttl=timedelta(seconds=30),
     )
 
     assert result == BalanceAdmission.rejected("insufficient-reserved-headroom")

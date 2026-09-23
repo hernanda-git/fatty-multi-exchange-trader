@@ -20,9 +20,14 @@ class Client:
     async def get_account(self, symbol: str) -> dict[str, str]:
         self.calls.append(f"account:{symbol}")
         return {
-            "available": "100", "accountEquity": "100", "usdtEquity": "100",
-            "marginCoin": "USDT", "marginMode": "isolated", "posMode": "one_way_mode",
-            "isolatedLongLever": self.leverage, "isolatedShortLever": self.leverage,
+            "available": "100",
+            "accountEquity": "100",
+            "usdtEquity": "100",
+            "marginCoin": "USDT",
+            "marginMode": "isolated",
+            "posMode": "one_way_mode",
+            "isolatedLongLever": self.leverage,
+            "isolatedShortLever": self.leverage,
         }
 
 

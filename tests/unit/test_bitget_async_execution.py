@@ -86,10 +86,15 @@ def _admitted_intent() -> LiveIntentRecord:
     from uuid import UUID
 
     return LiveIntentRecord(
-        exchange="bitget", client_oid="live-bitget-BTCUSDT-0011223344556677",
-        symbol="BTCUSDT", side="BUY", requested_qty=Decimal("0.001"),
-        planned_leverage=20, planned_margin_usdt=Decimal("10"),
-        planned_notional_usdt=Decimal("50"), margin_mode="ISOLATED",
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-0011223344556677",
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_qty=Decimal("0.001"),
+        planned_leverage=20,
+        planned_margin_usdt=Decimal("10"),
+        planned_notional_usdt=Decimal("50"),
+        margin_mode="ISOLATED",
         balance_snapshot_id=UUID("12345678-1234-5678-1234-567812345678"),
         margin_reservation_id=UUID("87654321-4321-8765-4321-876543218765"),
     )
@@ -131,10 +136,15 @@ async def test_submit_entry_sets_and_verifies_intent_leverage_before_post() -> N
     client = FakeAsyncClient()
     adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
     intent = LiveIntentRecord(
-        exchange="bitget", client_oid="live-bitget-BTCUSDT-0011223344556677",
-        symbol="BTCUSDT", side="BUY", requested_qty=Decimal("0.001"),
-        planned_leverage=20, planned_margin_usdt=Decimal("10"),
-        planned_notional_usdt=Decimal("50"), margin_mode="ISOLATED",
+        exchange="bitget",
+        client_oid="live-bitget-BTCUSDT-0011223344556677",
+        symbol="BTCUSDT",
+        side="BUY",
+        requested_qty=Decimal("0.001"),
+        planned_leverage=20,
+        planned_margin_usdt=Decimal("10"),
+        planned_notional_usdt=Decimal("50"),
+        margin_mode="ISOLATED",
         balance_snapshot_id=__import__("uuid").UUID("12345678-1234-5678-1234-567812345678"),
         margin_reservation_id=__import__("uuid").UUID("87654321-4321-8765-4321-876543218765"),
     )
@@ -143,7 +153,6 @@ async def test_submit_entry_sets_and_verifies_intent_leverage_before_post() -> N
 
     assert client.leverage_set == ("BTCUSDT", "20")
     assert len(client.entry_calls) == 1
-
 
 
 @pytest.mark.asyncio
