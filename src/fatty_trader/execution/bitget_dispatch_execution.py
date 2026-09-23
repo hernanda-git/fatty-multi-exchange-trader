@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol, cast
 from uuid import NAMESPACE_URL, uuid5
 
 from fatty_trader.domain.enums import Direction, Exchange
@@ -92,6 +92,7 @@ class BitgetDispatchExecution:
                 pass
             raise
         self._persist_readback(intent, result)
+        await self._reconcile_post_fill(intent, result)
         self._resolve_reservation(intent, _dispatcher_status(result.status))
         if result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}:
             return _dispatcher_status(result.status)
@@ -103,6 +104,37 @@ class BitgetDispatchExecution:
                 return "FILLED_FALLBACK"
             return "UNKNOWN"
         return _dispatcher_status(result.status)
+
+    async def reconcile_active_reservations(self) -> int:
+        """GET-reconcile active commitments before a restarted worker admits entries."""
+        if self._reservations is None:
+            return 0
+        active = getattr(self._reservations, "active_client_order_ids", None)
+        escalate = getattr(self._reservations, "escalate_expired", None)
+        if not callable(active):
+            raise TypeError("margin reservation repository lacks active reservation query")
+        reconciled = 0
+        for reservation_id, client_oid, expired in cast(Any, active)():
+            intent = self._store.get(client_oid)
+            if intent is None:
+                if expired and callable(escalate):
+                    escalate(reservation_id)
+                continue
+            try:
+                result = await self._execution.reconcile_intent(intent)
+                self._persist_readback(intent, result)
+                await self._reconcile_post_fill(intent, result)
+                status = _dispatcher_status(result.status)
+                if status in {"FILLED", "PARTIAL", "REJECTED"}:
+                    self._resolve_reservation(intent, status)
+                    reconciled += 1
+                elif expired and callable(escalate):
+                    escalate(reservation_id)
+            except Exception:
+                self._resolve_reservation(intent, "UNKNOWN")
+                if expired and callable(escalate):
+                    escalate(reservation_id)
+        return reconciled
 
     @staticmethod
     def client_oid(dispatch: BitgetDispatch) -> str:
@@ -163,6 +195,15 @@ class BitgetDispatchExecution:
             raise TypeError("margin reservation repository lacks resolve")
         # Repository updates are idempotent; resolution is after durable intent persistence.
         resolve(intent.margin_reservation_id, outcome)
+
+    async def _reconcile_post_fill(
+        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+    ) -> None:
+        if result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}:
+            return
+        reconcile = getattr(self._execution, "reconcile_post_fill", None)
+        if callable(reconcile):
+            await cast(Any, reconcile)(intent, result)
 
     def _persist_readback(self, intent: LiveIntentRecord, result: AsyncExecutionResult) -> None:
         if result.client_oid != intent.client_oid:

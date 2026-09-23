@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 class Cursor(Protocol):
     def execute(self, statement: str, params: tuple[Any, ...] = ()) -> object: ...
     def fetchone(self) -> Any: ...
+    def fetchall(self) -> list[Any]: ...
 
 
 class Connection(Protocol):
@@ -218,6 +219,47 @@ class PostgresBitgetMarginReservationRepository:
                 WHERE id = %s
                 """,
                 (state, outcome.upper(), reservation_id),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def active_client_order_ids(self) -> list[tuple[UUID, str, bool]]:
+        """Return commitments requiring GET-only startup reconciliation."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT id, client_order_id, expires_at <= CURRENT_TIMESTAMP
+                FROM bitget_margin_reservations
+                WHERE exchange = 'bitget' AND state IN ('reserved', 'unknown')
+                ORDER BY created_at, id"""
+            )
+            rows = cursor.fetchall()
+            result: list[tuple[UUID, str, bool]] = []
+            for row in rows:
+                values = list(row.values()) if isinstance(row, dict) else list(row)
+                result.append((UUID(str(values[0])), str(values[1]), bool(values[2])))
+            return result
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def escalate_expired(self, reservation_id: UUID) -> None:
+        """Fail closed after startup GET cannot terminalize an expired commitment."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """UPDATE bitget_margin_reservations
+                SET state = 'unknown', resolved_at = COALESCE(resolved_at, CURRENT_TIMESTAMP),
+                    resolution_reason = COALESCE(
+                        resolution_reason, 'reservation-expired-unreconciled'
+                    )
+                WHERE id = %s AND state = 'reserved' AND expires_at <= CURRENT_TIMESTAMP""",
+                (reservation_id,),
             )
             connection.commit()
         except Exception:

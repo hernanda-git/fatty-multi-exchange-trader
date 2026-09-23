@@ -420,3 +420,42 @@ async def test_post_fill_leverage_mismatch_latches_future_entries_closed() -> No
     with pytest.raises(RuntimeError, match="degraded"):
         await adapter.submit_entry(_admitted_intent())
     assert len(client.entry_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_fill_mismatch_latches_durable_entry_admission_for_new_workers() -> None:
+    class MismatchClient(FakeAsyncClient):
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            return [
+                {
+                    "symbol": symbol,
+                    "holdSide": "long",
+                    "total": "0.001",
+                    "openPriceAvg": "50000",
+                    "markPrice": "50010",
+                    "marginSize": "10",
+                    "marginMode": "isolated",
+                    "leverage": "21",
+                }
+            ]
+
+    class DurableLatch:
+        def __init__(self) -> None:
+            self.active = False
+            self.reasons: list[tuple[str, str]] = []
+
+        def latch_kill_switch(self, scope: str, reason: str) -> None:
+            self.active = True
+            self.reasons.append((scope, reason))
+
+        def is_active(self, scope: str) -> bool:
+            return self.active and scope == "bitget"
+
+    client = MismatchClient()
+    latch = DurableLatch()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client), entry_admission_latch=latch)
+
+    await adapter.submit_entry(_admitted_intent())
+
+    assert latch.reasons == [("bitget", "post-fill-margin-or-leverage-mismatch")]
+    assert latch.is_active("bitget") is True

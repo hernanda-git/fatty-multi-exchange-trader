@@ -166,6 +166,7 @@ class AsyncBitgetExecution:
         *,
         capability_repository: Any | None = None,
         reconciliation_repository: Any | None = None,
+        entry_admission_latch: Any | None = None,
         environment: str = "DEMO",
     ) -> None:
         self._client = client
@@ -173,6 +174,7 @@ class AsyncBitgetExecution:
         self._degraded = False
         self._capability_repository = capability_repository
         self._reconciliation_repository = reconciliation_repository
+        self._entry_admission_latch = entry_admission_latch
         self._environment = environment.strip().upper()
         if self._environment not in {"DEMO", "LIVE"}:
             raise ValueError("Bitget execution environment must be DEMO or LIVE")
@@ -217,6 +219,12 @@ class AsyncBitgetExecution:
             result = await self.reconcile_intent(intent, submitted)
         await self._reconcile_post_fill(intent, result)
         return result
+
+    async def reconcile_post_fill(
+        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+    ) -> None:
+        """Apply the same provider observation to GET-only replayed fills."""
+        await self._reconcile_post_fill(intent, result)
 
     async def _reconcile_post_fill(
         self, intent: LiveIntentRecord, result: AsyncExecutionResult
@@ -303,6 +311,9 @@ class AsyncBitgetExecution:
             record(observation)
         if observation.status == "mismatch":
             self._degraded = True
+            latch = getattr(self._entry_admission_latch, "latch_kill_switch", None)
+            if callable(latch):
+                latch("bitget", "post-fill-margin-or-leverage-mismatch")
 
     async def reconcile_intent(
         self, intent: LiveIntentRecord, submitted: dict[str, Any] | None = None

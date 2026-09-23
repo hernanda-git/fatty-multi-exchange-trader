@@ -229,7 +229,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             """
             SELECT exchange, client_order_id, symbol, side, role, state,
                    requested_qty, filled_qty, filled_price, fee, provider_order_id,
-                   provider_fill_ids
+                   provider_fill_ids, leverage, planned_margin_usdt, planned_notional_usdt,
+                   margin_mode, balance_snapshot_id, margin_reservation_id
             FROM live_order_intents
             WHERE client_order_id = %s
             """,
@@ -239,6 +240,9 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         if row is None:
             return None
         values = list(row.values()) if isinstance(row, dict) else list(row)
+        # Preserve compatibility with legacy row fakes and pre-admission snapshots;
+        # production SELECTs include all admission columns.
+        values.extend([None] * (18 - len(values)))
         raw_fill_ids = values[11] or []
         if isinstance(raw_fill_ids, str):
             raw_fill_ids = json.loads(raw_fill_ids)
@@ -255,6 +259,12 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             fee=Decimal(str(values[9] or "0")),
             provider_order_id=str(values[10]) if values[10] is not None else None,
             provider_fill_ids=tuple(str(item) for item in raw_fill_ids),
+            planned_leverage=int(values[12]) if values[12] is not None else None,
+            planned_margin_usdt=Decimal(str(values[13])) if values[13] is not None else None,
+            planned_notional_usdt=Decimal(str(values[14])) if values[14] is not None else None,
+            margin_mode=str(values[15]) if values[15] is not None else None,
+            balance_snapshot_id=values[16],
+            margin_reservation_id=values[17],
         )
 
     def update(self, record: LiveIntentRecord) -> None:

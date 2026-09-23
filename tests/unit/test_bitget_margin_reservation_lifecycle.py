@@ -91,3 +91,74 @@ async def test_acknowledged_entry_retains_margin_reservation_for_later_reconcili
 
     assert status == "ACKNOWLEDGED"
     assert reservations.outcomes == ["ACKNOWLEDGED"]
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_reconciles_acknowledged_reservation_with_provider_evidence() -> None:
+    class FilledExecution(Execution):
+        async def reconcile_intent(self, intent):
+            return AsyncExecutionResult(
+                intent.client_oid,
+                LiveOrderStatus.FILLED,
+                Decimal("0.002"),
+                Decimal("64000"),
+                Decimal("0"),
+                "provider-1",
+                (),
+            )
+
+    store = InMemoryLiveIntentStore()
+    intent = BitgetDispatchExecution._intent(_dispatch(), _submission())
+
+    class ActiveReservations(Reservations):
+        def active_client_order_ids(self):
+            return [(UUID(int=2), intent.client_oid, False)]
+
+    store.save(intent)
+    reservations = ActiveReservations()
+
+    reconciled = await BitgetDispatchExecution(
+        FilledExecution(), store, reservation_repository=reservations
+    ).reconcile_active_reservations()
+
+    assert reconciled == 1
+    assert reservations.outcomes == ["FILLED"]
+    assert store.get(intent.client_oid).state == "filled"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_startup_sweep_escalates_expired_unresolved_reservation_to_unknown() -> None:
+    class AcceptedExecution(Execution):
+        async def reconcile_intent(self, intent):
+            return AsyncExecutionResult(
+                intent.client_oid,
+                LiveOrderStatus.ACCEPTED,
+                Decimal("0"),
+                None,
+                Decimal("0"),
+                None,
+                (),
+            )
+
+    class ExpiredReservations(Reservations):
+        def __init__(self) -> None:
+            super().__init__()
+            self.escalated: list[UUID] = []
+
+        def active_client_order_ids(self):
+            return [(UUID(int=2), "live-bitget-BTCUSDT-1234567812345678", True)]
+
+        def escalate_expired(self, reservation_id: UUID) -> None:
+            self.escalated.append(reservation_id)
+
+    store = InMemoryLiveIntentStore()
+    intent = BitgetDispatchExecution._intent(_dispatch(), _submission())
+    store.save(intent)
+    reservations = ExpiredReservations()
+
+    reconciled = await BitgetDispatchExecution(
+        AcceptedExecution(), store, reservation_repository=reservations
+    ).reconcile_active_reservations()
+
+    assert reconciled == 0
+    assert reservations.escalated == [UUID(int=2)]

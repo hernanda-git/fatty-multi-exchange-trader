@@ -315,11 +315,18 @@ def apply_migrations(cursor: MigrationCursor) -> list[int]:
         if version in applied:
             continue
         for statement in _iter_statements(sql):
+            # PostgreSQL marks the whole transaction failed after duplicate DDL.
+            # Contain tolerated replays in a savepoint so subsequent statements and
+            # migration bookkeeping still execute in the outer transaction.
+            cursor.execute("SAVEPOINT fatty_migration_statement")
             try:
                 cursor.execute(statement)
             except Exception as exc:
+                cursor.execute("ROLLBACK TO SAVEPOINT fatty_migration_statement")
                 if not _is_idempotent_error(exc):
                     raise
+            finally:
+                cursor.execute("RELEASE SAVEPOINT fatty_migration_statement")
         cursor.execute(f"INSERT INTO schema_migrations (version) VALUES ({version})")
         newly_applied.append(version)
     return newly_applied

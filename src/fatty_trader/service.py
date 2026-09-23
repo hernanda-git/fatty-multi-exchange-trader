@@ -313,6 +313,7 @@ def build_bitget_execution_runtime(
     from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
     from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+    from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
     using_default_client = client_factory is None
     if client_factory is None:
@@ -346,12 +347,14 @@ def build_bitget_execution_runtime(
         capability_repository_factory() if capability_repository_factory is not None else None
     )
     reservation_repository = PostgresBitgetMarginReservationRepository(psycopg.connect)
+    entry_admission_latch = PostgresReconciliationRepository(cast(Any, psycopg.connect))
     execution = BitgetDispatchExecution(
         AsyncBitgetExecution(
             cast(AsyncBitgetExecutionClient, client),
             venue,
             capability_repository=capability_repository,
             reconciliation_repository=reservation_repository,
+            entry_admission_latch=entry_admission_latch,
             environment=config.venue_mode,
         ),
         cast(LiveIntentStoreProtocol, intent_store_factory()),
@@ -522,13 +525,13 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             if runtime is not None
             else lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed"))
         ),
-        kill_switch=(
-            PostgresReconciliationRepository(psycopg.connect)
-            if bitget_kill_switch_enforced(environ)
-            else None
-        ),
+        # A post-fill margin/leverage mismatch is durable in every mode, so a
+        # replacement worker blocks before entry POST using the same latch.
+        kill_switch=PostgresReconciliationRepository(cast(Any, psycopg.connect)),
         protection_admission=protection_admission,
     )
+    if runtime is not None:
+        await runtime.execution.reconcile_active_reservations()  # type: ignore[attr-defined]
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
     try:

@@ -229,6 +229,36 @@ async def test_existing_durable_intent_uses_get_readback_without_a_second_post()
 
 
 @pytest.mark.asyncio
+async def test_replayed_fill_runs_post_fill_observation_before_reporting_success() -> None:
+    class ReplayExecution(Execution):
+        def __init__(self) -> None:
+            super().__init__(
+                result=_result(),
+                protection=AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, Decimal("0.002")),
+            )
+            self.post_fill_calls: list[str] = []
+
+        async def reconcile_post_fill(
+            self, intent: LiveIntentRecord, result: AsyncExecutionResult
+        ) -> None:
+            self.post_fill_calls.append(intent.client_oid)
+
+    store = InMemoryLiveIntentStore()
+    oid = "live-bitget-BTCUSDT-1234567812345678"
+    store.save(LiveIntentRecord("bitget", oid, "BTCUSDT", "BUY", requested_qty=Decimal("0.002")))
+    execution = ReplayExecution()
+
+    status = await BitgetDispatchExecution(execution, store).submit_entry(
+        _dispatch(), _submission()
+    )
+
+    assert status == "FILLED"
+    assert execution.submit_calls == []
+    assert execution.reconcile_calls == [oid]
+    assert execution.post_fill_calls == [oid]
+
+
+@pytest.mark.asyncio
 async def test_unconfirmed_native_protection_returns_unknown_after_containment() -> None:
     store = InMemoryLiveIntentStore()
     execution = Execution(
