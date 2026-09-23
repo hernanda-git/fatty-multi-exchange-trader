@@ -191,6 +191,10 @@ CREATE TABLE IF NOT EXISTS live_order_intents (
     provider_fill_ids JSONB NOT NULL DEFAULT '[]',
     leverage NUMERIC CHECK (leverage IS NULL OR leverage > 0),
     margin_mode TEXT CHECK (margin_mode IS NULL OR margin_mode IN ('ISOLATED', 'CROSS')),
+    planned_margin_usdt NUMERIC CHECK (planned_margin_usdt IS NULL OR planned_margin_usdt > 0),
+    planned_notional_usdt NUMERIC CHECK (planned_notional_usdt IS NULL OR planned_notional_usdt > 0),
+    balance_snapshot_id UUID,
+    margin_reservation_id UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (exchange, client_order_id),
@@ -227,6 +231,25 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
 );
 CREATE INDEX IF NOT EXISTS balance_snapshots_exchange_time
 ON balance_snapshots (exchange, captured_at);
+
+CREATE TABLE IF NOT EXISTS bitget_margin_reservations (
+    id UUID PRIMARY KEY,
+    exchange TEXT NOT NULL CHECK (exchange = 'bitget'),
+    dispatch_id UUID NOT NULL REFERENCES dispatches(id),
+    client_order_id TEXT NOT NULL,
+    balance_snapshot_id UUID NOT NULL REFERENCES balance_snapshots(id),
+    planned_margin_usdt NUMERIC NOT NULL CHECK (planned_margin_usdt > 0),
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'consumed', 'released', 'unknown')),
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMPTZ,
+    resolution_reason TEXT,
+    UNIQUE (exchange, client_order_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS bitget_margin_reservations_active_dispatch
+ON bitget_margin_reservations (exchange, dispatch_id) WHERE state IN ('reserved', 'unknown');
+CREATE INDEX IF NOT EXISTS bitget_margin_reservations_expiry
+ON bitget_margin_reservations (exchange, state, expires_at);
 
 CREATE TABLE IF NOT EXISTS position_snapshots (
     id UUID PRIMARY KEY,

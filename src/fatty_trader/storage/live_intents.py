@@ -112,8 +112,10 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 """
                 INSERT INTO live_order_intents
                     (id, exchange, client_order_id, provider_order_id, symbol, side,
-                     role, state, requested_qty, filled_qty)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     role, state, requested_qty, filled_qty, leverage, margin_mode,
+                     planned_margin_usdt, planned_notional_usdt, balance_snapshot_id,
+                     margin_reservation_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (exchange, client_order_id) DO NOTHING
                 RETURNING client_order_id
                 """,
@@ -128,6 +130,12 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                     record.state,
                     record.requested_qty,
                     record.filled_qty,
+                    record.planned_leverage,
+                    record.margin_mode,
+                    record.planned_margin_usdt,
+                    record.planned_notional_usdt,
+                    record.balance_snapshot_id,
+                    record.margin_reservation_id,
                 ),
             )
             claimed = cursor.fetchone() is not None
@@ -184,8 +192,10 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 """
                 INSERT INTO live_order_intents
                     (id, exchange, client_order_id, provider_order_id, symbol, side,
-                     role, state, requested_qty, filled_qty)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     role, state, requested_qty, filled_qty, leverage, margin_mode,
+                     planned_margin_usdt, planned_notional_usdt, balance_snapshot_id,
+                     margin_reservation_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (exchange, client_order_id) DO NOTHING
                 """,
                 (
@@ -199,6 +209,12 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                     record.state,
                     record.requested_qty,
                     record.filled_qty,
+                    record.planned_leverage,
+                    record.margin_mode,
+                    record.planned_margin_usdt,
+                    record.planned_notional_usdt,
+                    record.balance_snapshot_id,
+                    record.margin_reservation_id,
                 ),
             )
             connection.commit()

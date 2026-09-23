@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol
+from uuid import UUID
 
 from fatty_trader.domain.enums import Direction, Exchange
 from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
@@ -139,6 +140,31 @@ class LiveIntentRecord:
     provider_order_id: str | None = None
     provider_fill_ids: tuple[str, ...] = ()
     provider_fills: tuple[dict[str, Any], ...] = ()
+    planned_leverage: int | None = None
+    planned_margin_usdt: Decimal | None = None
+    planned_notional_usdt: Decimal | None = None
+    margin_mode: str | None = None
+    balance_snapshot_id: UUID | None = None
+    margin_reservation_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if self.role != "ENTRY":
+            return
+        evidence = (
+            self.planned_leverage,
+            self.planned_margin_usdt,
+            self.margin_mode,
+            self.balance_snapshot_id,
+            self.margin_reservation_id,
+        )
+        if any(value is not None for value in evidence) and any(value is None for value in evidence):
+            raise ValueError("ENTRY intent admission evidence must be complete")
+        if self.planned_leverage is not None and self.planned_leverage < 1:
+            raise ValueError("ENTRY planned leverage must be positive")
+        if self.planned_margin_usdt is not None and self.planned_margin_usdt <= 0:
+            raise ValueError("ENTRY planned margin must be positive")
+        if self.margin_mode is not None and self.margin_mode.upper() != "ISOLATED":
+            raise ValueError("ENTRY margin mode must be ISOLATED")
 
 
 class LiveIntentStoreProtocol(Protocol):

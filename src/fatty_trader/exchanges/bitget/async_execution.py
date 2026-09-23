@@ -164,7 +164,20 @@ class AsyncBitgetExecution:
     async def submit_entry(self, intent: LiveIntentRecord) -> AsyncExecutionResult:
         if self._degraded:
             raise RuntimeError("Bitget execution is degraded; additional dispatches are blocked")
+        if intent.role == "ENTRY":
+            if (
+                intent.planned_leverage is None
+                or intent.margin_mode != "ISOLATED"
+                or intent.planned_margin_usdt is None
+                or intent.balance_snapshot_id is None
+                or intent.margin_reservation_id is None
+            ):
+                raise ValueError("Bitget entry lacks durable isolated-margin admission evidence")
         snapshot = await self._venue.preflight(intent.symbol)
+        if intent.role == "ENTRY":
+            planned_leverage = intent.planned_leverage
+            assert planned_leverage is not None
+            await self._venue.ensure_leverage(intent.symbol, planned_leverage)
         validate_order(
             intent.symbol,
             intent.side,

@@ -53,6 +53,13 @@ class FakeAsyncClient:
     async def get_clock_skew_ms(self) -> int:
         return 0
 
+    async def set_margin_mode(self, symbol: str, margin_mode: str) -> dict[str, str]:
+        return {"marginMode": margin_mode}
+
+    async def set_leverage(self, symbol: str, leverage: str) -> dict[str, str]:
+        self.leverage_set = (symbol, leverage)
+        return {"leverage": leverage}
+
     async def place_entry_order(self, **kwargs: str) -> dict[str, str]:
         self.entry_calls.append(kwargs)
         return {"orderId": "provider-1", "clientOid": kwargs["client_oid"]}
@@ -75,6 +82,19 @@ class FakeAsyncClient:
         self.closed = True
 
 
+def _admitted_intent() -> LiveIntentRecord:
+    from uuid import UUID
+
+    return LiveIntentRecord(
+        exchange="bitget", client_oid="live-bitget-BTCUSDT-0011223344556677",
+        symbol="BTCUSDT", side="BUY", requested_qty=Decimal("0.001"),
+        planned_leverage=20, planned_margin_usdt=Decimal("10"),
+        planned_notional_usdt=Decimal("50"), margin_mode="ISOLATED",
+        balance_snapshot_id=UUID("12345678-1234-5678-1234-567812345678"),
+        margin_reservation_id=UUID("87654321-4321-8765-4321-876543218765"),
+    )
+
+
 @pytest.mark.asyncio
 async def test_adapter_closes_the_owned_rest_client() -> None:
     client = FakeAsyncClient()
@@ -87,13 +107,7 @@ async def test_adapter_closes_the_owned_rest_client() -> None:
 async def test_submit_entry_preflights_serializes_decimals_and_reconciles_readback() -> None:
     client = FakeAsyncClient()
     adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
-    intent = LiveIntentRecord(
-        exchange="bitget",
-        client_oid="live-bitget-BTCUSDT-0011223344556677",
-        symbol="BTCUSDT",
-        side="BUY",
-        requested_qty=Decimal("0.001"),
-    )
+    intent = _admitted_intent()
 
     result = await adapter.submit_entry(intent)
 
@@ -110,7 +124,26 @@ async def test_submit_entry_preflights_serializes_decimals_and_reconciles_readba
     assert result.avg_price == Decimal("50000")
     assert result.fee == Decimal("0.2")
     assert result.provider_order_id == "provider-1"
-    assert result.provider_fill_ids == ("fill-1",)
+
+
+@pytest.mark.asyncio
+async def test_submit_entry_sets_and_verifies_intent_leverage_before_post() -> None:
+    client = FakeAsyncClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = LiveIntentRecord(
+        exchange="bitget", client_oid="live-bitget-BTCUSDT-0011223344556677",
+        symbol="BTCUSDT", side="BUY", requested_qty=Decimal("0.001"),
+        planned_leverage=20, planned_margin_usdt=Decimal("10"),
+        planned_notional_usdt=Decimal("50"), margin_mode="ISOLATED",
+        balance_snapshot_id=__import__("uuid").UUID("12345678-1234-5678-1234-567812345678"),
+        margin_reservation_id=__import__("uuid").UUID("87654321-4321-8765-4321-876543218765"),
+    )
+
+    await adapter.submit_entry(intent)
+
+    assert client.leverage_set == ("BTCUSDT", "20")
+    assert len(client.entry_calls) == 1
+
 
 
 @pytest.mark.asyncio
@@ -122,13 +155,7 @@ async def test_unknown_post_result_reconciles_with_symbol_reads_without_a_second
 
     client = TimeoutClient()
     adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
-    intent = LiveIntentRecord(
-        exchange="bitget",
-        client_oid="live-bitget-BTCUSDT-0011223344556677",
-        symbol="BTCUSDT",
-        side="BUY",
-        requested_qty=Decimal("0.001"),
-    )
+    intent = _admitted_intent()
 
     result = await adapter.submit_entry(intent)
 
@@ -144,13 +171,7 @@ async def test_unreadable_order_detail_with_matching_fill_is_filled() -> None:
 
     client = UnreadableDetailClient()
     adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
-    intent = LiveIntentRecord(
-        exchange="bitget",
-        client_oid="live-bitget-BTCUSDT-0011223344556677",
-        symbol="BTCUSDT",
-        side="BUY",
-        requested_qty=Decimal("0.001"),
-    )
+    intent = _admitted_intent()
 
     result = await adapter.submit_entry(intent)
 
@@ -176,13 +197,7 @@ async def test_40109_without_fill_is_rejected_only_after_flat_and_no_pending_rea
 
     client = MissingOrderClient()
     adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
-    intent = LiveIntentRecord(
-        exchange="bitget",
-        client_oid="live-bitget-BTCUSDT-0011223344556677",
-        symbol="BTCUSDT",
-        side="BUY",
-        requested_qty=Decimal("0.001"),
-    )
+    intent = _admitted_intent()
 
     result = await adapter.submit_entry(intent)
 

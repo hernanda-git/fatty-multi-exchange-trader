@@ -25,6 +25,7 @@ class AsyncBitgetClient(Protocol):
     async def get_ticker(self, symbol: str) -> Any: ...
     async def get_clock_skew_ms(self) -> int: ...
     async def set_margin_mode(self, symbol: str, margin_mode: str) -> Any: ...
+    async def set_leverage(self, symbol: str, leverage: str) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,42 @@ class AsyncBitgetVenue:
 
     def __init__(self, client: AsyncBitgetClient) -> None:
         self._client = client
+
+    async def ensure_leverage(
+        self, symbol: str, planned_leverage: int, *, propagation_delay_seconds: float = 2.0
+    ) -> BitgetAccountState:
+        """Set and prove the exact isolated one-way leverage before an entry POST."""
+        if isinstance(planned_leverage, bool) or planned_leverage < 1:
+            raise ValueError("planned leverage must be a positive integer")
+        if propagation_delay_seconds < 0:
+            raise ValueError("leverage propagation delay must not be negative")
+        set_leverage = cast(
+            Callable[..., Awaitable[Any]] | None, getattr(self._client, "set_leverage", None)
+        )
+        if not callable(set_leverage):
+            raise ValueError("Bitget client cannot set planned leverage")
+        await set_leverage(symbol, leverage=str(planned_leverage))
+        account = await read_account_state(self._client, symbol)
+        if self._leverage_matches(account, planned_leverage):
+            return account
+        if propagation_delay_seconds:
+            import asyncio
+
+            await asyncio.sleep(propagation_delay_seconds)
+        account = await read_account_state(self._client, symbol)
+        if not self._leverage_matches(account, planned_leverage):
+            raise ValueError("Bitget account planned leverage was not confirmed")
+        return account
+
+    @staticmethod
+    def _leverage_matches(account: BitgetAccountState, planned_leverage: int) -> bool:
+        expected = Decimal(planned_leverage)
+        return (
+            account.margin_mode == "isolated"
+            and account.position_mode.lower() in _SUPPORTED_POSITION_MODES
+            and account.long_leverage == expected
+            and account.short_leverage == expected
+        )
 
     async def preflight(self, symbol: str) -> BitgetPreflightSnapshot:
         account = await read_account_state(self._client, symbol)

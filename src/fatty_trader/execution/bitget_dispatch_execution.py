@@ -16,6 +16,7 @@ from fatty_trader.exchanges.bitget.live import (
     LiveIntentStoreProtocol,
     LiveOrderStatus,
 )
+from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
@@ -49,8 +50,8 @@ class BitgetDispatchExecution:
         self._execution = execution
         self._store = store
 
-    async def submit_entry(self, dispatch: BitgetDispatch, quantity: Decimal) -> str:
-        intent = self._intent(dispatch, quantity)
+    async def submit_entry(self, dispatch: BitgetDispatch, submission: BitgetEntrySubmission) -> str:
+        intent = self._intent(dispatch, submission)
         claim = getattr(self._store, "claim", None)
         try:
             if callable(claim):
@@ -93,8 +94,8 @@ class BitgetDispatchExecution:
         return _dispatcher_status(result.status)
 
     @staticmethod
-    def _intent(dispatch: BitgetDispatch, quantity: Decimal) -> LiveIntentRecord:
-        if quantity <= 0:
+    def _intent(dispatch: BitgetDispatch, submission: BitgetEntrySubmission) -> LiveIntentRecord:
+        if submission.quantity <= 0:
             raise ValueError("dispatch quantity must be positive")
         side = "BUY" if dispatch.direction == Direction.LONG.value else "SELL"
         token = dispatch.id.hex[:16]
@@ -109,7 +110,13 @@ class BitgetDispatchExecution:
             client_oid=f"live-bitget-{dispatch.pair_token}-{token}",
             symbol=dispatch.pair_token,
             side=side,
-            requested_qty=quantity,
+            requested_qty=submission.quantity,
+            planned_leverage=submission.effective_leverage,
+            planned_margin_usdt=submission.planned_margin_usdt,
+            planned_notional_usdt=submission.planned_notional_usdt,
+            margin_mode=submission.margin_mode,
+            balance_snapshot_id=submission.balance_snapshot_id,
+            margin_reservation_id=submission.margin_reservation_id,
         )
 
     @staticmethod

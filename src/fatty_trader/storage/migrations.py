@@ -222,6 +222,34 @@ MIGRATIONS: Final = [
         ALTER TABLE telegram_messages ADD COLUMN media_size_bytes INTEGER;
         """,
     ),
+    (
+        14,
+        """
+        ALTER TABLE live_order_intents ADD COLUMN planned_margin_usdt NUMERIC;
+        ALTER TABLE live_order_intents ADD COLUMN planned_notional_usdt NUMERIC;
+        ALTER TABLE live_order_intents ADD COLUMN balance_snapshot_id UUID;
+        ALTER TABLE live_order_intents ADD COLUMN margin_reservation_id UUID;
+        CREATE TABLE IF NOT EXISTS bitget_margin_reservations (
+            id UUID PRIMARY KEY,
+            exchange TEXT NOT NULL CHECK (exchange = 'bitget'),
+            dispatch_id UUID NOT NULL REFERENCES dispatches(id),
+            client_order_id TEXT NOT NULL,
+            balance_snapshot_id UUID NOT NULL REFERENCES balance_snapshots(id),
+            planned_margin_usdt NUMERIC NOT NULL CHECK (planned_margin_usdt > 0),
+            state TEXT NOT NULL CHECK (state IN ('reserved', 'consumed', 'released', 'unknown')),
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMPTZ,
+            resolution_reason TEXT,
+            UNIQUE (exchange, client_order_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS bitget_margin_reservations_active_dispatch
+        ON bitget_margin_reservations (exchange, dispatch_id)
+        WHERE state IN ('reserved', 'unknown');
+        CREATE INDEX IF NOT EXISTS bitget_margin_reservations_expiry
+        ON bitget_margin_reservations (exchange, state, expires_at);
+        """,
+    ),
 ]
 
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
