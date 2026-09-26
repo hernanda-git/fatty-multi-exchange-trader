@@ -42,7 +42,10 @@ SUPPORTED_SERVICES = (
 )
 
 # Bitget LIVE policy, pinned in application code. These are invariants, not
-# tunables: a live trade commits at most 1 USDT margin at exactly 20x.
+# tunables: a live trade plans at most 1 USDT of isolated margin at exactly 20x.
+# The cap bounds the planned margin; a market fill can realize slightly more
+# through slippage (filled_notional / 20), so it is a ceiling on planning, not on
+# the exchange's post-fill number.
 _LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1")
 _LIVE_LEVERAGE = 20
 
@@ -560,11 +563,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             if runtime is not None
             else lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed"))
         ),
-        kill_switch=(
-            PostgresReconciliationRepository(cast(Any, psycopg.connect))
-            if bitget_kill_switch_enforced(environ)
-            else None
-        ),
+        # Wired in every mode, not only LIVE/LIVE: an execution graph that can POST
+        # exists whenever BITGET_EXECUTION_ENABLED=1, so a DEMO/paper lane would
+        # otherwise ignore the operator's emergency stop. The latch itself stays
+        # LIVE-only (bitget_kill_switch_enforced), so this is a read gate.
+        kill_switch=PostgresReconciliationRepository(cast(Any, psycopg.connect)),
         protection_admission=protection_admission,
     )
     if runtime is not None:

@@ -1,9 +1,15 @@
 from decimal import Decimal
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from fatty_trader.domain.enums import Direction, Exchange, MarginMode
+
+# Highest ``maxLever`` any venue may advertise on these models. This is venue
+# metadata, NOT trading leverage: the executable leverage policy for Bitget LIVE is
+# pinned separately (``risk.live_policy._MAX_LIVE_LEVERAGE``). Bitget currently
+# reports 150 on BTC/ETH, so a lower ceiling here would reject the instrument.
+MAX_VENUE_LEVERAGE_CEILING: Final = 150
 
 
 class CanonicalSignal(BaseModel):
@@ -44,7 +50,7 @@ class InstrumentSpec(BaseModel):
     qty_step: Decimal = Field(gt=0)
     min_qty: Decimal = Field(gt=0)
     min_notional: Decimal = Field(ge=0)
-    max_leverage: int = Field(ge=1, le=125)
+    max_leverage: int = Field(ge=1, le=MAX_VENUE_LEVERAGE_CEILING)
     contract_multiplier: Decimal = Field(default=Decimal("1"), gt=0)
 
 
@@ -53,8 +59,8 @@ class VenueRiskConfig(BaseModel):
 
     exchange: Exchange
     base_margin_usdt: Decimal = Field(gt=0)
-    default_leverage: int = Field(ge=1, le=125)
-    max_leverage: int = Field(ge=1, le=125)
+    default_leverage: int = Field(ge=1, le=MAX_VENUE_LEVERAGE_CEILING)
+    max_leverage: int = Field(ge=1, le=MAX_VENUE_LEVERAGE_CEILING)
     max_auto_margin_usdt: Decimal = Field(gt=0)
     free_margin_usdt: Decimal = Field(ge=0)
     free_margin_headroom_pct: Decimal = Field(gt=0, le=1)

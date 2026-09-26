@@ -102,9 +102,15 @@ def test_leverage_ranges_other_than_20x_are_rejected(environ) -> None:
 
 
 def test_unset_leverage_environment_resolves_to_20x_not_50x() -> None:
-    """An unset environment must be 20x, never the old 50x default."""
-    preflight = _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"})
-    assert preflight is not None
+    """An unset environment must be 20x, never the old 50x default.
+
+    50 is now a startup error, so building the preflight with the leverage env
+    absent proves the default resolved to 20; the contrast case pins it.
+    """
+    environ = {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}
+    assert _preflight(environ) is not None
+    with pytest.raises(ValueError, match="fixed at 20x"):
+        _preflight({**environ, "BITGET_MAX_LEVERAGE": "50"})
 
 
 def test_live_risk_config_pins_leverage_ceiling_to_20() -> None:
@@ -129,6 +135,8 @@ def test_live_risk_config_rejects_non_finite_margin_cap() -> None:
 
 
 def test_position_lever_rows_build_usable_mmr_tiers() -> None:
+    # Shape taken from live BTCUSDT: the final tier carries a real bound, NOT an
+    # `endUnit == 0` sentinel, so the widest tier has to be forced to the catch-all.
     rows = [
         {
             "symbol": "BTCUSDT",
@@ -141,14 +149,18 @@ def test_position_lever_rows_build_usable_mmr_tiers() -> None:
             "symbol": "BTCUSDT",
             "level": "2",
             "startUnit": "200000",
-            "endUnit": "0",
+            "endUnit": "1200000000",
             "keepMarginRate": "0.01",
         },
     ]
     tiers = mm_tiers_from_position_lever(rows, "BTCUSDT")
     assert len(tiers) == 2
+    assert tiers[-1].upper_bound_notional is None
     assert select_mmr(Decimal("1000"), tiers) == Decimal("0.005")
-    assert select_mmr(Decimal("10000000"), tiers) == Decimal("0.01")
+    assert select_mmr(Decimal("200000"), tiers) == Decimal("0.005")
+    assert select_mmr(Decimal("200001"), tiers) == Decimal("0.01")
+    # Far beyond the declared bounds the catch-all must still resolve.
+    assert select_mmr(Decimal("999999999999"), tiers) == Decimal("0.01")
 
 
 def test_position_lever_rejects_unknown_symbol() -> None:

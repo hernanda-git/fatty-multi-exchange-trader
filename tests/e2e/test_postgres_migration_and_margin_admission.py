@@ -107,6 +107,9 @@ def test_postgres_same_exchange_concurrent_admission_allows_one_then_release_all
             planned_margin_usdt=Decimal("30"),
             headroom=Decimal("0.5"),
             ttl=timedelta(minutes=5),
+            # Test cap above the planned margin: this proof is about serialized
+            # admission, not the LIVE 1 USDT ceiling.
+            max_margin_per_trade_usdt=Decimal("100"),
         )
 
     start = Barrier(2)

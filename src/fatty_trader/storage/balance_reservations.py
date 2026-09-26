@@ -58,8 +58,14 @@ class PostgresBitgetMarginReservationRepository:
         planned_margin_usdt: Decimal,
         headroom: Decimal,
         ttl: timedelta,
-        max_margin_per_trade_usdt: Decimal | None = None,
+        max_margin_per_trade_usdt: Decimal,
     ) -> BalanceAdmission:
+        """Reserve margin for one dispatch.
+
+        ``max_margin_per_trade_usdt`` is deliberately a required argument: it is a
+        hard LIVE ceiling, and a caller that forgets it would otherwise reserve
+        uncapped margin. The LIVE risk policy passes exactly 1 USDT.
+        """
         if exchange != "bitget":
             return BalanceAdmission.rejected("unsupported-exchange")
         if any(
@@ -71,14 +77,10 @@ class PostgresBitgetMarginReservationRepository:
             return BalanceAdmission.rejected("invalid-balance-headroom")
         if not margin_coin.strip() or observed_at.tzinfo is None or observed_at.utcoffset() is None:
             return BalanceAdmission.rejected("invalid-balance-snapshot")
-        if max_margin_per_trade_usdt is not None and (
-            not max_margin_per_trade_usdt.is_finite() or max_margin_per_trade_usdt <= 0
-        ):
+        if not max_margin_per_trade_usdt.is_finite() or max_margin_per_trade_usdt <= 0:
             return BalanceAdmission.rejected("invalid-margin-cap")
         # Independent of sizing: even a caller bug cannot reserve above the cap.
-        if max_margin_per_trade_usdt is not None and (
-            planned_margin_usdt > max_margin_per_trade_usdt
-        ):
+        if planned_margin_usdt > max_margin_per_trade_usdt:
             return BalanceAdmission.rejected("margin-cap-exceeded")
         if ttl.total_seconds() <= 0:
             return BalanceAdmission.rejected("invalid-reservation-ttl")

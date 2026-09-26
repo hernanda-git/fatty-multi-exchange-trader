@@ -267,21 +267,12 @@ MIGRATIONS: Final = [
         ON bitget_post_fill_reconciliations (exchange, created_at DESC);
         """,
     ),
-    (
-        16,
-        """
-        ALTER TABLE venue_kill_switches
-        DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only;
-        ALTER TABLE venue_kill_switches
-        ADD CONSTRAINT bitget_kill_switch_alert_only
-        CHECK (scope <> 'bitget' OR active = FALSE);
-        """,
-    ),
-    # Migration 16 pinned the Bitget kill switch to alert-only. Enforcement was
-    # restored afterwards, so the constraint has to go: with it in place
-    # ``latch_kill_switch()``'s ``active = TRUE`` raises CheckViolation and the LIVE
-    # monitor dies instead of blocking new entries. Dropping it restores the
-    # fail-closed latch that ``bitget_kill_switch_enforced`` relies on.
+    # Migration 16 (later removed) pinned the Bitget kill switch to alert-only with
+    # a CHECK constraint. It is deliberately absent from MIGRATIONS: on a database
+    # that still holds an ``active = TRUE`` bitget row it would abort the whole
+    # migrate transaction (a CHECK validates existing rows), and fresh installs
+    # should never create a constraint that makes ``latch_kill_switch()`` impossible.
+    # Migration 17 removes it from databases where it was already applied.
     (
         17,
         """

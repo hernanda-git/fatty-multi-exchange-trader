@@ -50,8 +50,13 @@ pinned separately (below).
   non-numeric, `NaN`, `Infinity`, zero, negative, or anything other than exactly `1`
   is rejected at startup. The cap applies to the allocation request, to the
   all-in/fallback branch, and again to the exchange-step-rounded quantity, and the
-  legacy no-reservation seam is capped too. `PostgresBitgetMarginReservationRepository`
-  re-checks the planned margin before writing a reservation.
+  legacy no-reservation seam is capped too.
+  `PostgresBitgetMarginReservationRepository.reserve()` takes the cap as a
+  **required** argument and re-checks the planned margin before writing a
+  reservation, so a caller cannot silently reserve uncapped.
+  Caveat: this bounds the *planned* margin. Entries are market orders, so fill
+  slippage can leave exchange-side realized margin (`filled_notional / 20`)
+  marginally above 1 USDT. The risk clauses below are stated that precisely.
 
 ## Kill switch
 
@@ -61,16 +66,25 @@ With enforcement restored, that constraint is actively harmful: `latch_kill_swit
 writes `active = TRUE`, so the constraint makes an anomaly raise `CheckViolation` and
 kill the LIVE monitor instead of blocking new entries.
 
-- Migration `17` drops the constraint. Migration `16` is already recorded on the
-  deployed database, so `17` is what actually restores a latchable switch.
+- Migration `17` drops the constraint. Migration `16` is **removed from `MIGRATIONS`**:
+  it is already recorded on the deployed database (so only `17` runs there), and on a
+  database that still held an `active = TRUE` bitget row its `ADD CONSTRAINT` would
+  have aborted the single migrate transaction, which would have left `17` unapplied.
+  Fresh installs must never create the constraint at all.
 - `bitget_kill_switch_enforced()` enforces on the LIVE lane only, and
   `BITGET_FALLBACK_MUTATIONS_ENABLED` remains gated behind that enforcement.
+- The dispatcher's kill switch is wired in **every** mode, not only LIVE/LIVE: a
+  POST-capable graph exists whenever `BITGET_EXECUTION_ENABLED=1`, so a DEMO lane
+  must not ignore the operator's stop. The latch itself stays LIVE-only.
 - Operator mutations remain closed (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`).
 
 Remaining gates, stated plainly: the per-worker in-process degraded gate still
 exists, and the durable post-fill mismatch entry-admission latch is intentionally not
-wired (removed at the owner's request). The monitor/reconciliation kill switch is the
-mechanism that blocks new entries after an anomaly.
+wired (removed at the owner's request), so a post-fill margin/leverage mismatch
+records a `bitget_post_fill_reconciliations` row and marks the worker degraded for the
+lifetime of that process — it does not block a replacement worker. The
+monitor/reconciliation kill switch is the mechanism that blocks new entries after an
+anomaly, and it does not currently read post-fill mismatches.
 
 ## Rollback
 

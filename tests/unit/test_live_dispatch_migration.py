@@ -8,22 +8,34 @@ def test_live_dispatch_migration_persists_take_profits() -> None:
     assert "canonical_signals" in matching[-1]
 
 
-def test_kill_switch_migration_keeps_schema_and_enforces_alert_only_bitget() -> None:
+def test_kill_switch_migration_keeps_schema_and_leaves_bitget_latchable() -> None:
+    """Bitget must stay latchable: the constraint may only ever be DROPPED.
+
+    A CHECK pinning ``scope = 'bitget'`` to ``active = FALSE`` makes
+    ``latch_kill_switch()`` (``active = TRUE``) raise CheckViolation, so an anomaly
+    crashes the LIVE monitor instead of blocking entries. Asserting the constraint
+    exists (as this test once did) asserted the bug.
+    """
     table_match = next(
         (version, sql)
         for version, sql in MIGRATIONS
         if "CREATE TABLE IF NOT EXISTS venue_kill_switches" in sql
     )
-    constraint_match = next(
-        (version, sql) for version, sql in MIGRATIONS if "bitget_kill_switch_alert_only" in sql
-    )
-
     table_version, table_sql = table_match
-    constraint_version, constraint_sql = constraint_match
+    dropping = [
+        (version, sql) for version, sql in MIGRATIONS if "bitget_kill_switch_alert_only" in sql
+    ]
+
     assert table_version >= 4
     assert "active" in table_sql
-    assert constraint_version > table_version
-    assert "scope <> 'bitget' OR active = FALSE" in constraint_sql
+    assert dropping, "some migration must remove the alert-only constraint"
+    for _, sql in dropping:
+        assert "DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only" in sql
+        assert "ADD CONSTRAINT bitget_kill_switch_alert_only" not in sql
+        assert "scope <> 'bitget' OR active = FALSE" not in sql
+    final_sql = dict(MIGRATIONS)[17]
+    assert "DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only" in final_sql
+    assert "ADD CONSTRAINT" not in final_sql
 
 
 def test_canary_reservations_have_an_additive_durable_schema() -> None:

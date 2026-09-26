@@ -58,6 +58,9 @@ def test_reserve_serializes_fresh_balance_and_keeps_unknown_commitments() -> Non
         planned_margin_usdt=Decimal("10"),
         headroom=Decimal("0.5"),
         ttl=timedelta(seconds=30),
+        # Test cap, deliberately above the planned margin: this case exercises
+        # serialization, not the LIVE 1 USDT ceiling.
+        max_margin_per_trade_usdt=Decimal("100"),
     )
 
     assert result.accepted is True
@@ -140,6 +143,7 @@ def test_reserve_returns_rejection_without_creating_margin_reservation() -> None
         planned_margin_usdt=Decimal("10"),
         headroom=Decimal("0.5"),
         ttl=timedelta(seconds=30),
+        max_margin_per_trade_usdt=Decimal("100"),
     )
 
     assert result == BalanceAdmission.rejected("insufficient-reserved-headroom")

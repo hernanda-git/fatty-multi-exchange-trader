@@ -71,6 +71,22 @@ async def test_positive_live_balance_is_capped_to_one_usdt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unset_leverage_env_defaults_to_20x_not_the_old_50x() -> None:
+    """An unset leverage environment must cap the spec at 20x, never 50x.
+
+    The venue below advertises ``max_leverage=50``, so a regression to the old
+    50 default would show up as 50 here instead of 20.
+    """
+    preflight = _bitget_dispatch_preflight(Venue("1000"), {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"})
+
+    spec, risk = await preflight("PENDLEUSDT")
+
+    assert spec.max_leverage == 20
+    assert risk.default_leverage == 20
+    assert risk.max_leverage == 20
+
+
+@pytest.mark.asyncio
 async def test_env_margin_cap_and_fixed_leverage_reach_venue_risk_config() -> None:
     preflight = _bitget_dispatch_preflight(
         Venue("1000"),

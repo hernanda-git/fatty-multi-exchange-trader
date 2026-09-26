@@ -170,9 +170,11 @@ services:
       BITGET_MIN_LEVERAGE: "20"
       BITGET_MAX_LEVERAGE: "20"
       BITGET_ALLOCATION_PCT: "0.20"
-      # Hard per-trade isolated-margin ceiling in USDT. Allocation is scaled by
+      # Planned per-trade isolated-margin ceiling in USDT. Allocation is scaled by
       # balance, so without this a growing balance silently raises per-trade
-      # margin. The cap binds regardless of balance size.
+      # margin. The cap binds regardless of balance size. Note it bounds the
+      # PLANNED margin: entries are market orders, so fill slippage can push
+      # exchange-side realized margin marginally above it.
       BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
       BITGET_MAX_NORMAL_POSITIONS: "5"
       BITGET_LIQUIDATION_BUFFER: "0.10"

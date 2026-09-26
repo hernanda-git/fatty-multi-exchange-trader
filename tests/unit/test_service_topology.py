@@ -19,6 +19,18 @@ def test_demo_never_enforces_bitget_kill_switch() -> None:
     assert bitget_kill_switch_enforced({"TRADER_MODE": "LIVE", "BITGET_MODE": "LIVE"}) is True
 
 
+def test_dispatcher_wires_the_kill_switch_in_every_mode() -> None:
+    """The operator stop must not depend on TRADER_MODE.
+
+    Regression guard: gating this wiring on LIVE/LIVE left a DEMO dispatcher with
+    ``BITGET_EXECUTION_ENABLED=1`` able to POST while an active kill switch was
+    ignored. The latch itself stays LIVE-only (see the test above).
+    """
+    source = (REPO_ROOT / "src/fatty_trader/service.py").read_text(encoding="utf-8")
+    assert "kill_switch=PostgresReconciliationRepository(" in source
+    assert "kill_switch=(" not in source
+
+
 def test_enabled_dispatch_exchanges_matches_deployed_engines() -> None:
     assert "DISPATCH_EXCHANGES: bitget" in COMPOSE
     assert enabled_dispatch_exchanges({"DISPATCH_EXCHANGES": "bitget"}) == ("bitget",)

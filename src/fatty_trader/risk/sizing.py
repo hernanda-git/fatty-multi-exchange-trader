@@ -3,7 +3,12 @@ from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 from fatty_trader.domain.enums import Direction
-from fatty_trader.domain.models import InstrumentSpec, SizingPlan, VenueRiskConfig
+from fatty_trader.domain.models import (
+    MAX_VENUE_LEVERAGE_CEILING,
+    InstrumentSpec,
+    SizingPlan,
+    VenueRiskConfig,
+)
 from fatty_trader.risk.liquidation import MMTier
 
 
@@ -87,7 +92,7 @@ class SymbolMetadata(BaseModel):
     # Venue-reported maximum, not our trading leverage. Bitget now advertises
     # maxLever up to 150 on some contracts, so a 125 ceiling would reject the
     # contract outright. Our 20x policy is enforced separately in live_policy.
-    max_leverage: int = Field(ge=1, le=150)
+    max_leverage: int = Field(ge=1, le=MAX_VENUE_LEVERAGE_CEILING)
     min_notional: Decimal = Field(default=Decimal("5"), ge=0)
     mm_tiers: tuple[MMTier, ...] = Field(default=())
 

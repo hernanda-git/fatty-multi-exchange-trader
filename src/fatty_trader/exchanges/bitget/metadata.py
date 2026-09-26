@@ -69,10 +69,14 @@ def mm_tiers_from_position_lever(rows: list[dict[str, Any]], symbol: str) -> tup
     they live in the position-lever table, a flat list of
     ``{symbol, level, startUnit, endUnit, keepMarginRate}`` rows ordered by size.
     ``keepMarginRate`` IS the maintenance-margin rate (it is not a
-    complement), and the unbounded final tier is marked with ``endUnit == 0``.
+    complement, and ``keepMarginRate * tier leverage`` matches Bitget's published
+    liquidation rate).
 
-    Tiers are sorted by ``endUnit`` ascending and the widest becomes the
-    catch-all (``None`` bound) so ``select_mmr`` can never fall through a gap.
+    Tiers are sorted by ``endUnit`` ascending and the widest is then forced to be
+    the catch-all (``None`` bound) so ``select_mmr`` can never fall through a gap.
+    Do not rely on a sentinel row: live payloads do not reliably include an
+    ``endUnit == 0`` tier (BTCUSDT's last tier reports ``1200000000``), so the
+    forced catch-all is the load-bearing part, not the sentinel check.
     Fails closed on a bad payload rather than returning an empty tuple, which
     would abort live sizing.
     """

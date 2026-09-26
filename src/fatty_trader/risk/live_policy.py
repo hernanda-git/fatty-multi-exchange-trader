@@ -8,8 +8,10 @@ Pipeline (fail-closed, deterministic):
    enforced twice: on the requested margin, and again on the step-rounded quantity,
    since rounding can push realized margin back above the ceiling.
 3. Leverage search ascending in ``[max(20, risk.min_leverage),
-   min(50, risk.max_leverage, meta.max_leverage)]``; first leverage whose
-   tick/step-rounded quantity meets min-notional wins (lowest safe leverage).
+   min(_MAX_LIVE_LEVERAGE, risk.max_leverage, meta.max_leverage)]``; first leverage
+   whose tick/step-rounded quantity meets min-notional wins (lowest safe leverage).
+   ``_MAX_LIVE_LEVERAGE`` is pinned to 20 so ``meta.max_leverage`` (the venue's
+   advertised ceiling, up to 150) can never widen the executed leverage.
 4. Min-notional is enforced AFTER rounding. When no leverage meets it:
    all-in fallback (margin = full balance) ONLY when ``active_positions == 0``
    (``fallback_used=True``); otherwise skip with reason.

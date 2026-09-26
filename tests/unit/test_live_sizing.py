@@ -172,11 +172,18 @@ def test_hard_margin_cap_limits_margin_and_holds_leverage_at_20() -> None:
 
 
 def test_margin_cap_never_exceeds_cap_on_any_balance_size() -> None:
+    accepted = 0
     for available in (Decimal("1"), Decimal("50"), Decimal("1000000")):
         decision = plan_live_position(make_input(available_usdt=available, risk=capped_risk("1")))
         if decision.accepted:
+            accepted += 1
             assert decision.margin_usdt is not None
             assert decision.margin_usdt <= Decimal("1")
+    assert accepted, "no balance produced an accepted plan, so the loop proved nothing"
+    # Explicit large-balance case: allocation alone would request 200000 USDT.
+    large = plan_live_position(make_input(available_usdt=Decimal("1000000"), risk=capped_risk("1")))
+    assert large.accepted is True
+    assert large.margin_usdt is not None and large.margin_usdt <= Decimal("1")
 
 
 def test_all_in_fallback_respects_margin_cap() -> None:

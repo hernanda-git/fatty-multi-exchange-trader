@@ -152,10 +152,13 @@ class AsyncBitgetVenue:
         metadata = metadata_from_contract(find_contract(contracts, symbol))
         # Maintenance-margin tiers are NOT in /market/contracts; without them the
         # liquidation guard rejects every live signal. Fail closed on a bad payload.
-        try:
-            lever = await self._client.get_position_lever(symbol)
-        except AttributeError as exc:  # pragma: no cover - client wiring guard
-            raise ValueError("Bitget client cannot read position-lever MMR tiers") from exc
+        read_position_lever = cast(
+            Callable[..., Awaitable[Any]] | None,
+            getattr(self._client, "get_position_lever", None),
+        )
+        if not callable(read_position_lever):
+            raise ValueError("Bitget client cannot read position-lever MMR tiers")
+        lever = await read_position_lever(symbol)
         if not isinstance(lever, list) or not lever:
             raise ValueError("Bitget position-lever response must be a non-empty list")
         metadata = metadata.model_copy(
