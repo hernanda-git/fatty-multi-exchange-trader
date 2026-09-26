@@ -16,6 +16,7 @@ psycopg = pytest.importorskip("psycopg")
 
 from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
 from fatty_trader.storage.migrations import MIGRATIONS, apply_migrations
+from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 from fatty_trader.storage.schema import apply_initial_schema
 
 
@@ -139,3 +140,38 @@ def test_postgres_same_exchange_concurrent_admission_allows_one_then_release_all
             "SELECT state FROM bitget_margin_reservations ORDER BY client_order_id"
         ).fetchall()
     assert sorted(state for (state,) in states) == ["released", "reserved"]
+
+
+def test_postgres_bitget_kill_switch_latch_lands_and_blocks_entry_admission(
+    postgres_schema: tuple[str, str],
+) -> None:
+    """A real Bitget latch must reach ``active = TRUE`` on a migrated schema.
+
+    Migration 16 shipped a CHECK pinning ``scope = 'bitget'`` to ``active = FALSE``.
+    That makes the fail-closed latch impossible: ``latch_kill_switch()`` raises
+    CheckViolation and the LIVE monitor dies rather than blocking entries. This
+    test fails loudly if any migration re-introduces such a constraint.
+    """
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    repository = PostgresReconciliationRepository(lambda: _connect(dsn, schema))
+
+    assert repository.kill_switch_active("bitget") is False
+    repository.latch_kill_switch("bitget", "e2e-post-fill-mismatch")
+
+    assert repository.kill_switch_active("bitget") is True
+    with _connect(dsn, schema) as connection:
+        row = connection.execute(
+            "SELECT active, reason FROM venue_kill_switches WHERE scope = 'bitget'"
+        ).fetchone()
+        alert_only = connection.execute(
+            """SELECT conname FROM pg_constraint
+               WHERE conrelid = 'venue_kill_switches'::regclass
+                 AND conname = 'bitget_kill_switch_alert_only'"""
+        ).fetchall()
+
+    assert row == (True, "e2e-post-fill-mismatch")
+    assert alert_only == []
+
+    repository.release_kill_switch("bitget", "e2e-owner-approved-release")
+    assert repository.kill_switch_active("bitget") is False

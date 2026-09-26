@@ -149,3 +149,64 @@ def test_signal_without_sl_uses_atr_fallback() -> None:
 def test_signal_without_sl_or_atr_skips() -> None:
     decision = plan_live_position(make_input(stop_loss=None, atr=None))
     assert decision.accepted is False
+
+
+def capped_risk(cap: str) -> BitgetLiveRiskConfig:
+    """Return a risk config with a hard per-trade margin cap and fixed leverage."""
+    return BitgetLiveRiskConfig(
+        min_leverage=20,
+        max_leverage=20,
+        allocation_pct=Decimal("0.20"),
+        max_margin_per_trade_usdt=Decimal(cap),
+    )
+
+
+def test_hard_margin_cap_limits_margin_and_holds_leverage_at_20() -> None:
+    decision = plan_live_position(make_input(available_usdt=Decimal("1000"), risk=capped_risk("1")))
+    assert decision.accepted is True
+    assert decision.margin_usdt == Decimal("1")
+    assert decision.leverage == 20
+    # 1 USDT margin at 20x -> 20 USDT notional (subject to step rounding).
+    assert decision.notional_usdt == Decimal("20")
+    assert decision.quantity == Decimal("0.2")  # 20 notional / 100 entry
+
+
+def test_margin_cap_never_exceeds_cap_on_any_balance_size() -> None:
+    for available in (Decimal("1"), Decimal("50"), Decimal("1000000")):
+        decision = plan_live_position(make_input(available_usdt=available, risk=capped_risk("1")))
+        if decision.accepted:
+            assert decision.margin_usdt is not None
+            assert decision.margin_usdt <= Decimal("1")
+
+
+def test_all_in_fallback_respects_margin_cap() -> None:
+    # 5 USDT balance would all-in without a cap; the cap must keep it at 1 USDT,
+    # so a 60 USDT min-notional symbol becomes unmeetable and is skipped.
+    meta = make_meta(min_notional=Decimal("60"))
+    decision = plan_live_position(
+        make_input(
+            meta=meta,
+            available_usdt=Decimal("5"),
+            active_positions=0,
+            risk=capped_risk("1"),
+        )
+    )
+    assert decision.accepted is False
+    assert decision.fallback_used is True
+    assert decision.margin_usdt is None
+
+
+def test_no_cap_preserves_allocation_behavior() -> None:
+    decision = plan_live_position(make_input(available_usdt=Decimal("1000")))
+    assert decision.accepted is True
+    assert decision.margin_usdt == Decimal("200")
+
+
+def test_fixed_leverage_config_searches_only_that_leverage() -> None:
+    # A symbol whose 20x notional cannot meet min-notional must be skipped rather
+    # than silently escalating to 50x.
+    meta = make_meta(min_notional=Decimal("5000"))
+    decision = plan_live_position(
+        make_input(meta=meta, available_usdt=Decimal("1000"), risk=capped_risk("1"))
+    )
+    assert decision.accepted is False

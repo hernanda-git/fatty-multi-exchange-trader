@@ -26,7 +26,7 @@ def test_valid_live_config_uses_frozen_defaults() -> None:
     assert config.margin_coin == "USDT"
     assert config.margin_mode == "isolated"
     assert config.min_leverage == 20
-    assert config.max_leverage == 50
+    assert config.max_leverage == 20
     assert config.allocation_pct == Decimal("0.20")
     assert config.max_normal_positions == 5
     assert config.liquidation_buffer > 0
@@ -68,6 +68,18 @@ def test_leverage_above_maximum_is_rejected() -> None:
 def test_inverted_leverage_range_is_rejected() -> None:
     with pytest.raises(ValidationError):
         BitgetLiveConfig(**_creds(min_leverage=40, max_leverage=30))
+
+
+def test_wide_leverage_range_is_rejected() -> None:
+    """A 20/50 range previously validated and silently allowed 50x on LIVE."""
+    with pytest.raises(ValidationError):
+        BitgetLiveConfig(**_creds(min_leverage=20, max_leverage=50))
+
+
+def test_maximum_above_the_pin_is_rejected() -> None:
+    """Any ceiling other than 20 is a configuration error, not a tunable."""
+    with pytest.raises(ValidationError):
+        BitgetLiveConfig(**_creds(max_leverage=21))
 
 
 def test_missing_credentials_fail_closed() -> None:

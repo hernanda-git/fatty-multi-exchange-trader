@@ -41,6 +41,11 @@ SUPPORTED_SERVICES = (
     "source-management",
 )
 
+# Bitget LIVE policy, pinned in application code. These are invariants, not
+# tunables: a live trade commits at most 1 USDT margin at exactly 20x.
+_LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1")
+_LIVE_LEVERAGE = 20
+
 
 @dataclass(frozen=True)
 class ServiceConfig:
@@ -313,7 +318,6 @@ def build_bitget_execution_runtime(
     from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
     from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
-    from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
     using_default_client = client_factory is None
     if client_factory is None:
@@ -347,14 +351,12 @@ def build_bitget_execution_runtime(
         capability_repository_factory() if capability_repository_factory is not None else None
     )
     reservation_repository = PostgresBitgetMarginReservationRepository(psycopg.connect)
-    entry_admission_latch = PostgresReconciliationRepository(cast(Any, psycopg.connect))
     execution = BitgetDispatchExecution(
         AsyncBitgetExecution(
             cast(AsyncBitgetExecutionClient, client),
             venue,
             capability_repository=capability_repository,
             reconciliation_repository=reservation_repository,
-            entry_admission_latch=entry_admission_latch,
             environment=config.venue_mode,
         ),
         cast(LiveIntentStoreProtocol, intent_store_factory()),
@@ -374,16 +376,44 @@ def _bitget_dispatch_preflight(
 ) -> Callable[[Any], Any]:
     """Return a fail-closed admission factory; production always reserves first."""
     allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
-    max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "50"))
+    # Both bounds default to 20 so an unset environment is 20x, never 50x.
+    max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "20"))
     min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
     max_age_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_AGE_SECONDS", "5"))
     ttl_seconds = Decimal(environ.get("BITGET_BALANCE_RESERVATION_TTL_SECONDS", "30"))
     if not (Decimal("0") < allocation_pct <= Decimal("1")):
         raise ValueError("BITGET_ALLOCATION_PCT must be in (0, 1]")
-    if min_leverage < 20 or max_leverage < min_leverage or max_leverage > 50:
-        raise ValueError("Bitget live leverage bounds must be within [20, 50]")
+    # Live is pinned to exactly 20x. A range is a foot-gun: 20/50 in the
+    # environment would silently allow 50x, which is not the intended policy.
+    if min_leverage != _LIVE_LEVERAGE or max_leverage != _LIVE_LEVERAGE:
+        raise ValueError(
+            "Bitget LIVE leverage is fixed at 20x: BITGET_MIN_LEVERAGE and "
+            f"BITGET_MAX_LEVERAGE must both be 20 (got {min_leverage}/{max_leverage})"
+        )
     if max_age_seconds <= 0 or ttl_seconds <= 0:
         raise ValueError("Bitget balance age and reservation TTL must be positive")
+    raw_margin_cap = environ.get("BITGET_MAX_MARGIN_PER_TRADE_USDT", "").strip()
+    if not raw_margin_cap:
+        raise ValueError(
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT is required for Bitget LIVE; "
+            "refusing to size without a hard per-trade margin cap"
+        )
+    try:
+        max_margin_per_trade = Decimal(raw_margin_cap)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a startup config error
+        raise ValueError(
+            f"BITGET_MAX_MARGIN_PER_TRADE_USDT must be a positive USDT amount: {raw_margin_cap!r}"
+        ) from exc
+    if not max_margin_per_trade.is_finite() or max_margin_per_trade <= 0:
+        raise ValueError("BITGET_MAX_MARGIN_PER_TRADE_USDT must be a finite positive amount")
+    # The policy is a hard ceiling of exactly 1 USDT, not a tunable. A larger
+    # value (including a huge exponent like 1e999999) would silently widen the
+    # cap, so anything other than exactly 1 is a configuration error.
+    if max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
+        raise ValueError(
+            "Bitget LIVE margin cap is fixed at 1 USDT: "
+            f"BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly 1 (got {raw_margin_cap!r})"
+        )
 
     async def preflight(dispatch: Any) -> Any:
         symbol = dispatch.pair_token if hasattr(dispatch, "pair_token") else dispatch
@@ -400,7 +430,8 @@ def _bitget_dispatch_preflight(
             )
         if reservation_repository is None:
             # Test/legacy seam only; runtime wires the durable admission branch below.
-            allocation = available_balance * allocation_pct
+            # max_margin_per_trade is validated above and is never None here.
+            allocation = min(available_balance * allocation_pct, max_margin_per_trade)
             return (
                 InstrumentSpec(
                     exchange=Exchange.BITGET,
@@ -434,7 +465,10 @@ def _bitget_dispatch_preflight(
         from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
 
         risk = BitgetLiveRiskConfig(
-            min_leverage=min_leverage, max_leverage=max_leverage, allocation_pct=allocation_pct
+            min_leverage=min_leverage,
+            max_leverage=max_leverage,
+            allocation_pct=allocation_pct,
+            max_margin_per_trade_usdt=max_margin_per_trade,
         )
         active_position_count = getattr(venue, "active_position_count", None)
         if not callable(active_position_count):
@@ -478,6 +512,7 @@ def _bitget_dispatch_preflight(
             planned_margin_usdt=decision.margin_usdt,
             headroom=Decimal("1"),
             ttl=__import__("datetime").timedelta(seconds=float(ttl_seconds)),
+            max_margin_per_trade_usdt=max_margin_per_trade,
         )
         if (
             not admission.accepted
@@ -525,9 +560,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             if runtime is not None
             else lambda _: (_ for _ in ()).throw(RuntimeError("cutover gate is closed"))
         ),
-        # A post-fill margin/leverage mismatch is durable in every mode, so a
-        # replacement worker blocks before entry POST using the same latch.
-        kill_switch=PostgresReconciliationRepository(cast(Any, psycopg.connect)),
+        kill_switch=(
+            PostgresReconciliationRepository(cast(Any, psycopg.connect))
+            if bitget_kill_switch_enforced(environ)
+            else None
+        ),
         protection_admission=protection_admission,
     )
     if runtime is not None:
@@ -721,7 +758,7 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         repository,
         max_clock_skew_ms=max_clock_skew_ms,
         enforce_kill_switch=bitget_kill_switch_enforced(environ),
-        fallback_mutations_enabled=(fallback_raw == "1" and bitget_kill_switch_enforced(environ)),
+        fallback_mutations_enabled=((fallback_raw == "1") and bitget_kill_switch_enforced(environ)),
         live_intent_store=live_intent_store,
     )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))

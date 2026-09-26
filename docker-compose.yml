@@ -165,9 +165,15 @@ services:
       BITGET_PRODUCT_TYPE: USDT-FUTURES
       BITGET_MARGIN_COIN: USDT
       BITGET_MARGIN_MODE: isolated
+      # Leverage is pinned, not a range: 20x only. Widening this re-opens the
+      # liquidation-buffer search, so treat it as a deliberate risk decision.
       BITGET_MIN_LEVERAGE: "20"
-      BITGET_MAX_LEVERAGE: "50"
+      BITGET_MAX_LEVERAGE: "20"
       BITGET_ALLOCATION_PCT: "0.20"
+      # Hard per-trade isolated-margin ceiling in USDT. Allocation is scaled by
+      # balance, so without this a growing balance silently raises per-trade
+      # margin. The cap binds regardless of balance size.
+      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
       BITGET_MAX_NORMAL_POSITIONS: "5"
       BITGET_LIQUIDATION_BUFFER: "0.10"
     depends_on:

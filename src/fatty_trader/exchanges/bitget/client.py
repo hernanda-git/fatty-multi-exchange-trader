@@ -241,6 +241,18 @@ class BitgetRestClient:
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> Any:
         return await self._get("/api/v2/mix/market/contracts", {"productType": product_type})
 
+    async def get_position_lever(
+        self,
+        symbol: str,
+        product_type: str = "USDT-FUTURES",
+    ) -> Any:
+        """Return maintenance-margin (keepMarginRate) tiers for ``symbol``."""
+        payload = await self._get(
+            "/api/v2/mix/market/query-position-lever",
+            {"productType": product_type, "symbol": symbol},
+        )
+        return payload.get("data") if isinstance(payload, dict) else payload
+
     async def get_account_bills(
         self,
         symbol: str = "BTCUSDT",

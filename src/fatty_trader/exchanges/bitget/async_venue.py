@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
-from fatty_trader.exchanges.bitget.metadata import find_contract, metadata_from_contract
+from fatty_trader.exchanges.bitget.metadata import (
+    find_contract,
+    metadata_from_contract,
+    mm_tiers_from_position_lever,
+)
 from fatty_trader.exchanges.bitget.read_model import (
     BitgetAccountState,
     BitgetPositionState,
@@ -22,6 +26,7 @@ class AsyncBitgetClient(Protocol):
     async def get_account(self, symbol: str) -> Any: ...
     async def get_single_position(self, symbol: str) -> Any: ...
     async def get_contracts(self) -> Any: ...
+    async def get_position_lever(self, symbol: str) -> Any: ...
     async def get_ticker(self, symbol: str) -> Any: ...
     async def get_clock_skew_ms(self) -> int: ...
     async def set_margin_mode(self, symbol: str, margin_mode: str) -> Any: ...
@@ -145,6 +150,17 @@ class AsyncBitgetVenue:
         if not isinstance(contracts, list):
             raise ValueError("Bitget contracts response must be a list")
         metadata = metadata_from_contract(find_contract(contracts, symbol))
+        # Maintenance-margin tiers are NOT in /market/contracts; without them the
+        # liquidation guard rejects every live signal. Fail closed on a bad payload.
+        try:
+            lever = await self._client.get_position_lever(symbol)
+        except AttributeError as exc:  # pragma: no cover - client wiring guard
+            raise ValueError("Bitget client cannot read position-lever MMR tiers") from exc
+        if not isinstance(lever, list) or not lever:
+            raise ValueError("Bitget position-lever response must be a non-empty list")
+        metadata = metadata.model_copy(
+            update={"mm_tiers": mm_tiers_from_position_lever(lever, symbol)}
+        )
         ticker = await self._client.get_ticker(symbol)
         if not isinstance(ticker, dict):
             raise ValueError("Bitget ticker response must be an object")

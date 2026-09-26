@@ -117,6 +117,7 @@ def test_bitget_execution_runtime_is_constructed_only_after_explicit_cutover() -
         "BITGET_CANARY_SYMBOL": "BTCUSDT",
         "BITGET_APPROVAL_REFERENCE": "operator-ticket-123",
         "BITGET_MAX_CLOCK_SKEW_MS": "5000",
+        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
     }
     runtime = build_bitget_execution_runtime(
         enabled, client_factory=client_factory, intent_store_factory=lambda: object()

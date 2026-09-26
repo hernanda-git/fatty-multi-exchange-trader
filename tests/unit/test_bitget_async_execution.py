@@ -423,7 +423,7 @@ async def test_post_fill_leverage_mismatch_latches_future_entries_closed() -> No
 
 
 @pytest.mark.asyncio
-async def test_post_fill_mismatch_latches_durable_entry_admission_for_new_workers() -> None:
+async def test_post_fill_mismatch_is_recorded_without_durable_dispatch_latch() -> None:
     class MismatchClient(FakeAsyncClient):
         async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
             return [
@@ -439,23 +439,21 @@ async def test_post_fill_mismatch_latches_durable_entry_admission_for_new_worker
                 }
             ]
 
-    class DurableLatch:
+    class Reconciliations:
         def __init__(self) -> None:
-            self.active = False
-            self.reasons: list[tuple[str, str]] = []
+            self.observations: list[Any] = []
 
-        def latch_kill_switch(self, scope: str, reason: str) -> None:
-            self.active = True
-            self.reasons.append((scope, reason))
-
-        def is_active(self, scope: str) -> bool:
-            return self.active and scope == "bitget"
+        def record(self, observation: Any) -> None:
+            self.observations.append(observation)
 
     client = MismatchClient()
-    latch = DurableLatch()
-    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client), entry_admission_latch=latch)
+    reconciliations = Reconciliations()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        reconciliation_repository=reconciliations,
+    )
 
     await adapter.submit_entry(_admitted_intent())
 
-    assert latch.reasons == [("bitget", "post-fill-margin-or-leverage-mismatch")]
-    assert latch.is_active("bitget") is True
+    assert reconciliations.observations[0].status == "mismatch"

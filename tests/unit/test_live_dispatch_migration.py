@@ -8,15 +8,22 @@ def test_live_dispatch_migration_persists_take_profits() -> None:
     assert "canonical_signals" in matching[-1]
 
 
-def test_kill_switch_migration_is_additive_and_persistent() -> None:
-    matching = [(version, sql) for version, sql in MIGRATIONS if "venue_kill_switches" in sql]
+def test_kill_switch_migration_keeps_schema_and_enforces_alert_only_bitget() -> None:
+    table_match = next(
+        (version, sql)
+        for version, sql in MIGRATIONS
+        if "CREATE TABLE IF NOT EXISTS venue_kill_switches" in sql
+    )
+    constraint_match = next(
+        (version, sql) for version, sql in MIGRATIONS if "bitget_kill_switch_alert_only" in sql
+    )
 
-    assert matching
-    version, sql = matching[-1]
-    assert version >= 4
-    assert "venue_kill_switches" in sql
-    assert "CREATE TABLE IF NOT EXISTS" in sql
-    assert "active" in sql
+    table_version, table_sql = table_match
+    constraint_version, constraint_sql = constraint_match
+    assert table_version >= 4
+    assert "active" in table_sql
+    assert constraint_version > table_version
+    assert "scope <> 'bitget' OR active = FALSE" in constraint_sql
 
 
 def test_canary_reservations_have_an_additive_durable_schema() -> None:

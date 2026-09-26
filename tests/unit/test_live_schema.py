@@ -32,6 +32,8 @@ class SqliteCursorAdapter:
         # as no-ops while exercising migration bookkeeping and row retention.
         if script.lstrip().startswith("ALTER TABLE live_order_intents") and "CONSTRAINT" in script:
             return None
+        if "venue_kill_switches" in script and "bitget_kill_switch_alert_only" in script:
+            return None
         parts = [part.strip() for part in script.split(";") if part.strip()]
         if len(parts) > 1:
             self._conn.executescript(script)

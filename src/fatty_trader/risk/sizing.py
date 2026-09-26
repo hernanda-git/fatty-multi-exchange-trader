@@ -84,7 +84,10 @@ class SymbolMetadata(BaseModel):
     min_order_qty: Decimal = Field(gt=0)
     max_order_qty: Decimal | None = Field(default=None, gt=0)
     contract_value: Decimal = Field(default=Decimal("1"), gt=0)
-    max_leverage: int = Field(ge=1, le=125)
+    # Venue-reported maximum, not our trading leverage. Bitget now advertises
+    # maxLever up to 150 on some contracts, so a 125 ceiling would reject the
+    # contract outright. Our 20x policy is enforced separately in live_policy.
+    max_leverage: int = Field(ge=1, le=150)
     min_notional: Decimal = Field(default=Decimal("5"), ge=0)
     mm_tiers: tuple[MMTier, ...] = Field(default=())
 

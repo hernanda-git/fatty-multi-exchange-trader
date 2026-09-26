@@ -50,6 +50,27 @@ class Client:
             }
         ]
 
+    async def get_position_lever(self, symbol: str):
+        assert symbol == "BTCUSDT"
+        return [
+            {
+                "symbol": "BTCUSDT",
+                "level": "1",
+                "startUnit": "0",
+                "endUnit": "200000",
+                "leverage": "150",
+                "keepMarginRate": "0.0050",
+            },
+            {
+                "symbol": "BTCUSDT",
+                "level": "2",
+                "startUnit": "200000",
+                "endUnit": "0",
+                "leverage": "100",
+                "keepMarginRate": "0.0100",
+            },
+        ]
+
     async def get_ticker(self, symbol: str):
         return {"lastPr": "60000"}
 

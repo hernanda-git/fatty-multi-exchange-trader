@@ -72,6 +72,53 @@ def test_reserve_serializes_fresh_balance_and_keeps_unknown_commitments() -> Non
     assert connection.committed is True
 
 
+def test_reserve_rejects_planned_margin_above_configured_cap() -> None:
+    connection = Connection()
+    result = PostgresBitgetMarginReservationRepository(lambda: connection).reserve(
+        exchange="bitget",
+        dispatch_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        client_order_id="live-bitget-BTCUSDT-1",
+        total_balance=Decimal("100"),
+        available_balance=Decimal("100"),
+        equity=Decimal("100"),
+        margin_coin="USDT",
+        observed_at=datetime.now(UTC),
+        planned_margin_usdt=Decimal("10"),
+        headroom=Decimal("0.5"),
+        ttl=timedelta(seconds=30),
+        max_margin_per_trade_usdt=Decimal("1"),
+    )
+
+    assert result == BalanceAdmission.rejected("margin-cap-exceeded")
+    assert connection.committed is False
+    assert "INSERT INTO bitget_margin_reservations" not in "\n".join(
+        statement for statement, _ in connection.cursor_value.calls
+    )
+
+
+def test_reserve_rejects_invalid_margin_cap() -> None:
+    connection = Connection()
+    result = PostgresBitgetMarginReservationRepository(lambda: connection).reserve(
+        exchange="bitget",
+        dispatch_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        client_order_id="live-bitget-BTCUSDT-1",
+        total_balance=Decimal("100"),
+        available_balance=Decimal("100"),
+        equity=Decimal("100"),
+        margin_coin="USDT",
+        observed_at=datetime.now(UTC),
+        planned_margin_usdt=Decimal("1"),
+        headroom=Decimal("0.5"),
+        ttl=timedelta(seconds=30),
+        max_margin_per_trade_usdt=Decimal("0"),
+    )
+
+    assert result == BalanceAdmission.rejected("invalid-margin-cap")
+    assert "INSERT INTO bitget_margin_reservations" not in "\n".join(
+        statement for statement, _ in connection.cursor_value.calls
+    )
+
+
 def test_reserve_returns_rejection_without_creating_margin_reservation() -> None:
     class OvercommittedCursor(Cursor):
         def fetchone(self) -> tuple[object, ...]:

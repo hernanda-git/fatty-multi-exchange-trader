@@ -3,7 +3,10 @@
 Pipeline (fail-closed, deterministic):
 
 1. Position cap: ``active_positions >= risk.max_normal_positions`` -> skip.
-2. Margin: ``allocation_pct * available_usdt`` (dynamic allocation).
+2. Margin: ``allocation_pct * available_usdt`` (dynamic allocation), then capped
+   down by ``risk.max_margin_per_trade_usdt`` when one is configured. The cap is
+   enforced twice: on the requested margin, and again on the step-rounded quantity,
+   since rounding can push realized margin back above the ceiling.
 3. Leverage search ascending in ``[max(20, risk.min_leverage),
    min(50, risk.max_leverage, meta.max_leverage)]``; first leverage whose
    tick/step-rounded quantity meets min-notional wins (lowest safe leverage).
@@ -36,7 +39,9 @@ from fatty_trader.risk.sizing import (
 )
 
 _MIN_LIVE_LEVERAGE = 20
-_MAX_LIVE_LEVERAGE = 50
+# Pinned to 20: a live trade is always 20x. Keeping this ceiling at 50 would
+# let a drifted config widen leverage past the intended policy.
+_MAX_LIVE_LEVERAGE = 20
 
 
 class LiveSizingInput(BaseModel):
@@ -109,8 +114,52 @@ def _try_margin(
     return None
 
 
+def _margin_cap(risk: BitgetLiveRiskConfig) -> Decimal | None:
+    """Return the hard per-trade margin ceiling, or None when no cap is configured."""
+    cap = risk.max_margin_per_trade_usdt
+    if cap is None:
+        return None
+    if cap <= 0:
+        raise ValueError("max_margin_per_trade_usdt must be positive when set")
+    return cap
+
+
+def _enforce_margin_cap(
+    *,
+    margin: Decimal,
+    leverage: int,
+    qty: Decimal,
+    entry: Decimal,
+    meta: SymbolMetadata,
+    cap: Decimal | None,
+) -> tuple[Decimal, Decimal] | None:
+    """Shrink the quantity until the *actual* margin (notional / leverage) fits the cap.
+
+    Sizing rounds quantity to the exchange step, so a capped request can round *up*
+    past the ceiling. Recomputing margin from the final quantity and flooring the
+    quantity keeps realized margin at or below the cap. Returns None if no size
+    survives.
+    """
+    if cap is None:
+        return margin, qty
+    if qty <= 0:
+        return None
+    per_qty = entry * meta.contract_value
+    if per_qty <= 0:
+        return None
+    max_qty = (cap * Decimal(leverage)) / per_qty
+    capped_qty = round_qty_to_step(min(qty, max_qty), meta.size_step)
+    if capped_qty < meta.min_order_qty:
+        return None
+    actual_margin = (capped_qty * per_qty) / Decimal(leverage)
+    if actual_margin > cap:
+        return None
+    return actual_margin, capped_qty
+
+
 def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
     """Plan one live isolated position or skip with a reason (never raises for skips)."""
+    cap = _margin_cap(data.risk)
     if data.active_positions >= data.risk.max_normal_positions:
         return _skip(
             f"position-cap: {data.active_positions} active "
@@ -136,6 +185,10 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
     rounded_entry = round_price_to_tick(data.entry, data.meta.price_tick)
     required = _required_notional(data.meta, rounded_entry)
     margin = data.risk.allocation_pct * data.available_usdt
+    # The cap is a ceiling on the allocation, not a substitute for it: taking the
+    # smaller here means the leverage search below already plans within the cap.
+    if cap is not None:
+        margin = min(margin, cap)
 
     stop = data.stop_loss
     if stop is None:
@@ -168,9 +221,34 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
         )
         if found is None:
             return _skip("min-notional unmeetable even all-in", fallback_used=True)
-        margin = data.available_usdt
+        # All-in must not bypass the cap: it is still one trade's margin.
+        margin = data.available_usdt if cap is None else min(data.available_usdt, cap)
 
     leverage, qty, notional = found
+    # Quantity was rounded to the exchange step, which can round up past the cap, so
+    # re-derive both size and margin from the capped quantity before the SL guard.
+    capped = _enforce_margin_cap(
+        margin=margin,
+        leverage=leverage,
+        qty=qty,
+        entry=rounded_entry,
+        meta=data.meta,
+        cap=cap,
+    )
+    if capped is None:
+        return _skip(
+            "margin-cap: no exchange-legal size fits the margin cap",
+            fallback_used=fallback_used,
+        )
+    margin, qty = capped
+    notional = qty * rounded_entry * data.meta.contract_value
+    if notional < required:
+        # Shrinking to fit the cap can drop the order under the venue's min-notional,
+        # which the exchange would reject. Skip rather than send an invalid order.
+        return _skip(
+            f"margin-cap: {qty} at {leverage}x is under min-notional {required}",
+            fallback_used=fallback_used,
+        )
     liq = estimate_liquidation_price(
         direction=data.direction,
         entry=rounded_entry,

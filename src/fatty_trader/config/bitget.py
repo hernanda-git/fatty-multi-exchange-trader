@@ -50,7 +50,7 @@ class BitgetLiveConfig(BaseModel):
     """Frozen, fail-closed contract for the Bitget LIVE venue.
 
     Credentials are required: missing or blank values raise a ValidationError
-    instead of silently disabling the venue. Leverage is bounded to 20-50 and
+    instead of silently disabling the venue. Leverage is fixed at exactly 20x and
     only isolated margin is permitted.
     """
 
@@ -63,8 +63,10 @@ class BitgetLiveConfig(BaseModel):
     product_type: Literal["USDT-FUTURES"] = "USDT-FUTURES"
     margin_coin: Literal["USDT"] = "USDT"
     margin_mode: Literal["isolated"] = "isolated"
-    min_leverage: int = Field(default=20, ge=20, le=50)
-    max_leverage: int = Field(default=50, ge=20, le=50)
+    # LIVE leverage is pinned to exactly 20x. A 20-50 range would let a caller who
+    # omits these fields trade at 50x, which is not the policy.
+    min_leverage: int = Field(default=20, ge=20, le=20)
+    max_leverage: int = Field(default=20, ge=20, le=20)
     allocation_pct: Decimal = Field(default=Decimal("0.20"), gt=0, le=1)
     max_normal_positions: int = Field(default=5, gt=0)
     liquidation_buffer: Decimal = Field(default=Decimal("0.10"), gt=0, le=1)
@@ -88,9 +90,12 @@ class BitgetLiveConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_leverage_range(self) -> BitgetLiveConfig:
-        """Enforce 20 <= min_leverage <= max_leverage <= 50."""
-        if self.min_leverage > self.max_leverage:
-            raise ValueError("min_leverage must not exceed max_leverage")
+        """Enforce leverage of exactly 20x on the LIVE lane."""
+        if self.min_leverage != 20 or self.max_leverage != 20:
+            raise ValueError(
+                "Bitget LIVE leverage is fixed at 20x "
+                f"(got {self.min_leverage}/{self.max_leverage})"
+            )
         return self
 
 
