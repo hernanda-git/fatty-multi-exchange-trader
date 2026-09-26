@@ -76,15 +76,24 @@ kill the LIVE monitor instead of blocking new entries.
 - The dispatcher's kill switch is wired in **every** mode, not only LIVE/LIVE: a
   POST-capable graph exists whenever `BITGET_EXECUTION_ENABLED=1`, so a DEMO lane
   must not ignore the operator's stop. The latch itself stays LIVE-only.
+- A persisted post-fill mismatch is a latchable anomaly for the monitor, so it blocks
+  new entries on the LIVE lane and survives a restart (see the gates note below).
 - Operator mutations remain closed (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`).
 
 Remaining gates, stated plainly: the per-worker in-process degraded gate still
 exists, and the durable post-fill mismatch entry-admission latch is intentionally not
-wired (removed at the owner's request), so a post-fill margin/leverage mismatch
-records a `bitget_post_fill_reconciliations` row and marks the worker degraded for the
-lifetime of that process — it does not block a replacement worker. The
-monitor/reconciliation kill switch is the mechanism that blocks new entries after an
-anomaly, and it does not currently read post-fill mismatches.
+wired (removed at the owner's request), so a post-fill margin/leverage mismatch marks
+the current worker degraded rather than blocking a replacement worker at entry POST.
+
+Instead, a mismatch now blocks entries through the monitor's kill switch: once
+`balance_reservations.record()` has persisted a `bitget_post_fill_reconciliations` row
+with `status = 'mismatch'`, the monitor treats it as a latchable anomaly
+(`post-fill-margin-or-leverage-mismatch`) and latches the Bitget kill switch on the
+LIVE lane, which makes the dispatcher reject new dispatches with
+`kill-switch-latched`. It survives restarts. Releasing the switch with an approval
+reference is what marks the mismatch handled: the predicate only counts mismatches
+newer than the kill switch's `updated_at`, so a released switch does not re-latch on
+the historical row while a genuinely new mismatch latches again.
 
 ## Rollback
 

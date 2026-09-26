@@ -118,6 +118,53 @@ async def test_demo_monitor_reports_but_never_latches_kill_switch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_persisted_post_fill_mismatch_latches_and_blocks_entries() -> None:
+    """A durable mismatch must latch: the recording adapter cannot block a restart."""
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.status == "kill-switch-latched"
+    assert report.reasons == ("post-fill-margin-or-leverage-mismatch",)
+    assert repository.kill_switch_active("bitget") is True
+    assert repository.alerts == ["post-fill-margin-or-leverage-mismatch"]
+
+
+@pytest.mark.asyncio
+async def test_post_fill_mismatch_is_alert_only_when_enforcement_is_off() -> None:
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+
+    report = await BitgetMonitor(venue, repository, enforce_kill_switch=False).run_once()
+
+    assert report.status == "degraded"
+    assert repository.kill_switch_active("bitget") is False
+
+
+@pytest.mark.asyncio
+async def test_release_clears_an_old_mismatch_but_a_new_one_relatches() -> None:
+    """A released switch must be releasable: only mismatches after it re-latch."""
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+    first = await BitgetMonitor(venue, repository).run_once()
+    assert first.status == "kill-switch-latched"
+
+    repository.release_kill_switch("bitget", "operator-approved-release")
+    released = await BitgetMonitor(venue, repository).run_once()
+    assert released.status == "ok"
+    assert repository.kill_switch_active("bitget") is False
+
+    repository.record_post_fill_mismatch()
+    again = await BitgetMonitor(venue, repository).run_once()
+    assert again.status == "kill-switch-latched"
+    assert repository.kill_switch_active("bitget") is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("positions", "orders", "plans", "clock_skew_ms", "reason"),
     [

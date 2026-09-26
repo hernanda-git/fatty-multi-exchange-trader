@@ -145,6 +145,49 @@ def test_postgres_same_exchange_concurrent_admission_allows_one_then_release_all
     assert sorted(state for (state,) in states) == ["released", "reserved"]
 
 
+def _insert_post_fill_mismatch(dsn: str, schema: str, created_at_expression: str) -> None:
+    """Insert a persisted mismatch whose age relative to a release is deterministic."""
+    with _connect(dsn, schema) as connection:
+        connection.execute(
+            f"""INSERT INTO bitget_post_fill_reconciliations
+                (id, exchange, client_order_id, planned_leverage, planned_margin_usdt,
+                 status, observed_at, created_at)
+                VALUES (%s, 'bitget', %s, 20, 1, 'mismatch', CURRENT_TIMESTAMP,
+                        {created_at_expression})""",
+            (uuid4(), f"e2e-{uuid4()}"),
+        )
+        connection.commit()
+
+
+def test_postgres_post_fill_mismatch_latches_only_until_the_next_release(
+    postgres_schema: tuple[str, str],
+) -> None:
+    """A released kill switch must not relatch forever on an already-handled row.
+
+    The monitor latches on ``has_unhandled_post_fill_mismatch``. If that predicate
+    counted every historical mismatch instead of only the ones newer than the last
+    release, an operator could never clear the switch.
+    """
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    repository = PostgresReconciliationRepository(lambda: _connect(dsn, schema))
+
+    assert repository.has_unhandled_post_fill_mismatch("bitget") is False
+
+    _insert_post_fill_mismatch(dsn, schema, "CURRENT_TIMESTAMP - INTERVAL '1 hour'")
+    assert repository.has_unhandled_post_fill_mismatch("bitget") is True
+
+    repository.latch_kill_switch("bitget", "post-fill-margin-or-leverage-mismatch")
+    assert repository.kill_switch_active("bitget") is True
+    repository.release_kill_switch("bitget", "e2e-owner-approved-release")
+
+    # Same row, now older than the release: handled, so it must not latch again.
+    assert repository.has_unhandled_post_fill_mismatch("bitget") is False
+
+    _insert_post_fill_mismatch(dsn, schema, "CURRENT_TIMESTAMP + INTERVAL '1 hour'")
+    assert repository.has_unhandled_post_fill_mismatch("bitget") is True
+
+
 def test_postgres_bitget_kill_switch_latch_lands_and_blocks_entry_admission(
     postgres_schema: tuple[str, str],
 ) -> None:

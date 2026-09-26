@@ -1,4 +1,9 @@
-"""Read-only Bitget monitor that alerts on anomalies without a hard kill switch."""
+"""Bitget monitor: reconciles provider state, alerts, and latches on anomalies.
+
+It owns no provider mutation methods. Anomalies become a durable kill-switch latch
+when enforcement is on (LIVE lane); a persisted post-fill margin/leverage mismatch
+is treated as a latchable anomaly so it blocks new entries across restarts.
+"""
 
 from __future__ import annotations
 
@@ -73,6 +78,12 @@ class BitgetMonitor:
         )
         await self._check_positions(positions, reasons)
         self._check_orders(orders, reasons)
+        # A post-fill margin/leverage mismatch is durable evidence that a position is
+        # not what the plan promised. The adapter that recorded it cannot block a
+        # replacement worker, so the latch lives here: it survives restarts and blocks
+        # new entries until an operator releases the switch with an approval reference.
+        if self._repository.has_unhandled_post_fill_mismatch(self._scope):
+            reasons.append("post-fill-margin-or-leverage-mismatch")
         # Bot-managed TP/SL fallback for symbols that reject native SL/TP (43011)
         await self._run_fallback_monitor(reasons)
         try:
