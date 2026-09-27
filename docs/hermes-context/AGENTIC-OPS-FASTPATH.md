@@ -48,7 +48,9 @@ rows for the symbol. Read its JSON once before opening individual files.
   container rebuild.
 - `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`.
 - `BITGET_CANARY_MAX_ORDERS=5`, `BITGET_MAX_CLOCK_SKEW_MS=5000`.
-- Manual operator mutations are disabled; fallback mutations are `0`.
+- Manual operator (Telegram) mutations are disabled for `operator-bot`; `source-management`
+  is deliberately `BITGET_OPERATOR_MUTATIONS_ENABLED=1` in Compose (copy-trade TP1/SL/CLOSE
+  automation). Gate state is per-service; fallback mutations are `0`.
 - Authenticated Bitget probe: PASS; `787` contracts; `0` provider positions;
   `0` provider open orders; targeted `PONSUSDT` fills read returned `[]`.
 - Account read: equity/available `8.91215461 USDT`, unrealized PnL `0`.

@@ -35,7 +35,7 @@ Restore is intentionally an explicit destructive action. Stop application worker
 
 ## Deployment Boundary
 
-Deployment to the production host, Telegram listener authorization, Codex OAuth setup, exchange metadata probes, credentials, and all exchange execution are deliberately not run from this workstation. The Bitget lane is LIVE with a bounded canary; manual operator mutations remain disabled.
+Deployment to the production host, Telegram listener authorization, Codex OAuth setup, exchange metadata probes, credentials, and all exchange execution are deliberately not run from this workstation. The Bitget lane is LIVE with a bounded canary; manual operator (Telegram) mutations remain disabled for `operator-bot`, while `source-management` deliberately runs with its mutation gate enabled so source TP1/SL/CLOSE actions are applied automatically (gates are per-service — see `BITGET-LIVE-OPERATIONS.md`).
 
 ## Known Symbol Quirks
 

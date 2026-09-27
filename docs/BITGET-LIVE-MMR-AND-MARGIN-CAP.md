@@ -112,7 +112,10 @@ kill the LIVE monitor instead of blocking new entries.
   must not ignore the operator's stop. The latch itself stays LIVE-only.
 - A persisted post-fill mismatch is a latchable anomaly for the monitor, so it blocks
   new entries on the LIVE lane and survives a restart (see the gates note below).
-- Operator mutations remain closed (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`).
+- Operator mutations (`operator-bot`, the Telegram command surface) remain closed
+  (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`). This gate is per-service: `source-management`
+  is hard-coded `1` in Compose on purpose, so source TP1/SL/CLOSE copy-trade actions are
+  applied automatically. Do not read `.env` alone and conclude mutations are shut.
 
 Remaining gates, stated plainly: the per-worker in-process degraded gate still
 exists, and the durable post-fill mismatch entry-admission latch is intentionally not

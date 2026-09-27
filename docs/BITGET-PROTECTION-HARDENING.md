@@ -270,7 +270,7 @@ All values are supplied by Compose/environment; secrets are never committed.
 | `BITGET_PROTECTION_STREAM_STALE_SECONDS` | `5` | Mark event freshness bound. |
 | `BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS` | `25` | Classic heartbeat receive/send window. |
 | `BITGET_PROTECTION_REST_WATCHDOG_SECONDS` | `5` | Watchdog interval, bounded to 60 seconds. |
-| `BITGET_OPERATOR_MUTATIONS_ENABLED` | `0` | Manual operator mutation gate. |
+| `BITGET_OPERATOR_MUTATIONS_ENABLED` | `0` | Manual operator mutation gate. Read per-service: `operator-bot` stays `0`; `source-management` is hard-coded `1` in Compose on purpose (source TP1/SL/CLOSE copy-trade automation). |
 | `BITGET_CANARY_MAX_ORDERS` | `0` | Global entry cap; zero is closed. |
 | `BITGET_APPROVAL_REFERENCE` | empty | Required by explicit LIVE cutover validation. |
 | `BITGET_MAX_CLOCK_SKEW_MS` | `5000` in Compose | Maximum accepted provider clock skew. |

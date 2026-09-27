@@ -180,6 +180,7 @@ def test_dispatcher_check_rejects_invalid_cutover_values(
 
 def test_backup_and_runtime_scripts_are_safe_compose_operational_tools() -> None:
     backup = (REPO_ROOT / "scripts" / "backup_postgres.sh").read_text(encoding="utf-8")
+    restore = (REPO_ROOT / "scripts" / "restore_postgres.sh").read_text(encoding="utf-8")
     verify = (REPO_ROOT / "scripts" / "verify_bitget_runtime.sh").read_text(encoding="utf-8")
 
     assert "docker compose exec -T postgres pg_dump" in backup
@@ -187,9 +188,38 @@ def test_backup_and_runtime_scripts_are_safe_compose_operational_tools() -> None
     assert "test -s" in backup
     assert "restore_postgres.sh" in backup
     assert "BITGET_API_SECRET" not in backup
+    # An unverifiable archive is useless in an incident, and retention stops the
+    # backup directory from growing without bound on a small host.
+    assert "pg_restore --list" in backup
+    assert "BACKUP_RETAIN_DAYS" in backup
+    # The postgres service publishes no host port, so the restore must run inside
+    # the container; a host-side pg_restore can never connect on this deployment.
+    assert 'compose_bin="${COMPOSE_BIN:-docker compose}"' in restore
+    assert "exec -T postgres pg_restore" in restore
+    assert "127.0.0.1" not in restore
+    assert "POSTGRES_PASSWORD" not in restore
+    assert "CONFIRM_RESTORE" in restore
+    assert "pg_restore --list" in restore
     assert "docker compose ps" in verify
     assert "completed_services=(migrate init)" in verify
     assert "exited:0" in verify
     assert "schema_migrations" in verify
     assert "bitget_api_probe.py" in verify
     assert "BITGET_API_SECRET" not in verify
+
+
+def test_daily_backup_timer_is_installed_as_repo_tooling() -> None:
+    """The live ledger must have a scheduled backup, not just a manual script."""
+    timer = (REPO_ROOT / "deploy" / "systemd" / "fatty-backup.timer").read_text(encoding="utf-8")
+    service = (REPO_ROOT / "deploy" / "systemd" / "fatty-backup.service").read_text(
+        encoding="utf-8"
+    )
+
+    assert "OnUnitActiveSec=24h" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=fatty-backup.service" in timer
+    assert "scripts/backup_postgres.sh" in service
+    # Dumps live outside the repository tree on purpose.
+    assert "BACKUP_DIR=/home/valarion/backups/fatty-trader" in service
+    assert "BACKUP_RETAIN_DAYS" in service
+    assert "EnvironmentFile" not in service

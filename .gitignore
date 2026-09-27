@@ -15,3 +15,7 @@ data/backups/
 backups/
 data/logs/
 *.py[cod]
+
+# Local pre-change database dumps (never commit a live DB snapshot).
+.backups/
+*.dump

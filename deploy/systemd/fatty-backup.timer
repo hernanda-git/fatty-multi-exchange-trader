@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Fatty PostgreSQL backup once a day
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=24h
+Persistent=true
+Unit=fatty-backup.service
+
+[Install]
+WantedBy=timers.target
