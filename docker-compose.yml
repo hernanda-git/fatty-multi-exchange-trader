@@ -165,9 +165,12 @@ services:
       BITGET_PRODUCT_TYPE: USDT-FUTURES
       BITGET_MARGIN_COIN: USDT
       BITGET_MARGIN_MODE: isolated
-      # Leverage is pinned, not a range: 20x only. Widening this re-opens the
-      # liquidation-buffer search, so treat it as a deliberate risk decision.
-      BITGET_MIN_LEVERAGE: "20"
+      # Leverage CEILING is pinned at 20x and is never exceeded. The floor is the
+      # lowest leverage the sizing policy may back off to when a signal's stop needs
+      # more liquidation headroom than 20x leaves (per-symbol maintenance-margin rates
+      # vary: a 2.5% MMR symbol has ~2.4% of room at 20x). Lower leverage is safer and
+      # the position simply sizes smaller inside the same 1 USDT margin cap.
+      BITGET_MIN_LEVERAGE: "5"
       BITGET_MAX_LEVERAGE: "20"
       BITGET_ALLOCATION_PCT: "0.20"
       # Planned per-trade isolated-margin ceiling in USDT. Allocation is scaled by

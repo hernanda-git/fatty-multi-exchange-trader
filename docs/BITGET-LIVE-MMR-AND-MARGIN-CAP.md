@@ -37,14 +37,48 @@ was capped at `125`, which rejected the contract outright. The cap is widened to
 `150`. This is venue metadata, **not** trading leverage: executable leverage is
 pinned separately (below).
 
+## Why signals were still refused after the MMR fix
+
+With MMR tiers loading again, signals stopped dying on `maintenance-margin tiers are
+required` and started dying on `sl-guard: stop-loss not safely before liquidation`.
+That guard is not a bug — it refuses a trade whose stop would sit at or beyond the
+estimated liquidation price — but the pinned 20x ceiling left it no alternative:
+
+- `RAREUSDT` (SHORT, entry 0.0225, SL 0.02389 = 6.18% away): the symbol reports
+  `keepMarginRate = 0.025`, so at 20x the headroom is `5% − 2.5% − 0.06% ≈ 2.44%`.
+  A 6.18% stop can never be inside 2.44% of room, at any margin size.
+- `QNTUSDT` (SHORT, signal entry 152.5, SL 157.2 = 3.08%): at the signal entry the
+  geometry fits, but the preflight prices the plan off the *live* market price. When
+  it ran, the market was ~151.8 — 0.5% better for the short — which widened the stop
+  to 3.55% while the headroom at 20x (MMR 1%) is `5% − 1% − 0.06% ≈ 3.94%`, and the
+  guard's 10% span buffer demands `0.9 × 3.94% ≈ 3.55%`. It missed by ~0.01%.
+
+Both cases are the same shape: a stop wider than `1/leverage − MMR − fee` allows.
+The fix is the leverage floor described below, not a looser guard.
+
 ## Policy invariants (LIVE)
 
-- Leverage is exactly `20x`. `min_leverage`/`max_leverage` must both be `20`
-  (`BitgetLiveRiskConfig`, `_MIN_LIVE_LEVERAGE`/`_MAX_LIVE_LEVERAGE` in
-  `risk/live_policy.py`, and the legacy `BitgetLiveConfig` in `config/bitget.py`)
-  and `BITGET_MIN_LEVERAGE`/`BITGET_MAX_LEVERAGE` must be exactly `20`; a range such
-  as `20/50` is a startup error. The second config class previously defaulted to
-  `20/50`, so a caller that omitted the fields would still have traded at 50x.
+- Leverage **ceiling** is exactly `20x` and is never exceeded: `max_leverage` must be
+  `20`, `_MAX_LIVE_LEVERAGE` is `20`, and `BITGET_MAX_LEVERAGE` must be `20`. A range
+  such as `20/50` is a startup error.
+- Leverage **floor** is configurable (`BITGET_MIN_LEVERAGE`, 5–20). The sizing policy
+  walks candidates downward from the ceiling and takes the highest one that is both
+  exchange-legal (step-rounded quantity at or above min-notional, inside the margin
+  cap) and clears the liquidation guard. An ordinary signal therefore still trades at
+  `20x`; a signal whose stop needs more room than `20x` leaves backs off only as far
+  as its own stop geometry requires. Lower leverage is safer: the position simply
+  sizes smaller inside the same 1 USDT margin cap. Set
+  `BITGET_MIN_LEVERAGE=20` to restore the old "20x or skip" behaviour.
+- Why the floor exists: the guard's headroom is `1/leverage − MMR − taker fee`, and
+  per-symbol maintenance-margin rates differ a lot. At 20x, a symbol reporting
+  `keepMarginRate = 0.004` (BTC) has ~4.5% of room while one reporting `0.025` (RARE,
+  `maxLever = 20`) has only ~2.4%. Before the floor existed, signals whose stop sat
+  wider than that were refused with `sl-guard: stop-loss not safely before
+  liquidation` even though a lower leverage would have been perfectly safe.
+  Margin size cannot fix this (the margin ratio is `1/leverage`), so the only cure is
+  a lower leverage — which is why the search backs off instead of sizing up.
+- `BITGET_LIQUIDATION_BUFFER` (default `0.10`) is now actually read by the LIVE
+  preflight; previously it was silently ignored and the model default always applied.
 - Per-trade isolated margin is capped at exactly `1 USDT`.
   `BITGET_MAX_MARGIN_PER_TRADE_USDT` is mandatory and fail-closed: missing, blank,
   non-numeric, `NaN`, `Infinity`, zero, negative, or anything other than exactly `1`

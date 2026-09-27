@@ -48,6 +48,10 @@ SUPPORTED_SERVICES = (
 # the exchange's post-fill number.
 _LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1")
 _LIVE_LEVERAGE = 20
+# Lowest leverage the LIVE sizing policy may back off to. It exists so a signal whose
+# stop needs more liquidation headroom than 20x allows can still trade at a lower
+# leverage instead of being refused; the ceiling above is never exceeded.
+_LIVE_LEVERAGE_FLOOR = 5
 
 
 @dataclass(frozen=True)
@@ -386,15 +390,26 @@ def _bitget_dispatch_preflight(
     ttl_seconds = Decimal(environ.get("BITGET_BALANCE_RESERVATION_TTL_SECONDS", "30"))
     if not (Decimal("0") < allocation_pct <= Decimal("1")):
         raise ValueError("BITGET_ALLOCATION_PCT must be in (0, 1]")
-    # Live is pinned to exactly 20x. A range is a foot-gun: 20/50 in the
-    # environment would silently allow 50x, which is not the intended policy.
-    if min_leverage != _LIVE_LEVERAGE or max_leverage != _LIVE_LEVERAGE:
+    # The ceiling is pinned at 20x: never above. The floor only bounds how far the
+    # sizing policy may back off to give a wide stop enough liquidation headroom.
+    if max_leverage != _LIVE_LEVERAGE:
         raise ValueError(
-            "Bitget LIVE leverage is fixed at 20x: BITGET_MIN_LEVERAGE and "
-            f"BITGET_MAX_LEVERAGE must both be 20 (got {min_leverage}/{max_leverage})"
+            "Bitget LIVE leverage ceiling is fixed at 20x: "
+            f"BITGET_MAX_LEVERAGE must be 20 (got {max_leverage})"
+        )
+    if not (_LIVE_LEVERAGE_FLOOR <= min_leverage <= max_leverage):
+        raise ValueError(
+            "Bitget LIVE leverage floor must be an integer in "
+            f"[{_LIVE_LEVERAGE_FLOOR}, {max_leverage}] "
+            f"(got BITGET_MIN_LEVERAGE={min_leverage})"
         )
     if max_age_seconds <= 0 or ttl_seconds <= 0:
         raise ValueError("Bitget balance age and reservation TTL must be positive")
+    # Now actually honored: the guard's span-relative floor used to be silently fixed
+    # at the model default, so tuning this env had no effect.
+    liquidation_buffer = Decimal(environ.get("BITGET_LIQUIDATION_BUFFER", "0.10"))
+    if not (Decimal("0") < liquidation_buffer <= Decimal("1")):
+        raise ValueError("BITGET_LIQUIDATION_BUFFER must be in (0, 1]")
     raw_margin_cap = environ.get("BITGET_MAX_MARGIN_PER_TRADE_USDT", "").strip()
     if not raw_margin_cap:
         raise ValueError(
@@ -472,6 +487,7 @@ def _bitget_dispatch_preflight(
             max_leverage=max_leverage,
             allocation_pct=allocation_pct,
             max_margin_per_trade_usdt=max_margin_per_trade,
+            liquidation_buffer=liquidation_buffer,
         )
         active_position_count = getattr(venue, "active_position_count", None)
         if not callable(active_position_count):

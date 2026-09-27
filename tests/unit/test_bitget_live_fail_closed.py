@@ -55,7 +55,7 @@ def test_valid_margin_cap_builds_preflight() -> None:
 
 
 # --------------------------------------------------------------------------
-# Leverage: fixed at exactly 20x
+# Leverage: ceiling fixed at 20x, floor bounded below it
 # --------------------------------------------------------------------------
 
 
@@ -80,25 +80,46 @@ def test_valid_margin_cap_builds_preflight() -> None:
         ),
         pytest.param(
             {
-                "BITGET_MIN_LEVERAGE": "10",
-                "BITGET_MAX_LEVERAGE": "20",
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
-            },
-            id="10-20-range",
-        ),
-        pytest.param(
-            {
                 "BITGET_MIN_LEVERAGE": "50",
                 "BITGET_MAX_LEVERAGE": "50",
                 "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
             },
             id="50x-only",
         ),
+        pytest.param(
+            {
+                "BITGET_MIN_LEVERAGE": "21",
+                "BITGET_MAX_LEVERAGE": "20",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            },
+            id="floor-above-ceiling",
+        ),
+        pytest.param(
+            {
+                "BITGET_MIN_LEVERAGE": "4",
+                "BITGET_MAX_LEVERAGE": "20",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            },
+            id="floor-below-absolute-minimum",
+        ),
     ],
 )
-def test_leverage_ranges_other_than_20x_are_rejected(environ) -> None:
-    with pytest.raises(ValueError, match="fixed at 20x"):
+def test_leverage_ceilings_above_20x_or_invalid_floors_are_rejected(environ) -> None:
+    with pytest.raises(ValueError):
         _preflight(environ)
+
+
+@pytest.mark.parametrize("floor", ["5", "10", "19", "20"])
+def test_a_leverage_floor_at_or_below_the_ceiling_is_accepted(floor: str) -> None:
+    """The floor exists so a wide-stop signal can back off; the ceiling still binds."""
+    preflight = _preflight(
+        {
+            "BITGET_MIN_LEVERAGE": floor,
+            "BITGET_MAX_LEVERAGE": "20",
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+        }
+    )
+    assert preflight is not None
 
 
 def test_unset_leverage_environment_resolves_to_20x_not_50x() -> None:

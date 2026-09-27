@@ -86,9 +86,10 @@ class BitgetLiveRiskConfig(BaseModel):
     product_type: Literal["USDT-FUTURES"] = "USDT-FUTURES"
     margin_coin: Literal["USDT"] = "USDT"
     margin_mode: Literal["isolated"] = "isolated"
-    # LIVE is pinned to exactly 20x. Defaults of 20/50 would silently allow 50x
-    # when a caller omits these fields, so the ceiling is 20, not 50.
-    min_leverage: int = Field(default=20, ge=20, le=20)
+    # LIVE leverage never exceeds 20x. ``min_leverage`` is the floor the sizing policy
+    # may back off to when a signal's stop needs more liquidation headroom; a range
+    # such as 20/50 is still invalid because the ceiling is pinned.
+    min_leverage: int = Field(default=20, ge=5, le=20)
     max_leverage: int = Field(default=20, ge=20, le=20)
     allocation_pct: Decimal = Field(default=Decimal("0.20"), gt=0, le=1)
     max_normal_positions: int = Field(default=5, gt=0)
@@ -107,9 +108,13 @@ class BitgetLiveRiskConfig(BaseModel):
     def validate_leverage_range(self) -> "BitgetLiveRiskConfig":
         if self.min_leverage > self.max_leverage:
             raise ValueError("min_leverage must not exceed max_leverage")
-        if self.min_leverage != 20 or self.max_leverage != 20:
+        if self.max_leverage != 20:
+            # The ceiling is the safety-critical half: 50x is never permitted.
             raise ValueError(
-                "Bitget LIVE leverage is fixed at 20x "
-                f"(got {self.min_leverage}/{self.max_leverage})"
+                f"Bitget LIVE leverage ceiling is fixed at 20x (got {self.max_leverage})"
+            )
+        if self.min_leverage < 5:
+            raise ValueError(
+                f"Bitget LIVE leverage floor must be at least 5x (got {self.min_leverage})"
             )
         return self

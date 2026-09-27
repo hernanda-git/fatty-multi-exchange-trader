@@ -7,14 +7,18 @@ Pipeline (fail-closed, deterministic):
    down by ``risk.max_margin_per_trade_usdt`` when one is configured. The cap is
    enforced twice: on the requested margin, and again on the step-rounded quantity,
    since rounding can push realized margin back above the ceiling.
-3. Leverage search ascending in ``[max(20, risk.min_leverage),
-   min(_MAX_LIVE_LEVERAGE, risk.max_leverage, meta.max_leverage)]``; first leverage
-   whose tick/step-rounded quantity meets min-notional wins (lowest safe leverage).
-   ``_MAX_LIVE_LEVERAGE`` is pinned to 20 so ``meta.max_leverage`` (the venue's
-   advertised ceiling, up to 150) can never widen the executed leverage.
+3. Leverage: candidates are walked from ``min(_MAX_LIVE_LEVERAGE, risk.max_leverage,
+   meta.max_leverage)`` DOWN to ``max(_MIN_LIVE_LEVERAGE, risk.min_leverage)``. Each
+   candidate must be exchange-legal (step-rounded quantity at or above min-notional
+   and within the margin cap) and must clear ``check_sl_before_liquidation``. The
+   highest such leverage wins, so an ordinary signal trades at the pinned ceiling
+   (20x) and a wide-stop signal backs off only as far as its own stop geometry
+   requires. The ceiling is never exceeded.
 4. Min-notional is enforced AFTER rounding. When no leverage meets it:
-   all-in fallback (margin = full balance) ONLY when ``active_positions == 0``
-   (``fallback_used=True``); otherwise skip with reason.
+   all-in fallback (margin = full balance, still capped) ONLY when
+   ``active_positions == 0`` (``fallback_used=True``); otherwise skip with reason.
+   Margin size cannot rescue a liquidation-guard failure (the margin ratio is
+   ``1/leverage``), so that case is terminal.
 5. SL: explicit ``stop_loss`` or ``derive_sl_tp(entry, direction, atr)``;
    neither available -> skip. SL must pass ``check_sl_before_liquidation``
    against the estimated liq price, else skip. Missing MM tiers raises
@@ -40,10 +44,19 @@ from fatty_trader.risk.sizing import (
     round_qty_to_step,
 )
 
-_MIN_LIVE_LEVERAGE = 20
-# Pinned to 20: a live trade is always 20x. Keeping this ceiling at 50 would
-# let a drifted config widen leverage past the intended policy.
+_MIN_LIVE_LEVERAGE = 5
+# Ceiling pinned to 20: a live trade is never above 20x. The floor above is only the
+# absolute lower bound of the downward search; the configured ``min_leverage``
+# (BITGET_MIN_LEVERAGE, default 20) is what actually permits backing off.
 _MAX_LIVE_LEVERAGE = 20
+
+# Failure tags for one leverage candidate, used to pick the skip reason.
+_MIN_NOTIONAL_FAILURE = "min-notional"
+_CAP_FAILURE = "margin-cap"
+_GUARD_FAILURE = "sl-guard"
+
+# One accepted plan: (leverage, quantity, margin, notional, liquidation price).
+_Plan = tuple[int, Decimal, Decimal, Decimal, Decimal]
 
 
 class LiveSizingInput(BaseModel):
@@ -94,26 +107,112 @@ def _required_notional(meta: SymbolMetadata, rounded_entry: Decimal) -> Decimal:
     return max(meta.min_notional, from_step)
 
 
-def _try_margin(
+def _plan_at_leverage(
+    *,
+    meta: SymbolMetadata,
+    risk: BitgetLiveRiskConfig,
+    leverage: int,
+    margin: Decimal,
+    rounded_entry: Decimal,
+    required: Decimal,
+    cap: Decimal | None,
+    direction: Direction,
+    stop: Decimal,
+    taker_fee_rate: Decimal,
+) -> tuple[Decimal, Decimal, Decimal, Decimal] | str:
+    """Plan one leverage: ``(qty, margin, notional, liquidation_price)`` or a tag.
+
+    The liquidation guard's headroom depends on the leverage, the entry, the stop and
+    the maintenance-margin tiers — but *not* on the committed margin, because the
+    margin ratio is ``1 / leverage`` by construction. A stop that is unsafe at a
+    given leverage is therefore unsafe at every margin size, so the only cure is a
+    lower leverage: the caller walks leverage downwards rather than sizing up.
+    """
+    per_qty = rounded_entry * meta.contract_value
+    if per_qty <= 0:
+        return _MIN_NOTIONAL_FAILURE
+    raw_qty = (margin * leverage) / per_qty
+    qty = round_qty_to_step(raw_qty, meta.size_step)
+    # Step rounding can round up past the cap, so re-derive size and margin from the
+    # capped quantity before the guard sees them.
+    capped = _enforce_margin_cap(
+        margin=margin,
+        leverage=leverage,
+        qty=qty,
+        entry=rounded_entry,
+        meta=meta,
+        cap=cap,
+    )
+    if capped is None:
+        return _CAP_FAILURE
+    actual_margin, qty = capped
+    notional = qty * per_qty
+    if notional < required:
+        return _MIN_NOTIONAL_FAILURE
+    liq = estimate_liquidation_price(
+        direction=direction,
+        entry=rounded_entry,
+        quantity=qty,
+        leverage=leverage,
+        margin_usdt=actual_margin,
+        mm_tiers=meta.mm_tiers,
+        taker_fee_rate=taker_fee_rate,
+        contract_multiplier=meta.contract_value,
+    )
+    if not check_sl_before_liquidation(
+        direction=direction,
+        entry=rounded_entry,
+        stop_loss=stop,
+        liquidation_price=liq,
+        buffer=risk.liquidation_buffer,
+        minimum_gap_pct=risk.minimum_liquidation_gap_pct,
+        minimum_ticks=risk.minimum_liquidation_ticks,
+        price_tick=meta.price_tick,
+        latency_slippage_allowance=risk.latency_slippage_allowance,
+    ):
+        return _GUARD_FAILURE
+    return qty, actual_margin, notional, liq
+
+
+def _select_plan(
     *,
     meta: SymbolMetadata,
     risk: BitgetLiveRiskConfig,
     margin: Decimal,
     rounded_entry: Decimal,
     required: Decimal,
+    cap: Decimal | None,
+    direction: Direction,
+    stop: Decimal,
+    taker_fee_rate: Decimal,
     low: int,
     high: int,
-) -> tuple[int, Decimal, Decimal] | None:
-    """Search leverage ascending; return (lev, qty, notional) or None."""
-    for leverage in range(low, high + 1):
-        raw_qty = (margin * leverage) / (rounded_entry * meta.contract_value)
-        qty = round_qty_to_step(raw_qty, meta.size_step)
-        if qty < meta.min_order_qty:
+) -> tuple[_Plan | None, list[str]]:
+    """Pick the highest leverage that is legal and safe; return ``(plan, tags)``.
+
+    Highest first so an ordinary signal keeps trading at the pinned 20x, and a
+    wide-stop signal backs off only as far as its own stop geometry requires.
+    """
+    tags: list[str] = []
+    for leverage in range(high, low - 1, -1):
+        attempt = _plan_at_leverage(
+            meta=meta,
+            risk=risk,
+            leverage=leverage,
+            margin=margin,
+            rounded_entry=rounded_entry,
+            required=required,
+            cap=cap,
+            direction=direction,
+            stop=stop,
+            taker_fee_rate=taker_fee_rate,
+        )
+        if isinstance(attempt, str):
+            tags.append(attempt)
             continue
-        notional = qty * rounded_entry * meta.contract_value
-        if notional >= required:
-            return leverage, qty, notional
-    return None
+        qty, actual_margin, notional, liq = attempt
+        return (leverage, qty, actual_margin, notional, liq), tags
+    return None, tags
 
 
 def _margin_cap(risk: BitgetLiveRiskConfig) -> Decimal | None:
@@ -198,84 +297,47 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
             return _skip("no stop-loss and no ATR for SL/TP fallback")
         stop, _ = derive_sl_tp(data.entry, data.direction, data.atr)
 
-    found = _try_margin(
-        meta=data.meta,
-        risk=data.risk,
-        margin=margin,
-        rounded_entry=rounded_entry,
-        required=required,
-        low=low,
-        high=high,
-    )
-    fallback_used = False
-    if found is None:
-        if data.active_positions != 0:
-            return _skip("min-notional unmeetable at allocation margin; no all-in fallback")
-        fallback_used = True
-        found = _try_margin(
+    def _attempt(search_margin: Decimal) -> tuple[_Plan | None, list[str]]:
+        return _select_plan(
             meta=data.meta,
             risk=data.risk,
-            margin=data.available_usdt,
+            margin=search_margin,
             rounded_entry=rounded_entry,
             required=required,
+            cap=cap,
+            direction=data.direction,
+            stop=stop,
+            taker_fee_rate=data.taker_fee_rate,
             low=low,
             high=high,
         )
-        if found is None:
-            return _skip("min-notional unmeetable even all-in", fallback_used=True)
-        # All-in must not bypass the cap: it is still one trade's margin.
-        margin = data.available_usdt if cap is None else min(data.available_usdt, cap)
 
-    leverage, qty, notional = found
-    # Quantity was rounded to the exchange step, which can round up past the cap, so
-    # re-derive both size and margin from the capped quantity before the SL guard.
-    capped = _enforce_margin_cap(
-        margin=margin,
-        leverage=leverage,
-        qty=qty,
-        entry=rounded_entry,
-        meta=data.meta,
-        cap=cap,
-    )
-    if capped is None:
-        return _skip(
-            "margin-cap: no exchange-legal size fits the margin cap",
-            fallback_used=fallback_used,
-        )
-    margin, qty = capped
-    notional = qty * rounded_entry * data.meta.contract_value
-    if notional < required:
-        # Shrinking to fit the cap can drop the order under the venue's min-notional,
-        # which the exchange would reject. Skip rather than send an invalid order.
-        return _skip(
-            f"margin-cap: {qty} at {leverage}x is under min-notional {required}",
-            fallback_used=fallback_used,
-        )
-    liq = estimate_liquidation_price(
-        direction=data.direction,
-        entry=rounded_entry,
-        quantity=qty,
-        leverage=leverage,
-        margin_usdt=margin,
-        mm_tiers=data.meta.mm_tiers,
-        taker_fee_rate=data.taker_fee_rate,
-        contract_multiplier=data.meta.contract_value,
-    )
-    if not check_sl_before_liquidation(
-        direction=data.direction,
-        entry=rounded_entry,
-        stop_loss=stop,
-        liquidation_price=liq,
-        buffer=data.risk.liquidation_buffer,
-        minimum_gap_pct=data.risk.minimum_liquidation_gap_pct,
-        minimum_ticks=data.risk.minimum_liquidation_ticks,
-        price_tick=data.meta.price_tick,
-        latency_slippage_allowance=data.risk.latency_slippage_allowance,
-    ):
-        return _skip(
-            "sl-guard: stop-loss not safely before liquidation",
-            fallback_used=fallback_used,
-        )
+    plan, tags = _attempt(margin)
+    fallback_used = False
+    if plan is None:
+        if _GUARD_FAILURE in tags:
+            # Every leverage that can meet min-notional leaves this stop beyond the
+            # liquidation price, and a larger margin cannot help because the margin
+            # ratio is 1/leverage. Terminal, and loud: the signal itself is what does
+            # not fit the configured leverage floor.
+            return _skip("sl-guard: stop-loss not safely before liquidation")
+        if _CAP_FAILURE in tags and _MIN_NOTIONAL_FAILURE not in tags:
+            return _skip("margin-cap: no exchange-legal size fits the margin cap")
+        if data.active_positions != 0:
+            return _skip("min-notional unmeetable at allocation margin; no all-in fallback")
+        fallback_used = True
+        # All-in must not bypass the cap: it is still one trade's margin.
+        all_in_margin = data.available_usdt if cap is None else min(data.available_usdt, cap)
+        plan, tags = _attempt(all_in_margin)
+        if plan is None:
+            if _GUARD_FAILURE in tags:
+                return _skip(
+                    "sl-guard: stop-loss not safely before liquidation",
+                    fallback_used=True,
+                )
+            return _skip("min-notional unmeetable even all-in", fallback_used=True)
+
+    leverage, qty, margin, notional, liq = plan
     return LiveSizingDecision(
         accepted=True,
         reason="ok",

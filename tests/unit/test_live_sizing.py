@@ -151,14 +151,84 @@ def test_signal_without_sl_or_atr_skips() -> None:
     assert decision.accepted is False
 
 
-def capped_risk(cap: str) -> BitgetLiveRiskConfig:
-    """Return a risk config with a hard per-trade margin cap and fixed leverage."""
+def capped_risk(cap: str, *, floor: int = 20) -> BitgetLiveRiskConfig:
+    """Return a risk config with a hard per-trade margin cap and a bounded floor."""
     return BitgetLiveRiskConfig(
-        min_leverage=20,
+        min_leverage=floor,
         max_leverage=20,
         allocation_pct=Decimal("0.20"),
         max_margin_per_trade_usdt=Decimal(cap),
     )
+
+
+# Per-symbol maintenance-margin rate of 2.5%, as RAREUSDT reports: at 20x that leaves
+# only ~2.4% of liquidation headroom.
+HIGH_MMR_TIERS = (MMTier(upper_bound_notional=Decimal("1000000"), mmr=Decimal("0.025")),)
+
+
+def test_wide_stop_signal_is_refused_when_the_floor_is_pinned_at_20() -> None:
+    """The old pinned-20x policy could only skip a stop wider than its headroom."""
+    meta = make_meta(mm_tiers=HIGH_MMR_TIERS)
+    decision = plan_live_position(
+        make_input(
+            meta=meta,
+            available_usdt=Decimal("1000"),
+            stop_loss=Decimal("94"),  # 6% below entry, far beyond 20x headroom
+            risk=capped_risk("1"),
+        )
+    )
+
+    assert decision.accepted is False
+    assert decision.reason.startswith("sl-guard")
+
+
+def test_wide_stop_signal_backs_off_leverage_until_the_stop_is_safe() -> None:
+    """With a floor below the ceiling the same signal trades at a lower leverage."""
+    meta = make_meta(mm_tiers=HIGH_MMR_TIERS)
+    decision = plan_live_position(
+        make_input(
+            meta=meta,
+            available_usdt=Decimal("1000"),
+            stop_loss=Decimal("94"),
+            risk=capped_risk("1", floor=5),
+        )
+    )
+
+    assert decision.accepted is True
+    assert decision.leverage is not None and 5 <= decision.leverage < 20
+    assert decision.liquidation_price is not None
+    # The stop must sit strictly before liquidation with the guard's buffer intact.
+    assert decision.liquidation_price < decision.stop_loss
+    assert decision.margin_usdt is not None and decision.margin_usdt <= Decimal("1")
+    assert decision.notional_usdt == decision.margin_usdt * decision.leverage
+
+
+def test_ordinary_signal_still_trades_at_the_20x_ceiling() -> None:
+    """A floor below the ceiling must not change the leverage of a normal signal."""
+    decision = plan_live_position(
+        make_input(
+            available_usdt=Decimal("1000"), stop_loss=Decimal("97"), risk=capped_risk("1", floor=5)
+        )
+    )
+
+    assert decision.accepted is True
+    assert decision.leverage == 20
+
+
+def test_ceiling_is_never_exceeded_even_with_a_low_floor() -> None:
+    """A venue advertising 150x must still plan at most 20x."""
+    meta = make_meta(max_leverage=150, min_notional=Decimal("2000"))
+    decision = plan_live_position(
+        make_input(
+            meta=meta,
+            available_usdt=Decimal("1000"),
+            stop_loss=Decimal("97"),
+            risk=capped_risk("1", floor=5),
+        )
+    )
+
+    # Either it trades at/under 20x, or it skips: never above the ceiling.
+    assert decision.leverage is None or decision.leverage <= 20
 
 
 def test_hard_margin_cap_limits_margin_and_holds_leverage_at_20() -> None:
