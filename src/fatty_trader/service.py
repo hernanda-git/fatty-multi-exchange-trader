@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shutil
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -604,6 +605,98 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
             await runtime.client.aclose()  # type: ignore[attr-defined]
 
 
+# Monitor liveness guards.
+#
+# Incident 2026-09-27: the monitor process spun at ~100% CPU with a blocked event
+# loop — no log output for 3h50m while the container still reported healthy, because
+# the inherited healthcheck only validated configuration. Two guards close that hole:
+# a heartbeat file whose freshness the container healthcheck verifies, and a
+# supervisor thread that exits the process when the heartbeat goes stale so
+# ``restart: unless-stopped`` brings back a working process. The supervisor has to be
+# a plain thread: while the event loop is blocked, no coroutine-level timeout can fire.
+_DEFAULT_HEARTBEAT_PATH = "/tmp/fatty-monitor-heartbeat"
+
+
+def write_monitor_heartbeat(path: str, *, now: float | None = None) -> None:
+    """Record process liveness for the healthcheck and the stall supervisor."""
+    stamp = time.monotonic() if now is None else now
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(f"{stamp}\n")
+    except OSError:
+        # Liveness bookkeeping must never take the monitor down.
+        return
+
+
+def monitor_heartbeat_age(path: str, *, now: float | None = None) -> float | None:
+    """Seconds since the last heartbeat, or None when it is missing/unreadable."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            stamp = float(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    return (time.monotonic() if now is None else now) - stamp
+
+
+def monitor_heartbeat_is_fresh(path: str, max_age: float, *, now: float | None = None) -> bool:
+    """Whether the monitor made progress within ``max_age`` seconds.
+
+    A non-positive age means the stamp predates this boot (``time.monotonic`` resets
+    across restarts), which must count as stale rather than infinitely fresh.
+    """
+    age = monitor_heartbeat_age(path, now=now)
+    return age is not None and 0 <= age <= max_age
+
+
+def start_monitor_stall_supervisor(
+    path: str,
+    *,
+    max_age: float,
+    check_interval: float | None = None,
+    exit_code: int = 1,
+    exit_callable: Callable[[int], None] | None = None,
+) -> threading.Thread:
+    """Exit the process when the heartbeat goes stale, so Compose restarts it."""
+    period = max(1.0, min(max_age / 3, 30.0)) if check_interval is None else check_interval
+    exiter = os._exit if exit_callable is None else exit_callable
+
+    def supervise() -> None:
+        while True:
+            time.sleep(period)
+            if not monitor_heartbeat_is_fresh(path, max_age):
+                print(
+                    "service=monitor-bitget state=stalled "
+                    f"heartbeat_age={monitor_heartbeat_age(path)} max_age={max_age} "
+                    "action=exit-for-restart",
+                    flush=True,
+                )
+                exiter(exit_code)
+                return
+
+    thread = threading.Thread(target=supervise, name="monitor-stall-supervisor", daemon=True)
+    thread.start()
+    return thread
+
+
+async def _run_cycle_with_timeout(
+    run_once: Callable[[], Any], *, cycle_timeout: float | None, component: str
+) -> Any:
+    """Await one cycle, or fail loudly instead of hanging forever.
+
+    A blocked event loop cannot be rescued from inside the loop, which is what the
+    supervisor thread is for; this guards the slower case of a single await that never
+    returns, such as a provider socket that opens and then goes silent.
+    """
+    if cycle_timeout is None:
+        return await run_once()
+    try:
+        return await asyncio.wait_for(run_once(), timeout=cycle_timeout)
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"{component} cycle exceeded the {cycle_timeout}s budget; restarting the worker"
+        ) from exc
+
+
 async def run_bitget_monitor_loop(
     monitor: Any,
     *,
@@ -612,10 +705,17 @@ async def run_bitget_monitor_loop(
     watchdog: Any | None = None,
     watchdog_interval: float | None = None,
     stop_event: asyncio.Event | None = None,
+    heartbeat_path: str | None = None,
+    cycle_timeout: float | None = None,
+    stall_timeout: float | None = None,
 ) -> None:
     """Run monitor, optional stream, and optional watchdog with shared shutdown."""
     if not math.isfinite(interval) or interval <= 0:
         raise ValueError("Bitget monitor interval must be positive")
+    if cycle_timeout is not None and (not math.isfinite(cycle_timeout) or cycle_timeout <= 0):
+        raise ValueError("Bitget monitor cycle timeout must be positive")
+    if stall_timeout is not None and (not math.isfinite(stall_timeout) or stall_timeout <= 0):
+        raise ValueError("Bitget monitor stall timeout must be positive")
     effective_watchdog_interval: float | None = None
     if watchdog is not None:
         effective_watchdog_interval = interval if watchdog_interval is None else watchdog_interval
@@ -629,12 +729,28 @@ async def run_bitget_monitor_loop(
         assert effective_watchdog_interval is not None
         background.append(
             asyncio.create_task(
-                _run_bitget_watchdog_loop(watchdog, effective_watchdog_interval, stop)
+                _run_bitget_watchdog_loop(
+                    watchdog,
+                    effective_watchdog_interval,
+                    stop,
+                    heartbeat_path=heartbeat_path,
+                    cycle_timeout=cycle_timeout,
+                )
             )
         )
+    if heartbeat_path is not None:
+        # Seed the heartbeat so a fresh process is not judged stalled before its
+        # first cycle has had a chance to run.
+        write_monitor_heartbeat(heartbeat_path)
+    if heartbeat_path is not None and stall_timeout is not None:
+        start_monitor_stall_supervisor(heartbeat_path, max_age=stall_timeout)
     try:
         while not stop.is_set():
-            report = await monitor.run_once()
+            report = await _run_cycle_with_timeout(
+                monitor.run_once, cycle_timeout=cycle_timeout, component="Bitget monitor"
+            )
+            if heartbeat_path is not None:
+                write_monitor_heartbeat(heartbeat_path)
             print(
                 f"service=monitor-bitget state={getattr(report, 'status', 'unknown')} "
                 f"reasons={','.join(getattr(report, 'reasons', ())) or 'none'}",
@@ -652,7 +768,12 @@ async def run_bitget_monitor_loop(
 
 
 async def _run_bitget_watchdog_loop(
-    watchdog: Any, interval: float, stop_event: asyncio.Event
+    watchdog: Any,
+    interval: float,
+    stop_event: asyncio.Event,
+    *,
+    heartbeat_path: str | None = None,
+    cycle_timeout: float | None = None,
 ) -> None:
     """Run the REST protection watchdog independently of the legacy monitor cadence."""
     while not stop_event.is_set():
@@ -660,7 +781,11 @@ async def _run_bitget_watchdog_loop(
         stream_symbols = getattr(watchdog, "stream_symbols", ())
         if callable(refresh_symbols):
             refresh_symbols(stream_symbols)
-        report = await watchdog.run_once()
+        report = await _run_cycle_with_timeout(
+            watchdog.run_once, cycle_timeout=cycle_timeout, component="Bitget protection watchdog"
+        )
+        if heartbeat_path is not None:
+            write_monitor_heartbeat(heartbeat_path)
         print(
             f"service=monitor-bitget component=protection-watchdog "
             f"state={getattr(report, 'status', 'unknown')} "
@@ -781,6 +906,15 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         live_intent_store=live_intent_store,
     )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
+    # Liveness: a cycle budget, and a stall budget after which the supervisor exits
+    # the process so Compose restarts a working one. The default stall budget is
+    # generous enough to survive a slow provider read but far shorter than the 3h50m
+    # silent stall this guards against.
+    cycle_timeout = float(environ.get("BITGET_MONITOR_CYCLE_TIMEOUT_SECONDS", "120"))
+    stall_timeout = float(
+        environ.get("BITGET_MONITOR_STALL_TIMEOUT_SECONDS", str(max(interval * 3, 90)))
+    )
+    heartbeat_path = environ.get("BITGET_MONITOR_HEARTBEAT_PATH", _DEFAULT_HEARTBEAT_PATH)
     from fatty_trader.execution.bitget_fallback_protection import load_active
 
     stream, watchdog, watchdog_interval = build_bitget_monitor_protection(
@@ -795,6 +929,9 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
             stream=stream,
             watchdog=watchdog,
             watchdog_interval=watchdog_interval,
+            heartbeat_path=heartbeat_path,
+            cycle_timeout=cycle_timeout,
+            stall_timeout=stall_timeout,
         )
     finally:
         await client.aclose()
@@ -1031,10 +1168,33 @@ async def run_intake(
     await client.run_until_disconnected()
 
 
+def check_monitor_heartbeat(path: str, max_age: float | None) -> int:
+    """Return 0 when the monitor heartbeat is fresh, non-zero when it is not.
+
+    Used by the container healthcheck: configuration validation alone cannot tell a
+    working monitor from one that stopped cycling hours ago.
+    """
+    if max_age is None or not math.isfinite(max_age) or max_age <= 0:
+        print("check_failed=heartbeat-max-age-required", flush=True)
+        return 2
+    age = monitor_heartbeat_age(path)
+    if not monitor_heartbeat_is_fresh(path, max_age):
+        print(f"check_failed=monitor-stalled heartbeat_age={age} max_age={max_age}", flush=True)
+        return 1
+    age_label = "n/a" if age is None else f"{age:.3f}"
+    print(f"check_ok=monitor-live heartbeat_age={age_label}", flush=True)
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fatty trader isolated service runner")
     parser.add_argument("--service", required=True)
     parser.add_argument("--check", action="store_true")
+    # Liveness probe used by the monitor healthcheck: with --check it also verifies
+    # the heartbeat is fresh, so a process that stopped cycling can no longer be
+    # reported healthy.
+    parser.add_argument("--heartbeat-path", default=None)
+    parser.add_argument("--heartbeat-max-age", type=float, default=None)
     return parser.parse_args()
 
 
@@ -1051,6 +1211,8 @@ def main() -> int:
         return 0
     if args.check:
         service_config(args.service, os.environ)
+        if args.heartbeat_path is not None:
+            return check_monitor_heartbeat(args.heartbeat_path, args.heartbeat_max_age)
         return 0
     asyncio.run(run_worker(args.service))
     return 0

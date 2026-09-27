@@ -12,6 +12,10 @@ from fatty_trader.exchanges.bitget.live import (
     normalize_fill,
 )
 
+# States in which the provider has confirmed a completed fill for the intent, so the
+# ledger must carry fill evidence for it.
+_FILLED_STATES = {"filled", "reconciled"}
+
 
 class Cursor(Protocol):
     def execute(self, statement: str, params: tuple[Any, ...] = ()) -> object: ...
@@ -22,6 +26,50 @@ class Connection(Protocol):
     def cursor(self) -> Cursor: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
+
+
+def insert_status_derived_fill(cursor: Cursor, record: LiveIntentRecord) -> None:
+    """Persist one ledger row for a filled intent the provider reported without fills.
+
+    Bitget can confirm a full fill on order status while returning an empty fill list,
+    and fills are only ever written from that list — which left closed positions with no
+    fill evidence and understated realized PnL (14 of 23 filled intents on 2026-09-27).
+    When the intent is filled, carries a quantity and price, and has no fill row yet,
+    record exactly what the order status reported. The provider_fill_id is explicitly
+    synthetic so it can never be mistaken for a provider-issued id, and realized PnL
+    stays zero rather than being invented.
+    """
+    if record.state not in _FILLED_STATES:
+        return
+    if record.filled_qty <= 0 or record.avg_price is None or record.avg_price <= 0:
+        return
+    provider_fill_id = f"status-derived:{record.provider_order_id or record.client_oid}"
+    cursor.execute(
+        """
+        INSERT INTO fills
+            (id, exchange, client_order_id, provider_fill_id, symbol, price, quantity,
+             fee, fee_ccy, realized_pnl, filled_at)
+        SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP
+        WHERE NOT EXISTS (
+            SELECT 1 FROM fills WHERE exchange = %s AND client_order_id = %s
+        )
+        ON CONFLICT (exchange, provider_fill_id) DO NOTHING
+        """,
+        (
+            uuid5(NAMESPACE_URL, f"fatty-fill:{record.exchange}:{provider_fill_id}"),
+            record.exchange,
+            record.client_oid,
+            provider_fill_id,
+            record.symbol,
+            record.avg_price,
+            record.filled_qty,
+            abs(record.fee),
+            "USDT",
+            Decimal("0"),
+            record.exchange,
+            record.client_oid,
+        ),
+    )
 
 
 def insert_provider_fills(
@@ -297,6 +345,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 raise ValueError("live intent provider order id conflict or missing record")
             if record.provider_fills:
                 insert_provider_fills(cursor, record, record.provider_fills)
+            insert_status_derived_fill(cursor, record)
             connection.commit()
         except Exception:
             connection.rollback()

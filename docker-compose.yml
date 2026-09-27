@@ -202,6 +202,12 @@ services:
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "monitor-bitget"]
     environment:
       SERVICE_NAME: monitor-bitget
+      # Liveness: exit-and-restart when the monitor stops cycling. On 2026-09-27 the
+      # process spun at 100% CPU with a blocked event loop for 3h50m and the inherited
+      # dispatcher healthcheck still reported it healthy.
+      BITGET_MONITOR_HEARTBEAT_PATH: ${BITGET_MONITOR_HEARTBEAT_PATH:-/tmp/fatty-monitor-heartbeat}
+      BITGET_MONITOR_CYCLE_TIMEOUT_SECONDS: ${BITGET_MONITOR_CYCLE_TIMEOUT_SECONDS:-120}
+      BITGET_MONITOR_STALL_TIMEOUT_SECONDS: ${BITGET_MONITOR_STALL_TIMEOUT_SECONDS:-90}
       BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
       BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-0}
       BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
@@ -210,6 +216,29 @@ services:
       BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
       BITGET_PROTECTION_STREAM_SYMBOLS: ${BITGET_PROTECTION_STREAM_SYMBOLS:-}
       BITGET_PROTECTION_REST_WATCHDOG_SECONDS: ${BITGET_PROTECTION_REST_WATCHDOG_SECONDS:-5}
+    healthcheck:
+      # Probe this service *and* verify the cycle heartbeat is fresh. The inherited
+      # dispatcher probe validated configuration only, which is why the 3h50m stall
+      # still reported (healthy); docker now marks the container unhealthy and the
+      # supervisor thread exits the process so restart:unless-stopped recovers it.
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-m",
+          "fatty_trader.service",
+          "--service",
+          "monitor-bitget",
+          "--check",
+          "--heartbeat-path",
+          "/tmp/fatty-monitor-heartbeat",
+          "--heartbeat-max-age",
+          "90",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   operator-bot:
     build: .

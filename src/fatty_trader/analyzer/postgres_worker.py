@@ -42,6 +42,7 @@ INSERT INTO dispatches
 (id, source_type, source_id, revision, exchange, state)
 VALUES (%s, 'canonical_signal', %s, %s, %s, 'QUEUED')
 ON CONFLICT (source_type, source_id, revision, exchange) DO NOTHING
+RETURNING id
 """
 _MANAGEMENT_INSERT = """
 INSERT INTO source_management_updates
@@ -144,6 +145,7 @@ def process_received_batch(
                             ),
                         )
                     signal_id = None
+                    dispatches = 0
                     if result.signal is not None:
                         signal = result.signal.model_copy(update={"source_revision": revision})
                         signal_id = uuid5(
@@ -169,11 +171,17 @@ def process_received_batch(
                         signal_id = (
                             signal_row["id"] if isinstance(signal_row, dict) else signal_row[0]
                         )
+                        dispatches = 0
                         for exchange in exchanges:
                             cursor.execute(
                                 _DISPATCH_INSERT,
                                 (uuid4(), signal_id, revision, exchange),
                             )
+                            # Count the rows actually written. Reporting len(exchanges)
+                            # claimed a dispatch even when the insert conflicted, which
+                            # is how three signals lost their fan-out unnoticed.
+                            if cursor.fetchone() is not None:
+                                dispatches += 1
                     cursor.execute(
                         _ANALYSIS_NOTIFICATION_INSERT,
                         (
@@ -209,14 +217,30 @@ def process_received_batch(
                                     "take_profits": [str(v) for v in result.signal.take_profits]
                                     if result.signal
                                     else [],
-                                    "dispatches": len(exchanges) if signal_id is not None else 0,
+                                    "dispatches": dispatches if signal_id is not None else 0,
+                                    "exchange_count": len(exchanges),
+                                    "exchanges": list(exchanges),
                                 }
                             ),
                         ),
                     )
                     cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
-                except Exception:
-                    cursor.execute(_UPDATE_STATE, ("FAILED", message_uuid))
+                except Exception as exc:  # noqa: BLE001 - one bad message must not kill the batch
+                    # Record why the message failed. Wrapped, because a database error
+                    # leaves the transaction unusable and the state update cannot run.
+                    try:
+                        cursor.execute(_UPDATE_STATE, ("FAILED", message_uuid))
+                        print(
+                            f"service=analyzer state=message-failed message_id={message_id} "
+                            f"error={exc!r}",
+                            flush=True,
+                        )
+                    except Exception:
+                        print(
+                            f"service=analyzer state=message-failed-unpersisted "
+                            f"message_id={message_id} error={exc!r}",
+                            flush=True,
+                        )
                 processed += 1
         connection.commit()
     return processed
