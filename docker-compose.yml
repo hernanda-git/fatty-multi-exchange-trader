@@ -102,7 +102,9 @@ services:
       PGUSER: fatty_app
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       CODEX_HOME: /app/runtime/codex-home
-      CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}
+      # Operator-supplied label only; this is NOT an auth probe (the analyzer prints it
+      # as codex_account_label). Auth comes from the mounted ~/.codex/auth.json.
+      CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-unset}
       BITGET_IMAGE_ANALYSIS_ENABLED: ${BITGET_IMAGE_ANALYSIS_ENABLED:-1}
     volumes:
       - ./runtime/codex-home:/app/runtime/codex-home

@@ -1004,7 +1004,7 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
     import psycopg
 
     runner = CodexRunner()
-    account_label = environ.get("CODEX_ACCOUNT_LABEL", "UNCONFIGURED")
+    account_label = environ.get("CODEX_ACCOUNT_LABEL", "unset")
     codex_cli = "available" if shutil.which("codex") else "unavailable"
     poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "5"))
     batch_size = int(environ.get("ANALYZER_BATCH_SIZE", "10"))
@@ -1019,7 +1019,10 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
         mode = environ.get("TRADER_MODE", "DEMO").upper()
         print(
             f"service=analyzer mode={mode} state=ready processed={processed} "
-            f"codex_cli={codex_cli} codex_account={account_label}",
+            # "account_label" is a static operator-supplied name, not an auth probe.
+            # The old key name read as a status and led an audit to conclude Codex was
+            # unconfigured while its token was valid.
+            f"codex_cli={codex_cli} codex_account_label={account_label}",
             flush=True,
         )
         await asyncio.sleep(poll_seconds if processed == 0 else 0)
