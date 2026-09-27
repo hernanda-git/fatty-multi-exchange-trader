@@ -177,7 +177,7 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
         assert command in COMPOSE
     assert "service_completed_successfully" in COMPOSE
     assert "TRADER_MODE: DEMO" in COMPOSE
-    assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}" in COMPOSE
+    assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-unset}" in COMPOSE
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts ./scripts" in dockerfile
     assert "npm install --global @openai/codex@0.153.0" in dockerfile
