@@ -100,6 +100,8 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
         "BITGET_API_SECRET",
         "BITGET_API_PASSPHRASE",
     ),
+    # Paper lane: deliberately no credentials, so it cannot reach any venue.
+    "paper-kaka": (),
 }
 
 
