@@ -14,9 +14,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.request import urlopen
 
-_TICKER_URL = (
-    "https://api.bitget.com/api/v2/mix/market/ticker?symbol={symbol}USDT&productType=USDT-FUTURES"
-)
+_TICKER_URL = "https://api.bitget.com/api/v2/mix/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
 _CACHE_TTL_SECONDS = 10.0
 _cache: dict[str, tuple[float, Decimal]] = {}
 

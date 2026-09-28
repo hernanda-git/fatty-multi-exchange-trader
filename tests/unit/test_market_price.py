@@ -46,8 +46,9 @@ def test_reads_last_price_from_the_public_ticker(monkeypatch: pytest.MonkeyPatch
     price = market_price.public_last_price("ena")
 
     assert price == Decimal("0.27217")
-    assert "symbol=ENAUSDT" in calls[0]
-    assert "productType=USDT-FUTURES" in calls[0]
+    # Exact query: the pair token is suffixed once, and the endpoint rejects a doubled
+    # suffix with HTTP 400 (that is how "ENAUSDTUSDT" failed in production).
+    assert calls[0].endswith("?symbol=ENAUSDT&productType=USDT-FUTURES")
 
 
 def test_price_is_cached_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
