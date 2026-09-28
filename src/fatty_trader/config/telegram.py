@@ -15,6 +15,15 @@ class TelegramSettings:
     target_chat_id: int | None = None
     media_root: str = "/data/media"
 
+    @property
+    def channel_refs(self) -> tuple[str | int, ...]:
+        """Channels in the form Telethon can resolve: @username or a numeric id.
+
+        Private channels have no username at all (``Kaka trades`` rejects @Kakatrades), so an
+        id is the only way in; Telethon needs it as an int rather than a string.
+        """
+        return tuple(channel_ref(channel) for channel in self.channels)
+
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> TelegramSettings:
         raw_id = values.get("TG_API_ID", values.get("TELEGRAM_API_ID", "")).strip()
@@ -46,3 +55,16 @@ class TelegramSettings:
             int(raw_target),
             values.get("TELEGRAM_MEDIA_ROOT", "/data/media").strip() or "/data/media",
         )
+
+
+def channel_ref(channel: str) -> str | int:
+    """Return an int for numeric channel ids, otherwise the string unchanged.
+
+    ``Kaka trades`` is a private channel: it has no @username, so its marked id
+    (``-1003763643270``) is the only handle Telethon can resolve.
+    """
+    value = channel.strip()
+    body = value[1:] if value.startswith("-") else value
+    if body.isdigit() and body:
+        return int(value)
+    return value

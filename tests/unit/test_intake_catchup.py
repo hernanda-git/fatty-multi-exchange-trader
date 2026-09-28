@@ -304,3 +304,23 @@ def test_run_intake_stays_inert_without_a_connection_factory() -> None:
             connection_factory=None,
         )
     )
+
+
+def test_private_channels_can_be_addressed_by_numeric_id() -> None:
+    """`Kaka trades` has no username, so the source list must accept a marked channel id."""
+    from fatty_trader.config.telegram import TelegramSettings, channel_ref
+
+    assert channel_ref("@fattyfatclub") == "@fattyfatclub"
+    assert channel_ref("-1003763643270") == -1003763643270
+    assert channel_ref(" 1252615519 ") == 1252615519
+
+    settings = TelegramSettings.from_mapping(
+        {
+            "TG_API_ID": "1",
+            "TG_API_HASH": "hash",
+            "TELEGRAM_SESSION": "session",
+            "TELEGRAM_SOURCE_CHANNELS": "@fattyfatclub,-1003763643270",
+            "TELEGRAM_TARGET_CHAT_ID": "1",
+        }
+    )
+    assert settings.channel_refs == ("@fattyfatclub", -1003763643270)

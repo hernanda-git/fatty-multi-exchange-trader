@@ -9,7 +9,7 @@ from typing import Any
 
 import psycopg
 
-from fatty_trader.config.telegram import TelegramSettings
+from fatty_trader.config.telegram import TelegramSettings, channel_ref
 from fatty_trader.intake.catchup import telegram_peer_id
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramIntake
@@ -31,7 +31,7 @@ async def backfill_latest(
     await client.start()
     try:
         for channel in settings.channels:
-            entity = await client.get_entity(channel)
+            entity = await client.get_entity(channel_ref(channel))
             async for message in client.iter_messages(entity, limit=1):
                 # Marked id (-100<id>): the realtime handler and catch-up both store
                 # event.chat_id, so the raw entity id would never match the cursor.

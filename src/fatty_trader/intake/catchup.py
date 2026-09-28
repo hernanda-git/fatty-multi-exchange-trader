@@ -19,6 +19,8 @@ from typing import Any
 
 from telethon.utils import get_peer_id
 
+from fatty_trader.config.telegram import channel_ref
+
 
 def telegram_peer_id(entity: Any) -> int:
     """Marked channel id (-100<id>), exactly what the realtime handler stores as chat_id.
@@ -63,7 +65,7 @@ async def catch_up_missed(
         raise ValueError("per_run_limit must be positive")
     ingested = 0
     for channel in channels:
-        entity = await client.get_entity(channel)
+        entity = await client.get_entity(channel_ref(channel))
         channel_id = peer_id_of(entity)
         cursor = cursor_lookup(channel_id)
         if cursor is None:

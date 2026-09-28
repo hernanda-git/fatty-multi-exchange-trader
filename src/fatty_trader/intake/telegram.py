@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from telethon import events
 
-from fatty_trader.config.telegram import TelegramSettings
+from fatty_trader.config.telegram import TelegramSettings, channel_ref
 from fatty_trader.intake.media import persist_media_bytes
 from fatty_trader.intake.persistence import (
     RawMessageRepository,
@@ -31,7 +31,9 @@ class TelegramIntake:
         async def handle(event: Any) -> None:
             self.ingest(channel_id=int(event.chat_id), message=event.message)
 
-        client.add_event_handler(handle, events.NewMessage(chats=list(channels)))
+        client.add_event_handler(
+            handle, events.NewMessage(chats=[channel_ref(channel) for channel in channels])
+        )
 
     def ingest(self, *, channel_id: int, message: Any) -> RawTelegramMessage:
         item = self._build_message(channel_id=channel_id, message=message)
@@ -132,7 +134,7 @@ class TelegramForwarder:
             await self.handle_message(int(event.chat_id), event.message)
 
         self._client.add_event_handler(
-            handle, events.NewMessage(chats=list(self._settings.channels))
+            handle, events.NewMessage(chats=list(self._settings.channel_refs))
         )
 
 
