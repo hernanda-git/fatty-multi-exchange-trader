@@ -1227,6 +1227,7 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
     and a paper source must have no route into the money lane.
     """
     import psycopg
+    from psycopg.rows import dict_row
 
     from fatty_trader.analyzer.market_price import public_last_price
     from fatty_trader.kaka.worker import process_paper_batch
@@ -1241,7 +1242,7 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
     while True:
         try:
             counts = process_paper_batch(
-                psycopg.connect,
+                lambda: psycopg.connect(row_factory=dict_row),
                 market_price_lookup=public_last_price,
                 channel_id=channel_id,
                 limit=limit,

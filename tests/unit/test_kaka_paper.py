@@ -260,3 +260,10 @@ def test_paper_shapes_are_all_classified_on_real_messages() -> None:
     }
     for text, expected in shapes.items():
         assert parse_kaka_event(text, message_id=1).type is expected, text
+
+
+def test_paper_worker_uses_dict_rows() -> None:
+    """store.load_open_trade indexes columns by name; tuple rows raised TypeError in prod."""
+    source = (REPO_ROOT / "src" / "fatty_trader" / "service.py").read_text(encoding="utf-8")
+    block = source.split("async def run_paper_kaka", 1)[1].split("\ndef ", 1)[0]
+    assert "row_factory=dict_row" in block
