@@ -234,6 +234,39 @@ def test_scalp_chatter_is_never_a_signal() -> None:
         )
 
 
+def test_scalp_marker_is_not_required() -> None:
+    """ "$ENA long, sl below 0.27845" must trade the same way as the scalp wording."""
+
+    for text in (
+        "$ENA long, sl below 0.27845",
+        "$ENA long. sl 0.27845",
+        "#ENA $ENA LONG TRADE, stop loss: 0.27845",
+    ):
+        signal = parse_explicit_signal(
+            text, message_id=1, market_price_lookup=lambda _pair: Decimal("0.29")
+        )
+        assert signal is not None, text
+        assert signal.pair_token == "ENA"
+        assert signal.direction is Direction.LONG
+        assert signal.stop_loss == Decimal("0.27845")
+
+
+def test_stop_mention_mid_sentence_is_not_a_signal() -> None:
+    """A stop is only actionable when the message ends in the stop clause."""
+
+    for text in (
+        "$ENA long, moving sl to entry now",
+        "$ENA long, sl hit earlier at 0.27845 and I am out",
+        "$ENA long bias but no stop set",
+    ):
+        assert (
+            parse_explicit_signal(
+                text, message_id=1, market_price_lookup=lambda _pair: Decimal("0.29")
+            )
+            is None
+        ), text
+
+
 def test_scalp_reaches_the_dispatch_path_through_the_fallback_seam() -> None:
     result = analyze_with_fallback(
         text=_SCALP_ENA,

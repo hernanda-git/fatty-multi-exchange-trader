@@ -26,16 +26,15 @@ _RIGID = re.compile(
     r"SL\s+(?P<sl>\d+(?:\.\d+)?)\s+TP\s+(?P<tp>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
-# The source's scalp format carries no entry price at all:
-#   "$ENA longed scalp here\n\nStoploss below: 0.27845"
-# Entry is therefore the market at decision time, supplied by the caller. Without a
-# price source this must stay unparsed (fail-closed) rather than inventing an entry.
+# The source also posts the same idea without any scalp/here marker:
+#   "$ENA long, sl below 0.27845"
+# so the shape required is: pair + a long/short verb first, and a stop-loss clause with a
+# number last. Anything that merely mentions a stop mid-sentence stays unparsed, and an
+# entry price in the text always wins (that path is tried before this one).
 _SCALP_MARKET_STOP_ONLY = re.compile(
-    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{2,20})\s+"
-    r"(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\b"
-    # A scalp/here/now marker is required, so generic chatter that merely ends near an
-    # "sl <number>" phrase is not promoted into a market order.
-    r"(?=[\s\S]*?\b(?:SCALP|HERE|NOW)\b).*?"
+    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{2,20})"
+    r"(?:\s+\$?(?P<pair2>[A-Z0-9]{2,20}))?\s+"
+    r"(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\b.*?"
     r"(?:STOPLOSS|STOP\s*LOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\s*$"
 )
 
@@ -114,7 +113,7 @@ def _scalp_market_signal(
     match = _SCALP_MARKET_STOP_ONLY.match(text)
     if match is None or market_price_lookup is None:
         return None
-    pair_token = match["pair"].upper().removesuffix("USDT")
+    pair_token = (match.groupdict().get("pair2") or match["pair"]).upper().removesuffix("USDT")
     entry = market_price_lookup(pair_token)
     if entry is None or entry <= 0:
         return None
