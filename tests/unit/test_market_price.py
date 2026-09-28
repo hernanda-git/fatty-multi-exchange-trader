@@ -1,0 +1,93 @@
+"""Offline tests for the public market-price lookup used by scalp signals."""
+
+from __future__ import annotations
+
+import json
+from decimal import Decimal
+
+import pytest
+
+from fatty_trader.analyzer import market_price
+
+
+class FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+def _stub(monkeypatch: pytest.MonkeyPatch, payload: object) -> list[str]:
+    """Replace urlopen with a recorder returning ``payload`` as JSON."""
+    calls: list[str] = []
+
+    def fake_urlopen(url: str, timeout: float = 5.0) -> FakeResponse:
+        calls.append(url)
+        return FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(market_price, "urlopen", fake_urlopen)
+    monkeypatch.setattr(market_price, "_cache", {})
+    return calls
+
+
+def test_reads_last_price_from_the_public_ticker(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stub(
+        monkeypatch,
+        {"code": "00000", "data": [{"symbol": "ENAUSDT", "lastPr": "0.27217"}]},
+    )
+
+    price = market_price.public_last_price("ena")
+
+    assert price == Decimal("0.27217")
+    assert "symbol=ENAUSDT" in calls[0]
+    assert "productType=USDT-FUTURES" in calls[0]
+
+
+def test_price_is_cached_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stub(monkeypatch, {"data": {"lastPr": "0.5"}})
+
+    assert market_price.public_last_price("SOL") == Decimal("0.5")
+    assert market_price.public_last_price("SOL") == Decimal("0.5")
+    assert len(calls) == 1
+
+
+def test_cache_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stub(monkeypatch, {"data": {"lastPr": "0.5"}})
+
+    market_price.public_last_price("SOL", now=1_000.0)
+    market_price.public_last_price("SOL", now=1_000.0 + market_price._CACHE_TTL_SECONDS + 1)
+
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"code": "40034", "msg": "error"},
+        {"data": [{"symbol": "ENAUSDT"}]},
+        {"data": [{"lastPr": "0"}]},
+        {"data": [{"lastPr": "abc"}]},
+        {"data": []},
+    ],
+)
+def test_unusable_payloads_return_none(monkeypatch: pytest.MonkeyPatch, payload: object) -> None:
+    _stub(monkeypatch, payload)
+
+    assert market_price.public_last_price("ENA") is None
+
+
+def test_network_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(_url: str, timeout: float = 5.0) -> FakeResponse:
+        raise OSError("network down")
+
+    monkeypatch.setattr(market_price, "urlopen", boom)
+    monkeypatch.setattr(market_price, "_cache", {})
+
+    assert market_price.public_last_price("ENA") is None

@@ -1,5 +1,6 @@
 import hashlib
 import re
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 
 from fatty_trader.domain.enums import Direction
@@ -25,13 +26,37 @@ _RIGID = re.compile(
     r"SL\s+(?P<sl>\d+(?:\.\d+)?)\s+TP\s+(?P<tp>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
+# The source's scalp format carries no entry price at all:
+#   "$ENA longed scalp here\n\nStoploss below: 0.27845"
+# Entry is therefore the market at decision time, supplied by the caller. Without a
+# price source this must stay unparsed (fail-closed) rather than inventing an entry.
+_SCALP_MARKET_STOP_ONLY = re.compile(
+    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{2,20})\s+"
+    r"(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\b"
+    # A scalp/here/now marker is required, so generic chatter that merely ends near an
+    # "sl <number>" phrase is not promoted into a market order.
+    r"(?=[\s\S]*?\b(?:SCALP|HERE|NOW)\b).*?"
+    r"(?:STOPLOSS|STOP\s*LOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\s*$"
+)
 
 
-def parse_explicit_signal(text: str, *, message_id: int) -> CanonicalSignal | None:
-    """Accept rigid explicit trade syntax without using market data."""
+def parse_explicit_signal(
+    text: str,
+    *,
+    message_id: int,
+    market_price_lookup: Callable[[str], Decimal | None] | None = None,
+) -> CanonicalSignal | None:
+    """Accept rigid explicit trade syntax without using market data.
+
+    ``market_price_lookup`` is consulted only for scalp messages that state a stop but no
+    entry price. It must return the current market price for the pair token, or None; a
+    missing price means no signal, never a guess.
+    """
     match = _CHANNEL.match(text) or _NATURAL_STOP_ONLY.match(text) or _RIGID.match(text)
     if match is None:
-        return None
+        return _scalp_market_signal(
+            text, message_id=message_id, market_price_lookup=market_price_lookup
+        )
     try:
         direction_text = match["direction"].upper()
         direction = {
@@ -68,6 +93,47 @@ def parse_explicit_signal(text: str, *, message_id: int) -> CanonicalSignal | No
             entry_price=entry,
             stop_loss=stop_loss,
             take_profits=take_profits,
+        )
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _scalp_market_signal(
+    text: str,
+    *,
+    message_id: int,
+    market_price_lookup: Callable[[str], Decimal | None] | None,
+) -> CanonicalSignal | None:
+    """Turn a stop-only scalp message into a market-entry signal, or refuse.
+
+    Refusal is the default: without a price source, or when the current market has
+    already crossed the stated stop, there is no tradable setup. CanonicalSignal's own
+    geometry validator rejects a long whose stop sits at or above its entry (and the
+    mirror case for shorts), so a dead scalp can never become a signal.
+    """
+    match = _SCALP_MARKET_STOP_ONLY.match(text)
+    if match is None or market_price_lookup is None:
+        return None
+    pair_token = match["pair"].upper().removesuffix("USDT")
+    entry = market_price_lookup(pair_token)
+    if entry is None or entry <= 0:
+        return None
+    try:
+        return CanonicalSignal(
+            source_message_id=message_id,
+            source_revision=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            pair_token=pair_token,
+            direction={
+                "LONGED": Direction.LONG,
+                "LONGING": Direction.LONG,
+                "LONG": Direction.LONG,
+                "SHORTED": Direction.SHORT,
+                "SHORTING": Direction.SHORT,
+                "SHORT": Direction.SHORT,
+            }[match["direction"].upper()],
+            entry_price=entry,
+            stop_loss=Decimal(match["sl"]),
+            take_profits=(),
         )
     except (InvalidOperation, ValueError):
         return None

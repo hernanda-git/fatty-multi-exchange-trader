@@ -136,3 +136,128 @@ def test_parser_is_used_only_after_codex_failure() -> None:
     assert result.status is AnalysisStatus.FALLBACK_ACCEPTED
     assert result.signal is not None
     assert result.signal.pair_token == "GIGGLE"
+
+
+# --- stop-only scalp format ("$ENA longed scalp here / Stoploss below: 0.27845") --------
+#
+# The source stopped publishing an entry price. Entry becomes the market price at
+# decision time, which is only acceptable because the signal model refuses a long whose
+# stop sits at or above that entry: a scalp that already ran through its stop produces no
+# signal at all, instead of a market order chasing a dead setup.
+
+_SCALP_ENA = "$ENA longed scalp here\n\nStoploss below: 0.27845"
+
+
+def test_scalp_stop_only_message_becomes_a_market_entry_signal() -> None:
+    signal = parse_explicit_signal(
+        _SCALP_ENA,
+        message_id=16219,
+        market_price_lookup=lambda _pair: Decimal("0.286"),
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "ENA"
+    assert signal.direction is Direction.LONG
+    assert signal.entry_price == Decimal("0.286")
+    assert signal.stop_loss == Decimal("0.27845")
+    assert signal.take_profits == ()
+
+
+def test_scalp_is_refused_when_the_market_already_crossed_the_stop() -> None:
+    # The real ENA case (2026-09-28): market 0.27217 against a stop of 0.27845.
+    signal = parse_explicit_signal(
+        _SCALP_ENA,
+        message_id=16219,
+        market_price_lookup=lambda _pair: Decimal("0.27217"),
+    )
+
+    assert signal is None
+
+
+def test_scalp_is_refused_without_a_price_source() -> None:
+    assert parse_explicit_signal(_SCALP_ENA, message_id=16219) is None
+    assert (
+        parse_explicit_signal(_SCALP_ENA, message_id=16219, market_price_lookup=lambda _pair: None)
+        is None
+    )
+    assert (
+        parse_explicit_signal(
+            _SCALP_ENA, message_id=16219, market_price_lookup=lambda _pair: Decimal("0")
+        )
+        is None
+    )
+
+
+def test_scalp_short_needs_its_stop_above_the_market() -> None:
+    text = "$SOL shorted scalp here\n\nStoploss above: 200"
+
+    accepted = parse_explicit_signal(
+        text, message_id=1, market_price_lookup=lambda _pair: Decimal("190")
+    )
+    refused = parse_explicit_signal(
+        text, message_id=1, market_price_lookup=lambda _pair: Decimal("210")
+    )
+
+    assert accepted is not None
+    assert accepted.direction is Direction.SHORT
+    assert accepted.entry_price == Decimal("190")
+    assert refused is None
+
+
+def test_stated_entry_never_consults_the_market_price() -> None:
+    consulted: list[str] = []
+
+    signal = parse_explicit_signal(
+        "#ENA $ENA LONG TRADE\n\nENTRY: 0.30\n\nTARGET: 0.33\n\nSTOPLOSS: 0.27845",
+        message_id=16219,
+        market_price_lookup=lambda pair: consulted.append(pair) or Decimal("0.27217"),
+    )
+
+    assert signal is not None
+    assert signal.entry_price == Decimal("0.30")
+    assert consulted == []
+
+
+def test_scalp_chatter_is_never_a_signal() -> None:
+    chatter = (
+        "close ASTER in small profit",
+        "$QNT sl hit, not looking to trade anything today",
+        "$RARE more than 1R down, tp1 booked",
+        "Goodmorning ❤️\n\nI think I held up to my end of the deal",
+    )
+    for text in chatter:
+        assert (
+            parse_explicit_signal(
+                text, message_id=1, market_price_lookup=lambda _pair: Decimal("1")
+            )
+            is None
+        )
+
+
+def test_scalp_reaches_the_dispatch_path_through_the_fallback_seam() -> None:
+    result = analyze_with_fallback(
+        text=_SCALP_ENA,
+        message_id=16219,
+        codex_runner=lambda _: run_result(
+            {"actionable": False, "reason": "no entry price provided"}
+        ),
+        market_price_lookup=lambda _pair: Decimal("0.286"),
+    )
+
+    assert result.status is AnalysisStatus.FALLBACK_ACCEPTED
+    assert result.signal is not None
+    assert result.signal.pair_token == "ENA"
+    assert result.failure_class == "no entry price provided"
+
+
+def test_dead_scalp_yields_no_signal_even_through_the_fallback_seam() -> None:
+    result = analyze_with_fallback(
+        text=_SCALP_ENA,
+        message_id=16219,
+        codex_runner=lambda _: run_result(
+            {"actionable": False, "reason": "no entry price provided"}
+        ),
+        market_price_lookup=lambda _pair: Decimal("0.27217"),
+    )
+
+    assert result.signal is None
