@@ -1152,6 +1152,8 @@ async def run_intake(
     *,
     client_factory: Any = build_telethon_client,
     repository: Any = None,
+    connection_factory: Any = None,
+    peer_id_of: Any = None,
 ) -> None:
     """Run the real Telethon intake, or remain inert when config is absent."""
     settings = intake_settings(environ)
@@ -1163,12 +1165,43 @@ async def run_intake(
     if repository is None:
         import psycopg
 
-        repository = PostgresRawMessageRepository(psycopg.connect)
+        connection_factory = connection_factory or psycopg.connect
+        repository = PostgresRawMessageRepository(connection_factory)
     forwarder = TelegramForwarder(client, settings, repository)
     await forwarder.attach()
     await client.start()
     print("service=intake mode=DEMO state=ready", flush=True)
-    await client.run_until_disconnected()
+    # Safety net for the realtime-only listen path: a dropped update stream used to lose
+    # every message in the blind window permanently (2026-09-27: the source's ENA signal).
+    catchup_seconds = float(environ.get("TELEGRAM_CATCHUP_SECONDS", "60"))
+    catchup_task: asyncio.Task[Any] | None = None
+    if catchup_seconds > 0 and connection_factory is not None:
+        from fatty_trader.intake.catchup import (
+            build_cursor_lookup,
+            run_catchup_loop,
+            telegram_peer_id,
+        )
+
+        catchup_task = asyncio.create_task(
+            run_catchup_loop(
+                interval=catchup_seconds,
+                client=client,
+                forwarder=forwarder,
+                channels=settings.channels,
+                cursor_lookup=build_cursor_lookup(connection_factory),
+                per_run_limit=int(environ.get("TELEGRAM_CATCHUP_LIMIT", "50")),
+                peer_id_of=peer_id_of or telegram_peer_id,
+            )
+        )
+        print(
+            f"service=intake event=catchup-armed interval_seconds={catchup_seconds}",
+            flush=True,
+        )
+    try:
+        await client.run_until_disconnected()
+    finally:
+        if catchup_task is not None:
+            catchup_task.cancel()
 
 
 def check_monitor_heartbeat(path: str, max_age: float | None) -> int:

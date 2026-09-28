@@ -192,6 +192,16 @@ or gates into current runtime claims.
 ## Historical incident notes (do not re-litigate)
 
 - 2026-09-27 — monitor stall (see above).
+- 2026-09-27 — the intake went blind for 5h35m (17:45:47Z→23:20Z) because its Telethon
+  session was shared with a host PAPER listener; the source's 20:00:51Z ENA signal was
+  never persisted. Never let a second client use the same session, and rely on the
+  catch-up poll (below) rather than assuming a restart recovers missed messages.
+- 2026-09-28 — intake catch-up armed: every `TELEGRAM_CATCHUP_SECONDS` (default 60) the
+  intake asks each channel for messages with `min_id` = the newest persisted message id in
+  `telegram_messages` and ingests them through the normal path. It does nothing when a
+  channel has no persisted message yet, so a cold start cannot replay history. Ingest is
+  idempotent on `(channel_id, message_id, revision_hash)`, so realtime and catch-up can
+  overlap safely.
 - 2026-09-27 — three canonical signals (WLD/NEAR/PENGU) had no dispatch while their analysis
   notification claimed `dispatches: 1`: the payload reported `len(exchanges)` instead of rows
   written. It now counts rows, and a regression test covers media-flagged messages.

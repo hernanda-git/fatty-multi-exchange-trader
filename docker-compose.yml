@@ -79,6 +79,11 @@ services:
       TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
       TELEGRAM_MEDIA_ROOT: /app/runtime/media
+      # Catch-up safety net: the listen path is realtime-only, so a dropped/stolen MTProto
+      # session used to lose every message in the blind window permanently (2026-09-27: the
+      # source's ENA signal). This polls for messages newer than the newest persisted one.
+      TELEGRAM_CATCHUP_SECONDS: ${TELEGRAM_CATCHUP_SECONDS:-60}
+      TELEGRAM_CATCHUP_LIMIT: ${TELEGRAM_CATCHUP_LIMIT:-50}
     volumes:
       - ./data/media:/app/runtime/media
     depends_on:
