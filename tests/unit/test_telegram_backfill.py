@@ -42,6 +42,8 @@ async def test_backfill_persists_latest_message_from_each_configured_channel() -
         },
         client_factory=lambda _: FakeClient(),
         repository=repository,
+        # Marked ids come from Telethon in production; the fake entity is a plain object.
+        peer_id_of=lambda entity: int(entity.id),
     )
 
     assert saved == 1

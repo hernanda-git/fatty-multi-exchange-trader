@@ -40,6 +40,7 @@ SUPPORTED_SERVICES = (
     "monitor-bitget",
     "operator-bot",
     "source-management",
+    "paper-kaka",
 )
 
 # Bitget LIVE policy, pinned in application code. These are invariants, not

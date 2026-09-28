@@ -10,6 +10,7 @@ from typing import Any
 import psycopg
 
 from fatty_trader.config.telegram import TelegramSettings
+from fatty_trader.intake.catchup import telegram_peer_id
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramIntake
 from fatty_trader.intake.telethon_client import build_telethon_client
@@ -20,6 +21,7 @@ async def backfill_latest(
     *,
     client_factory: Any = build_telethon_client,
     repository: Any = None,
+    peer_id_of: Any = telegram_peer_id,
 ) -> int:
     """Persist the newest message from every configured source channel once."""
     settings = TelegramSettings.from_mapping(environ)
@@ -31,7 +33,9 @@ async def backfill_latest(
         for channel in settings.channels:
             entity = await client.get_entity(channel)
             async for message in client.iter_messages(entity, limit=1):
-                intake.ingest(channel_id=int(entity.id), message=message)
+                # Marked id (-100<id>): the realtime handler and catch-up both store
+                # event.chat_id, so the raw entity id would never match the cursor.
+                intake.ingest(channel_id=peer_id_of(entity), message=message)
                 saved += 1
     finally:
         await client.disconnect()
