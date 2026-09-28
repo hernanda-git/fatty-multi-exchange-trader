@@ -245,6 +245,8 @@ class NotificationWorker:
 
 def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
+    if payload.get("kind") == "kaka-paper-digest":
+        return _format_kaka_digest_html(payload)
     if payload.get("kind") == "heartbeat":
         return _format_heartbeat_html(payload)
     if payload.get("kind") == "source-forward":
@@ -389,6 +391,12 @@ def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
 def _format_system_event_html(payload: Mapping[str, Any]) -> str:
     message = escape(_safe_text(payload.get("message", ""), limit=1000))
     return f"🤖 <b>System Event</b>\n━━━━━━━━━━━━━━━━━━━━\n{message}"
+
+
+def _format_kaka_digest_html(payload: Mapping[str, Any]) -> str:
+    """Render the paper-lane digest. Paper results only: no venue, no live PnL."""
+    body = escape(str(payload.get("text") or ""))
+    return f"<b>Fatty Trader</b>  <i>Kaka paper digest</i>\n\n<pre>{body}</pre>"
 
 
 def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:

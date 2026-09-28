@@ -267,3 +267,105 @@ def test_paper_worker_uses_dict_rows() -> None:
     source = (REPO_ROOT / "src" / "fatty_trader" / "service.py").read_text(encoding="utf-8")
     block = source.split("async def run_paper_kaka", 1)[1].split("\ndef ", 1)[0]
     assert "row_factory=dict_row" in block
+
+
+def test_digest_is_idempotent_per_day_and_renders_as_html() -> None:
+    from fatty_trader.kaka.worker import build_digest_text, enqueue_digest
+    from fatty_trader.notifications import format_notification_html
+
+    class DigestCursor(FakeCursor):
+        def __init__(self) -> None:
+            super().__init__(
+                fetchone_row={
+                    "closed_today": 2,
+                    "wins_today": 1,
+                    "pnl_today": Decimal("-0.31"),
+                    "closed_all": 27,
+                    "wins_all": 15,
+                    "pnl_all": Decimal("-2.3959"),
+                    "open_now": 1,
+                },
+                fetchall_rows=[
+                    {
+                        "symbol": "ETHUSDT",
+                        "side": "LONG",
+                        "entry_price": Decimal("2524"),
+                        "stop_loss": Decimal("2480"),
+                        "legs": 1,
+                    }
+                ],
+            )
+            self._rows = [self._fetchone, ("digest-id",)]
+
+        def fetchone(self) -> Any:
+            return self._rows.pop(0) if self._rows else None
+
+    cursor = DigestCursor()
+    text = build_digest_text(cursor, day_start="2026-09-27T00:00:00+00:00")
+    assert "win rate 55.6%" in text
+    assert "-2.3959 USDT" in text
+    assert "ETHUSDT LONG" in text
+
+    queued = enqueue_digest(cursor, dedup_key="kaka-paper-digest:2026-09-28", text=text)
+    assert queued is True
+    assert cursor.statements_matching("INSERT INTO notifications_outbox")
+
+    html = format_notification_html({"kind": "kaka-paper-digest", "text": text})
+    assert "Kaka paper digest" in html
+    assert "<pre>" in html
+
+
+def test_media_only_message_is_recorded_and_never_invented() -> None:
+    cursor = FakeCursor(fetchone_row=None, fetchall_rows=[])
+
+    worker._handle_media_only(
+        cursor,
+        message_id=321,
+        media_path="/app/runtime/media/downloads/-1003763643270/321/source.jpg",
+        image_analyzer=None,
+        market_price_lookup=lambda _symbol: Decimal("100"),
+        counts={"opened": 0, "updated": 0, "closed": 0, "refused": 0, "noise": 0},
+    )
+
+    assert cursor.statements_matching("MEDIA_ONLY")
+    assert cursor.statements_matching("INSERT INTO paper_kaka_trades") == []
+
+
+def test_media_image_signal_opens_a_paper_trade_when_analysis_is_enabled() -> None:
+    cursor = FakeCursor(fetchone_row=None, fetchall_rows=[])
+
+    def analyzer(_path: str, *, message_id: int):
+        return parse_kaka_event("Short $ETH | ENTRY -2400 | SL -2401", message_id=message_id)
+
+    counts = {"opened": 0, "updated": 0, "closed": 0, "refused": 0, "noise": 0}
+    worker._handle_media_only(
+        cursor,
+        message_id=321,
+        media_path="/tmp/chart.jpg",
+        image_analyzer=analyzer,
+        market_price_lookup=lambda _symbol: Decimal("2400"),
+        counts=counts,
+    )
+
+    assert counts["opened"] == 1
+    assert cursor.statements_matching("INSERT INTO paper_kaka_trades")
+
+
+def test_media_image_failure_is_recorded_not_guessed() -> None:
+    cursor = FakeCursor(fetchone_row=None, fetchall_rows=[])
+
+    def analyzer(_path: str, *, message_id: int):
+        raise RuntimeError("vision unavailable")
+
+    counts = {"opened": 0, "updated": 0, "closed": 0, "refused": 0, "noise": 0}
+    worker._handle_media_only(
+        cursor,
+        message_id=321,
+        media_path="/tmp/chart.jpg",
+        image_analyzer=analyzer,
+        market_price_lookup=lambda _symbol: Decimal("100"),
+        counts=counts,
+    )
+
+    assert counts["refused"] == 1
+    assert cursor.statements_matching("REFUSED:IMAGE")

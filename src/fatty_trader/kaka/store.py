@@ -12,7 +12,7 @@ from fatty_trader.kaka.paper import PaperTrade
 KAKA_CHANNEL_ID = -1003763643270
 
 _SELECT_RECEIVED = """
-SELECT id, message_id, raw_text
+SELECT id, message_id, raw_text, media_path
 FROM telegram_messages
 WHERE intake_state = 'RECEIVED' AND channel_id = %s
 ORDER BY received_at, message_id

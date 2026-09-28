@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -1229,8 +1229,37 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
     import psycopg
     from psycopg.rows import dict_row
 
+    from fatty_trader.analyzer.image_analysis import analyze_image_json, signal_from_image_json
     from fatty_trader.analyzer.market_price import public_last_price
+    from fatty_trader.kaka.parser import KakaEvent, KakaEventType
     from fatty_trader.kaka.worker import process_paper_batch
+
+    image_analysis_enabled = environ.get("PAPER_KAKA_IMAGE_ANALYSIS", "0") == "1"
+    digest_hour = int(environ.get("PAPER_KAKA_DIGEST_HOUR_UTC", "17"))
+
+    def image_analyzer(path: str, *, message_id: int) -> Any:
+        """Chart-only messages: reuse the analyzer's vision path, then map to a paper event."""
+        from fatty_trader.analyzer.codex_runner import CodexRunner
+
+        runner = CodexRunner()
+        data = analyze_image_json(
+            text="", message_id=message_id, image_path=path, runner=runner.run
+        )
+        signal = signal_from_image_json(
+            data, message_id=message_id, source_revision=f"image:{message_id}"
+        )
+        if signal is None:
+            return None
+        return KakaEvent(
+            KakaEventType.OPEN,
+            symbol=f"{signal.pair_token}USDT",
+            side="LONG" if signal.direction.value == "LONG" else "SHORT",
+            entry=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profits[0] if signal.take_profits else None,
+            message_id=message_id,
+            raw="image",
+        )
 
     poll_seconds = float(environ.get("PAPER_KAKA_POLL_SECONDS", "20"))
     channel_id = int(environ.get("PAPER_KAKA_CHANNEL_ID", "-1003763643270"))
@@ -1246,6 +1275,7 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
                 market_price_lookup=public_last_price,
                 channel_id=channel_id,
                 limit=limit,
+                image_analyzer=image_analyzer if image_analysis_enabled else None,
             )
         except Exception as exc:  # noqa: BLE001 - keep the loop alive, surface the reason
             print(f"service=paper-kaka state=error error={exc!r}", flush=True)
@@ -1256,7 +1286,36 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
                 "service=paper-kaka " + " ".join(f"{key}={value}" for key, value in counts.items()),
                 flush=True,
             )
+        await _maybe_enqueue_digest(digest_hour)
         await asyncio.sleep(poll_seconds if counts["messages"] == 0 else 0)
+
+
+async def _maybe_enqueue_digest(digest_hour_utc: int) -> None:
+    """Queue the paper digest once per day (the outbox dedup key makes it idempotent)."""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from fatty_trader.kaka.worker import build_digest_text, enqueue_digest
+
+    now = datetime.now(UTC)
+    if now.hour < digest_hour_utc:
+        return
+    day = now.date().isoformat()
+    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC) - timedelta(days=1)
+    try:
+        connection = psycopg.connect(row_factory=dict_row)
+        try:
+            cursor = connection.cursor()
+            text = build_digest_text(cursor, day_start=day_start.isoformat())
+            queued = enqueue_digest(cursor, dedup_key=f"kaka-paper-digest:{day}", text=text)
+            connection.commit()
+        finally:
+            connection.close()
+    except Exception as exc:  # noqa: BLE001 - a digest failure must not stop the lane
+        print(f"service=paper-kaka state=digest-error error={exc!r}", flush=True)
+        return
+    if queued:
+        print(f"service=paper-kaka state=digest-queued day={day}", flush=True)
 
 
 def check_monitor_heartbeat(path: str, max_age: float | None) -> int:
