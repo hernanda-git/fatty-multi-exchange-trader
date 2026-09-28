@@ -22,7 +22,7 @@ _SELECT_RECEIVED = """
 SELECT id, channel_id, message_id, revision_hash, raw_text, received_at,
        has_media, media_path, media_sha256, media_mime_type, media_size_bytes
 FROM telegram_messages
-WHERE intake_state = 'RECEIVED'
+WHERE intake_state = 'RECEIVED' AND channel_id = ANY(%s)
 ORDER BY received_at, message_id
 FOR UPDATE SKIP LOCKED
 LIMIT %s
@@ -64,7 +64,14 @@ def process_received_batch(
     limit: int = 10,
     exchanges: tuple[str, ...] = ("binance", "bitget"),
     image_analysis_enabled: bool = False,
+    channel_ids: tuple[int, ...] = (-1001252615519,),
 ) -> int:
+    """Process one bounded transaction and fan out only to enabled engines.
+
+    ``channel_ids`` keeps this worker on the channels that are allowed to reach the live
+    lane. Adding a new source channel (for example the paper-only Kaka channel) must never
+    let its messages create live dispatches by accident.
+    """
     """Process one bounded transaction and fan out only to enabled engines."""
     if limit < 1:
         raise ValueError("limit must be positive")
@@ -74,7 +81,7 @@ def process_received_batch(
     processed = 0
     with closing(connection_factory()) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(_SELECT_RECEIVED, (limit,))
+            cursor.execute(_SELECT_RECEIVED, (list(channel_ids), limit))
             rows = cursor.fetchall()
             for row in rows:
                 if len(row) >= 11:

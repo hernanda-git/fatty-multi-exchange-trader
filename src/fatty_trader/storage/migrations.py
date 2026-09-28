@@ -31,6 +31,43 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 """
 
+PAPER_KAKA_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS paper_kaka_trades (
+    id UUID PRIMARY KEY,
+    source_message_id BIGINT NOT NULL UNIQUE,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('LONG','SHORT')),
+    entry_price NUMERIC NOT NULL,
+    stop_loss NUMERIC NOT NULL,
+    take_profit NUMERIC,
+    dca_level NUMERIC,
+    notional_usdt NUMERIC NOT NULL,
+    margin_usdt NUMERIC NOT NULL,
+    leverage INT NOT NULL,
+    legs INT NOT NULL DEFAULT 1,
+    state TEXT NOT NULL CHECK (state IN ('open','closed','cancelled')),
+    close_price NUMERIC,
+    close_reason TEXT,
+    realized_pnl_usdt NUMERIC,
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS paper_kaka_trades_open_symbol
+    ON paper_kaka_trades (symbol) WHERE state = 'open';
+
+CREATE TABLE IF NOT EXISTS paper_kaka_events (
+    id UUID PRIMARY KEY,
+    trade_id UUID REFERENCES paper_kaka_trades(id),
+    source_message_id BIGINT NOT NULL,
+    event_type TEXT NOT NULL,
+    parse_path TEXT NOT NULL,
+    parsed_json JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_message_id, event_type)
+);
+"""
+
 MIGRATIONS: Final = [
     (1, LIVE_SCHEMA_SQL),
     (
@@ -279,6 +316,10 @@ MIGRATIONS: Final = [
         ALTER TABLE venue_kill_switches
         DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only;
         """,
+    ),
+    (
+        18,
+        PAPER_KAKA_SCHEMA_SQL,
     ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL

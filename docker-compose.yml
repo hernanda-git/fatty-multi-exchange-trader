@@ -76,7 +76,9 @@ services:
       TG_API_ID: ${TG_API_ID:-}
       TG_API_HASH: ${TG_API_HASH:-}
       TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
-      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
+      # @Kakatrades is paper-only: the analyzer is scoped to ANALYZER_CHANNEL_IDS, so
+      # this source can never create live dispatches.
+      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-@fattyfatclub,@Kakatrades}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
       TELEGRAM_MEDIA_ROOT: /app/runtime/media
       # Catch-up safety net: the listen path is realtime-only, so a dropped/stolen MTProto
@@ -246,6 +248,27 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+
+  # Paper-only lane for the `Kaka trades` channel. No provider credentials are present in
+  # this block on purpose: the lane cannot reach the venue even if it wanted to.
+  paper-kaka:
+    build: .
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "paper-kaka"]
+    environment:
+      SERVICE_NAME: paper-kaka
+      TRADER_MODE: ${TRADER_MODE:-DEMO}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-fatty_trader}
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PAPER_KAKA_POLL_SECONDS: ${PAPER_KAKA_POLL_SECONDS:-20}
+      PAPER_KAKA_CHANNEL_ID: ${PAPER_KAKA_CHANNEL_ID:--1003763643270}
+      PAPER_KAKA_BATCH_SIZE: ${PAPER_KAKA_BATCH_SIZE:-25}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   operator-bot:
     build: .

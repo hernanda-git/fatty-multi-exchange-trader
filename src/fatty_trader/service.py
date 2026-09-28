@@ -968,6 +968,9 @@ async def run_worker(name: str) -> None:
     if name == "source-management":
         await run_source_management(os.environ)
         return
+    if name == "paper-kaka":
+        await run_paper_kaka(os.environ)
+        return
     interval = float(os.environ.get("WORKER_HEARTBEAT_SECONDS", "30"))
     while True:
         # Keep this boundary observable without writing secrets or business payloads.
@@ -1014,6 +1017,7 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             runner=runner,
             limit=batch_size,
             exchanges=enabled_dispatch_exchanges(environ),
+            channel_ids=analyzer_channel_ids(environ),
             image_analysis_enabled=environ.get("BITGET_IMAGE_ANALYSIS_ENABLED", "0") == "1",
         )
         mode = environ.get("TRADER_MODE", "DEMO").upper()
@@ -1139,6 +1143,15 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
         await asyncio.sleep(interval)
 
 
+def analyzer_channel_ids(environ: Mapping[str, str]) -> tuple[int, ...]:
+    """Channels whose messages may reach the live lane. Everything else stays paper-only."""
+    raw = environ.get("ANALYZER_CHANNEL_IDS", "-1001252615519")
+    ids = tuple(int(part.strip()) for part in raw.split(",") if part.strip().lstrip("-").isdigit())
+    if not ids:
+        raise ValueError("ANALYZER_CHANNEL_IDS must contain at least one channel id")
+    return ids
+
+
 def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:
     """Return settings only when fully configured; missing config disables intake."""
     try:
@@ -1202,6 +1215,44 @@ async def run_intake(
     finally:
         if catchup_task is not None:
             catchup_task.cancel()
+
+
+async def run_paper_kaka(environ: Mapping[str, str]) -> None:
+    """Mirror the `Kaka trades` channel into the paper ledger. No venue access at all.
+
+    Deliberately separate from the analyzer/dispatcher path: those write live dispatches,
+    and a paper source must have no route into the money lane.
+    """
+    import psycopg
+
+    from fatty_trader.analyzer.market_price import public_last_price
+    from fatty_trader.kaka.worker import process_paper_batch
+
+    poll_seconds = float(environ.get("PAPER_KAKA_POLL_SECONDS", "20"))
+    channel_id = int(environ.get("PAPER_KAKA_CHANNEL_ID", "-1003763643270"))
+    limit = int(environ.get("PAPER_KAKA_BATCH_SIZE", "25"))
+    print(
+        f"service=paper-kaka state=ready channel_id={channel_id} poll_seconds={poll_seconds}",
+        flush=True,
+    )
+    while True:
+        try:
+            counts = process_paper_batch(
+                psycopg.connect,
+                market_price_lookup=public_last_price,
+                channel_id=channel_id,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the loop alive, surface the reason
+            print(f"service=paper-kaka state=error error={exc!r}", flush=True)
+            await asyncio.sleep(poll_seconds)
+            continue
+        if counts["messages"]:
+            print(
+                "service=paper-kaka " + " ".join(f"{key}={value}" for key, value in counts.items()),
+                flush=True,
+            )
+        await asyncio.sleep(poll_seconds if counts["messages"] == 0 else 0)
 
 
 def check_monitor_heartbeat(path: str, max_age: float | None) -> int:
