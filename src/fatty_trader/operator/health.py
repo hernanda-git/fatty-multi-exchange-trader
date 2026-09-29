@@ -119,6 +119,12 @@ def build_operator_health_report(
     else:
         db_error = None
 
+    # A fallback row is inert when the fallback mutation gate is off: the
+    # monitor returns early before closing anything. Presenting it as
+    # protection would tell the operator a 20x position is auto-closing when
+    # nothing will ever close it. Fail the label open.
+    fallback_can_close = str(fallback_mutations_enabled).strip() == "1"
+
     provider_count = len(positions) if provider_error is None else None
     db_count = int(metrics[2]) if metrics is not None else None
     drift = provider_count is not None and db_count is not None and provider_count != db_count
@@ -183,6 +189,8 @@ def build_operator_health_report(
                 f"Fallback monitors   <code>{metrics[5]}</code>",
                 f"Messages/signals    <code>{metrics[0]}/{metrics[1]}</code>",
                 "Meaning             Provider is source of truth; DB drift needs reconciliation.",
+                "Note               A position opened outside the bot (or before a "
+                "restart) will show DB drift with no intents. Provider still governs.",
             ]
         )
 
@@ -206,17 +214,32 @@ def build_operator_health_report(
                 protection = "🟢 NATIVE"
                 why = "Provider has native protection fields."
                 action = "No operator action needed."
+            elif fallback and not fallback_can_close:
+                protection = "🔴 GATED OFF · CANNOT CLOSE"
+                why = (
+                    "Fallback levels are registered but the fallback mutation "
+                    "gate is OFF. The position has NO working auto-close."
+                )
+                action = (
+                    "Enable BITGET_FALLBACK_MUTATIONS_ENABLED (kill switch must "
+                    "be INACTIVE) or close manually. It is not protected now."
+                )
             elif fallback:
                 protection = "🟡 FALLBACK"
                 why = "Native protection is absent; local fallback monitor owns the levels."
                 action = (
-                    "Verify stream freshness and fallback mutation gate "
-                    "before relying on auto-close."
+                    "Verify stream freshness before relying on auto-close."
                 )
             else:
                 protection = "🔴 MISSING"
                 why = "Neither native nor fallback protection is registered."
                 action = "Do not treat this position as protected."
+            if fallback and not fallback_can_close:
+                fallback_line = f"{_safe(fallback[6])} (registered, INERT)"
+            elif fallback:
+                fallback_line = f"{_safe(fallback[6])} (can close)"
+            else:
+                fallback_line = "NONE"
             lines.extend(
                 [
                     f"<b>{_safe(symbol)} · {_safe(side)}</b>",
@@ -231,7 +254,7 @@ def build_operator_health_report(
                     f"Protection {protection}\n"
                     f"Native SL  {_safe(native_sl or 'MISSING')}\n"
                     f"Native TP  {_safe(native_tp or 'MISSING')}\n"
-                    f"Fallback   {_safe(fallback[6] if fallback else 'NONE')}"
+                    f"Fallback   {fallback_line}"
                     "</pre>",
                     f"Why        {why}",
                     f"Action     {action}",
