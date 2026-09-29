@@ -35,6 +35,7 @@ class LiveGateway(Protocol):
 
     def get_price(self, symbol: str) -> Decimal: ...
     def get_balance(self) -> Decimal: ...
+    def get_account_snapshot(self) -> dict[str, Any]: ...
     def get_positions(self, symbol: str | None = None) -> list[dict[str, Any]]: ...
     def get_orders(self, symbol: str | None = None) -> list[dict[str, Any]]: ...
     def open_position(
@@ -178,18 +179,32 @@ class OperatorCommandService:
         return f"Saldo tersedia: {balance}"
 
     def _on_health(self) -> str:
+        # Parity with the periodical cron: the card is rendered by the single
+        # shared formatter (health_report_format), not by a second renderer
+        # that can drift. The caller loads data; this only supplies the
+        # provider-only slice when no health_reader is wired.
         if self._health_reader is not None:
             return self._health_reader()
+        from fatty_trader.operator import health_report_format as fmt
+
         positions = self._gw.get_positions()
         orders = self._gw.get_orders()
-        return (
-            "🩺 <b>HEALTH ON-DEMAND</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"Provider read: ✅ OK\n"
-            f"Positions: {len(positions)}\n"
-            f"Pending orders: {len(orders)}\n"
-            "Meaning: command path can read the provider now.\n"
-            "Scope: provider only; use the scheduled report for full Compose service health."
+        account = {}
+        try:
+            account = self._gw.get_account_snapshot()
+        except Exception:
+            account = {}
+        return fmt.format_report(
+            positions if isinstance(positions, list) else None,
+            orders if isinstance(orders, list) else None,
+            {},
+            {},
+            [],
+            {},
+            account,
+            {"mode": "UNKNOWN", "venue_mode": "UNKNOWN", "execution_enabled": "UNKNOWN"},
+            {},
+            {},
         )
 
     def _on_help(self) -> str:
