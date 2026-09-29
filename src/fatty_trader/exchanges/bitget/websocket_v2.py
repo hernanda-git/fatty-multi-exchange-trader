@@ -7,9 +7,19 @@ private channel on the public socket returns the same. That was verified
 against the LIVE endpoints, so the split here is a protocol requirement, not
 a design preference.
 
-Failure is fail-closed by construction: the connection state is derived from
-BOTH sockets. A live public ticker with a dead private leg reports unhealthy,
-because mark price alone cannot protect a position.
+Failure is fail-closed by construction. Liveness is judged PER LEG:
+
+* The public leg must be authenticated-by-subscription and delivering fresh
+  mark events for every subscribed symbol.
+* The private leg must have an acknowledged login AND have been alive within
+  ``_private_silent_after``. The private leg is quiet by nature, so liveness is
+  proven by the bare-text ``pong`` answering our heartbeat, not by expecting
+  unsolicited frames.
+
+A live public ticker with a silent or unauthenticated private leg is NOT
+healthy. Mark price alone cannot protect a position, and an order or
+position-change event that silently stopped arriving is worse than a total
+outage, because nothing downstream would notice.
 """
 
 from __future__ import annotations
@@ -51,6 +61,17 @@ class V2ConnectionState(StrEnum):
     FAILED = "FAILED"
 
 
+class _LegError:
+    """A failure raised by a background leg reader, tagged with its leg."""
+
+    def __init__(self, leg: str, error: BaseException) -> None:
+        self.leg = leg
+        self.error = error
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"_LegError(leg={self.leg!r}, error={self.error!r})"
+
+
 class BitgetV2WebSocket:
     """Public ticker + authenticated private account stream as one logical link."""
 
@@ -70,6 +91,7 @@ class BitgetV2WebSocket:
         heartbeat_interval: float = 25.0,
         reconnect_base_delay: float = 1.0,
         reconnect_max_delay: float = 30.0,
+        private_silent_after: float | None = None,
     ) -> None:
         if not public_url.strip() or not private_url.strip():
             raise ValueError("Bitget v2 websocket endpoints are required")
@@ -92,6 +114,15 @@ class BitgetV2WebSocket:
         self._heartbeat_interval = heartbeat_interval
         self._reconnect_base_delay = reconnect_base_delay
         self._reconnect_max_delay = reconnect_max_delay
+        # The private leg is expected to be quiet, so allow a missed heartbeat
+        # plus slack before declaring it dead. Default to 2.5 heartbeat windows.
+        self._private_silent_after = (
+            private_silent_after
+            if private_silent_after is not None
+            else heartbeat_interval * 2.5
+        )
+        if self._private_silent_after <= 0:
+            raise ValueError("Bitget v2 websocket private_silent_after must be positive")
 
         self._public: WebSocketConnection | None = None
         self._private: WebSocketConnection | None = None
@@ -100,7 +131,13 @@ class BitgetV2WebSocket:
         self._last_mark_event_at: dict[str, float] = {}
         self._last_pong_at: float | None = None
         self._last_ping_at: float | None = None
-        self._missed_heartbeat_windows = 0
+        # Per-leg liveness. The private leg is only "live" once its login has
+        # been acknowledged AND it has been heard from within the bound.
+        self._private_authenticated = False
+        self._last_private_activity_at: float | None = None
+        self._readers: list[asyncio.Task[None]] = []
+        self._queues: dict[str, asyncio.Queue[Any]] = {}
+        self._any_event = asyncio.Event()
 
     # --- introspection -----------------------------------------------------
 
@@ -129,6 +166,10 @@ class BitgetV2WebSocket:
         return self._last_pong_at
 
     @property
+    def private_authenticated(self) -> bool:
+        return self._private_authenticated
+
+    @property
     def last_event_age(self) -> float | None:
         if self._last_event_at is None:
             return None
@@ -154,6 +195,7 @@ class BitgetV2WebSocket:
     async def connect(self) -> None:
         """Open both legs, authenticate the private one, subscribe both."""
         self._state = V2ConnectionState.CONNECTING
+        self._private_authenticated = False
         try:
             self._private_subscription_args()  # fail before opening sockets
             public = await self._transport.connect(self._public_url)
@@ -175,10 +217,12 @@ class BitgetV2WebSocket:
                 )
             )
             await self._receive_login_ack(private)
+            self._private_authenticated = True
             await private.send(_json(build_v2_private_subscription()))
         except Exception:
             # Never leave a half-open pair looking healthy.
             self._state = V2ConnectionState.FAILED
+            self._private_authenticated = False
             await self._close_public()
             await self._close_private()
             raise
@@ -188,8 +232,9 @@ class BitgetV2WebSocket:
         self._last_mark_event_at = {}
         self._last_ping_at = now
         self._last_pong_at = now
-        self._missed_heartbeat_windows = 0
+        self._last_private_activity_at = now
         self._state = V2ConnectionState.CONNECTED
+        self._start_readers()
 
     async def reconnect(self) -> None:
         self._state = V2ConnectionState.RECONNECTING
@@ -200,6 +245,7 @@ class BitgetV2WebSocket:
     async def close(self) -> None:
         await self._close_public()
         await self._close_private()
+        self._private_authenticated = False
         self._state = V2ConnectionState.DISCONNECTED
 
     async def subscribe_symbols(self, symbols: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -246,41 +292,45 @@ class BitgetV2WebSocket:
         return removals
 
     async def receive_once(self) -> list[BitgetWebSocketEvent]:
-        """Read both legs concurrently, returning the first result.
+        """Drain both legs' queues, waiting for the next event on either.
 
-        FIRST_COMPLETED, not FIRST_EXCEPTION: a private leg may legitimately be
-        quiet for a while, and it must not hold back public mark events. An
-        errored leg still wins immediately and propagates.
+        Each leg has a dedicated long-lived reader task pushing into its own
+        queue, so a frame that arrived while we were handling the previous
+        batch is queued rather than discarded. An earlier version raced two
+        ``recv()`` calls and cancelled the loser, which silently threw away
+        private position/order frames that happened to land concurrently.
+        A safety event lost that way is an unprotected stop.
         """
-        if not self._both_legs_open():
+        if not self._both_legs_open() or not self._readers:
             raise RuntimeError("Bitget v2 websocket is not connected")
-        tasks = [
-            asyncio.ensure_future(self._read_one(self._public, "public")),
-            asyncio.ensure_future(self._read_one(self._private, "private")),
-        ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        events: list[BitgetWebSocketEvent] = []
-        for task in done:
-            error = task.exception()
-            if error is not None:
-                raise error
-            events.extend(task.result())
-        return events
+        self._any_event.clear()
+        # Re-check after clearing: an event may have arrived in between.
+        if not self._drain_ready():
+            try:
+                async with asyncio.timeout(self._heartbeat_interval * 2):
+                    await self._any_event.wait()
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Bitget v2 websocket produced no frame for "
+                    f"{self._heartbeat_interval * 2:.0f}s on either leg"
+                ) from exc
+        return self._drain_ready()
 
     async def send_heartbeat_if_due(self) -> bool:
-        """Send the bare text ``ping`` that v2 answers with ``pong``."""
+        """Send the bare text ``ping`` that v2 answers with ``pong``.
+
+        A send failure is NOT swallowed. Swallowing it would stamp a fresh
+        ``_last_ping_at`` on a leg that is already gone and hide the only
+        evidence distinguishing "quiet" from "dead".
+        """
         public, private = self._public, self._private
         if public is None or private is None:
             return False
         now = self._clock()
         if self._last_ping_at is not None and now - self._last_ping_at < self._heartbeat_interval:
             return False
-        with contextlib.suppress(Exception):
-            await public.send("ping")
-            await private.send("ping")
+        await public.send("ping")
+        await private.send("ping")
         self._last_ping_at = now
         return True
 
@@ -329,71 +379,185 @@ class BitgetV2WebSocket:
                     await self.send_heartbeat_if_due()
                     for event in await self.receive_once():
                         await on_event(event)
-                    self.check_freshness()
+                    # The freshness verdict must DRIVE the reconnect path. A
+                    # stale stream that is still quietly delivering frames
+                    # would otherwise never heal.
+                    if not self.check_freshness():
+                        reason = self.stale_reason()
+                        attempt += 1
+                        print(
+                            f"component=bitget-ws-v2 state=stale "
+                            f"public={self._public_url} private={self._private_url} "
+                            f"consecutive_failures={attempt} reason={reason}",
+                            flush=True,
+                        )
+                        await self._close_public()
+                        await self._close_private()
+                        self._state = V2ConnectionState.RECONNECTING
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     attempt += 1
+                    print(
+                        f"component=bitget-ws-v2 state=read_error "
+                        f"consecutive_failures={attempt} "
+                        f"error_type={type(exc).__name__} error={exc}",
+                        flush=True,
+                    )
                     await self._close_public()
                     await self._close_private()
                     self._state = V2ConnectionState.RECONNECTING
         finally:
             await self.close()
 
+    def stale_reason(self) -> str:
+        """Human-readable reason for the current non-healthy verdict."""
+        if not self._both_legs_open():
+            return "leg-closed"
+        if not self._private_authenticated:
+            return "private-unauthenticated"
+        if self._private_silent_age() is not None and (
+            self._private_silent_age() > self._private_silent_after  # type: ignore[operator]
+        ):
+            return "private-silent"
+        for symbol in self._symbols:
+            age = self.last_mark_event_age(symbol)
+            if age is None:
+                return f"no-mark-event:{symbol}"
+            if age > self._stale_after:
+                return f"stale-mark:{symbol}"
+        return "fresh"
+
+    def _private_silent_age(self) -> float | None:
+        if self._last_private_activity_at is None:
+            return None
+        return max(0.0, self._clock() - self._last_private_activity_at)
+
     def check_freshness(self, symbol: str | None = None) -> bool:
-        """Fresh requires BOTH legs open and fresh public mark events."""
+        """Fresh requires BOTH legs live AND fresh public mark events.
+
+        A live public ticker is not sufficient: the private leg carries
+        positions and orders, so an unauthenticated or silent private leg
+        means we cannot see the account state we are supposed to protect.
+        """
         if not self._both_legs_open():
             if self._state is not V2ConnectionState.DISCONNECTED:
                 self._state = V2ConnectionState.FAILED
+            return False
+        if not self._private_leg_live():
+            if self._state is V2ConnectionState.CONNECTED:
+                self._state = V2ConnectionState.STALE
             return False
         if symbol is not None:
             normalized = symbol.strip().upper()
             if normalized not in self._symbols:
                 return False
             age = self.last_mark_event_age(normalized)
-            return (
-                self._state is V2ConnectionState.CONNECTED
-                and age is not None
-                and age <= self._stale_after
-            )
-        fresh = self._state is V2ConnectionState.CONNECTED and all(
+            return age is not None and age <= self._stale_after
+        fresh = all(
             (age := self.last_mark_event_age(sym)) is not None and age <= self._stale_after
             for sym in self._symbols
         )
+        if fresh and self._state is V2ConnectionState.STALE:
+            # Recovery must be observable: a stale verdict is not a latch.
+            self._state = V2ConnectionState.CONNECTED
         if not fresh and self._state in {V2ConnectionState.CONNECTED, V2ConnectionState.STALE}:
             self._state = V2ConnectionState.STALE
         return fresh
 
     # --- internals ---------------------------------------------------------
 
+    def _private_leg_live(self) -> bool:
+        """Private leg must be authenticated AND recently heard from."""
+        if self._private is None or not self._private_authenticated:
+            return False
+        age = self._private_silent_age()
+        return age is not None and age <= self._private_silent_after
+
     def _both_legs_open(self) -> bool:
         return self._public is not None and self._private is not None
 
-    async def _read_one(
-        self, connection: WebSocketConnection | None, leg: str
-    ) -> list[BitgetWebSocketEvent]:
-        if connection is None:
-            raise RuntimeError(f"Bitget v2 {leg} socket is closed")
-        raw = await asyncio.wait_for(connection.recv(), timeout=self._heartbeat_interval)
-        if isinstance(raw, str) and raw.strip() == "pong":
-            now = self._clock()
-            self._last_pong_at = now
-            self._last_event_at = now
-            self._missed_heartbeat_windows = 0
-            return []
-        try:
-            events = normalize_v2_frame(raw)
-        except Exception:
-            self._state = V2ConnectionState.RECONNECTING
-            raise
-        now = self._clock()
-        self._last_event_at = now
-        for event in events:
-            if event.kind == "mark_price":
-                self._last_mark_event_at[event.symbol] = now
-        if events or self._state is V2ConnectionState.RECONNECTING:
-            self._state = V2ConnectionState.CONNECTED
+    def _start_readers(self) -> None:
+        self._queues = {"public": asyncio.Queue(), "private": asyncio.Queue()}
+        self._any_event = asyncio.Event()
+        self._readers = [
+            asyncio.ensure_future(self._reader_loop("public", self._public)),
+            asyncio.ensure_future(self._reader_loop("private", self._private)),
+        ]
+
+    def _drain_ready(self) -> list[BitgetWebSocketEvent]:
+        """Pull everything currently queued, raising any recorded leg error."""
+        events: list[BitgetWebSocketEvent] = []
+        for leg in ("public", "private"):
+            queue = self._queues.get(leg)
+            if queue is None:
+                continue
+            while not queue.empty():
+                item = queue.get_nowait()
+                if isinstance(item, _LegError):
+                    raise item.error
+                events.extend(item)
         return events
+
+    async def _reader_loop(self, leg: str, connection: WebSocketConnection | None) -> None:
+        """Long-lived per-leg reader. Never cancels an in-flight recv()."""
+        if connection is None:
+            self._queues.setdefault(leg, asyncio.Queue()).put_nowait(
+                _LegError(leg, RuntimeError(f"Bitget v2 {leg} socket is closed"))
+            )
+            self._any_event.set()
+            return
+        queue = self._queues[leg]
+        try:
+            while True:
+                raw = await connection.recv()
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                now = self._clock()
+                self._last_event_at = now
+                if isinstance(raw, str) and raw.strip() == "pong":
+                    self._last_pong_at = now
+                    if leg == "private":
+                        self._last_private_activity_at = now
+                    continue
+                events = normalize_v2_frame(raw)
+                if leg == "private":
+                    # Any private frame proves the socket is alive.
+                    self._last_private_activity_at = now
+                for event in events:
+                    if event.kind == "mark_price":
+                        self._last_mark_event_at[event.symbol] = now
+                if events and self._state is V2ConnectionState.RECONNECTING:
+                    self._state = V2ConnectionState.CONNECTED
+                if events:
+                    queue.put_nowait(events)
+                    self._any_event.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            queue.put_nowait(_LegError(leg, exc))
+            self._any_event.set()
+
+    async def _close_public(self) -> None:
+        await self._stop_readers()
+        connection, self._public = self._public, None
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.close()
+
+    async def _close_private(self) -> None:
+        await self._stop_readers()
+        connection, self._private = self._private, None
+        if connection is not None:
+            with contextlib.suppress(Exception):
+                await connection.close()
+
+    async def _stop_readers(self) -> None:
+        readers, self._readers = self._readers, []
+        for task in readers:
+            task.cancel()
+        if readers:
+            await asyncio.gather(*readers, return_exceptions=True)
 
     async def _receive_login_ack(self, connection: WebSocketConnection) -> None:
         raw = await connection.recv()
@@ -412,18 +576,6 @@ class BitgetV2WebSocket:
             )
         if payload.get("event") != "login" or str(payload.get("code", "0")) not in {"0", "00000"}:
             raise WebSocketProtocolError("Bitget v2 login was not acknowledged")
-
-    async def _close_public(self) -> None:
-        connection, self._public = self._public, None
-        if connection is not None:
-            with contextlib.suppress(Exception):
-                await connection.close()
-
-    async def _close_private(self) -> None:
-        connection, self._private = self._private, None
-        if connection is not None:
-            with contextlib.suppress(Exception):
-                await connection.close()
 
     @staticmethod
     def _normalize_symbols(symbols: list[str] | tuple[str, ...]) -> tuple[str, ...]:

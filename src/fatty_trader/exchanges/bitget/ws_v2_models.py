@@ -111,11 +111,15 @@ def normalize_v2_frame(raw: str | bytes) -> list[BitgetWebSocketEvent]:
             f"Bitget websocket error {payload.get('code')}: {payload.get('msg')}",
             code=str(payload.get("code", "")) or None,
         )
-    if event_name in {"login", "subscribe", "unsubscribe", "channel-conn-count"}:
+    if event_name == "login":
+        # Only a zero-code ack is benign. A re-auth/expired-session login frame
+        # must raise, never be swallowed as a successful ack.
+        if str(payload.get("code", "0")) not in {"0", "00000"}:
+            raise WebSocketProtocolError("Bitget websocket login was not acknowledged")
         return []
 
-    if event_name == "login":
-        raise WebSocketProtocolError("Bitget websocket login was not acknowledged")
+    if event_name in {"subscribe", "unsubscribe", "channel-conn-count"}:
+        return []
 
     arg = payload.get("arg")
     if not isinstance(arg, dict):
@@ -156,6 +160,18 @@ def _symbol(row: dict[str, Any]) -> str:
     if not symbol:
         raise WebSocketProtocolError("Bitget websocket symbol is missing")
     return symbol
+
+
+def _required_size(row: dict[str, Any]) -> Any:
+    """Return the filled-size field, or raise if the row is malformed.
+
+    Defaulting to "0" would fabricate a zero-quantity order event, which reads
+    downstream as a real order that filled nothing.
+    """
+    for field in ("accFillSz", "fillSz", "baseVolume", "sz"):
+        if row.get(field) is not None:
+            return row[field]
+    raise WebSocketProtocolError("Bitget websocket order row is missing a size field")
 
 
 def _positive(value: Any, field: str) -> Decimal:
@@ -226,9 +242,7 @@ def _order_events(rows: list[dict[str, Any]], fallback_time: Any) -> list[Bitget
             BitgetWebSocketEvent(
                 kind="order",
                 symbol=symbol,
-                quantity=_nonnegative(
-                    row.get("accFillSz", row.get("fillSz", "0")), "order quantity"
-                ),
+                quantity=_nonnegative(_required_size(row), "order quantity"),
                 price=_optional_positive(row.get("avgPx"), "average order price"),
                 provider_order_id=order_id,
                 client_oid=client_oid,
