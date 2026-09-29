@@ -295,32 +295,43 @@ async def test_unauthenticated_private_leg_is_not_healthy():
     await socket.close()
 
 
-async def test_stale_freshness_drives_reconnect_in_run_loop():
-    """defect #2: run() discarded the check_freshness() verdict."""
-    transport = FakeTransport()
-    transport.add_public(_TICKER, marks=1, repeat=True)
-    transport.add_private(_LOGIN_OK)
-    transport.add_private(_PRIVATE_SUB_OK)
+async def test_state_alone_must_not_be_read_as_fresh_by_a_caller():
+    """Obs#2: .state can be CONNECTED while check_freshness() is False.
+
+    ``_reader_loop`` promotes the state to CONNECTED on any arriving frame.
+    A caller that reads ``.state`` without calling check_freshness() can
+    therefore over-read a stream that is not actually fresh. This test pins
+    that distinction so the gap stays visible until a caller lands and we
+    decide whether to make ``state`` authoritative on its own.
+    """
+    transport = _two_leg_transport()
     clock = FakeClock()
-    socket = BitgetV2WebSocket(
-        api_key="k", api_secret="s", passphrase="p", symbols=["BTCUSDT"],
-        transport=transport, clock=clock, stale_after=5.0,
-        heartbeat_interval=0.5, private_silent_after=1.0,
-    )
-    stop = asyncio.Event()
-    seen: list = []
-    task = asyncio.ensure_future(socket.run(lambda e: _noop(seen.append(e)), stop))
+    socket = _make(transport, clock=clock)
     await socket.connect()
+    await socket.receive_once()
+    # Mute the private leg and age the clock, but keep feeding public frames
+    # so the reader loop promotes the state back to CONNECTED.
+    transport.public._script = []
+    transport.public._orig = [_TICKER, "pong"]
+    transport.public._loop = True
+    transport.add_public(_TICKER, repeat=True)
+    clock.advance(60.0)
     for _ in range(4):
-        clock.advance(10.0)
-        transport.add_public(_TICKER, repeat=True)
-        await asyncio.sleep(0.01)
-    stop.set()
-    with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5.0)
-    assert socket.state is not V2ConnectionState.CONNECTED, (
-        "a stale stream must not be left reporting CONNECTED"
+        await socket.receive_once()
+    assert socket.state is V2ConnectionState.CONNECTED, (
+        "this test documents current behaviour: the state follows the last frame"
     )
+    assert socket.check_freshness() is False, (
+        "but the verdict must still be False: the private leg is silent"
+    )
+    await socket.close()
+
+
+# The old duplicate of this test asserted AFTER stop.set()/teardown, whose
+# finally block closes both legs -- so it passed no matter what run() decided.
+# It is deleted rather than fixed: the test below carries the real evidence
+# (it asserts before teardown) and the duplicate only added a false signal.
+
 
 
 async def test_heartbeat_send_failure_propagates():
