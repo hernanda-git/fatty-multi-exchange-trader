@@ -11,6 +11,7 @@ from fatty_trader.exchanges.bitget.protection_capability import (
     NativeProtectionState,
     StreamState,
 )
+from fatty_trader.exchanges.bitget.websocket import WebSocketConnectionState
 from fatty_trader.execution.bitget_protection_watchdog import (
     BitgetProtectionWatchdog,
     WatchdogStatus,
@@ -21,8 +22,19 @@ _NOW = datetime(2026, 9, 14, 3, 0, tzinfo=UTC)
 
 
 class FakeSocket:
-    def __init__(self, fresh: bool | dict[str, bool]) -> None:
+    """Socket double for the per-symbol freshness tests.
+
+    These tests exercise staleness and provider reads, so the socket reports a
+    live connection by default. `state` is a plain attribute because the
+    watchdog reads it with `getattr(socket, "state", None)` and treats its
+    absence as a dead socket (fail closed).
+    """
+
+    def __init__(self, fresh: bool | dict[str, bool], *, state: WebSocketConnectionState = (
+        WebSocketConnectionState.CONNECTED
+    )) -> None:
         self.fresh = fresh
+        self.state = state
 
     def check_freshness(self, symbol: str | None = None) -> bool:
         if isinstance(self.fresh, dict):

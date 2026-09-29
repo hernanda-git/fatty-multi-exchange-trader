@@ -831,6 +831,7 @@ def build_bitget_monitor_protection(
     wall_clock: Callable[[], float] | None = None,
     now: Callable[[], datetime] | None = None,
     active_symbol_source: Callable[[], Iterable[str]] | None = None,
+    kill_switch: object | None = None,
 ) -> tuple[Any | None, Any | None, float | None]:
     """Build the optional observe-only stream and its paired REST watchdog."""
     stream = build_bitget_protection_stream(
@@ -853,6 +854,22 @@ def build_bitget_monitor_protection(
 
     environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
     active_symbols = tuple(stream.symbols)
+    # Use the same fail-closed predicate the monitor and dispatcher already use.
+    # Gating on BITGET_MODE alone would latch on the monitor while the read gate
+    # is live in every mode, silently blocking paper execution in a mixed config.
+    latching_enabled = bitget_kill_switch_enforced(environ)
+    stale_cycles_before_latch = 3
+    if latching_enabled:
+        raw_cycles = environ.get("BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH", "").strip()
+        if raw_cycles:
+            try:
+                stale_cycles_before_latch = int(raw_cycles)
+            except ValueError as exc:
+                raise ValueError(
+                    "BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH must be an integer"
+                ) from exc
+            if stale_cycles_before_latch < 1:
+                raise ValueError("BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH must be at least 1")
     watchdog = BitgetProtectionWatchdog(
         stream.socket,
         stream.repository,
@@ -860,6 +877,8 @@ def build_bitget_monitor_protection(
         symbols=active_symbols,
         read_position=client.get_single_position,
         now=now or (lambda: datetime.now(UTC)),
+        kill_switch=kill_switch if latching_enabled else None,
+        stale_cycles_before_latch=stale_cycles_before_latch,
     )
     return stream, watchdog, watchdog_interval
 
@@ -924,6 +943,7 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         environ,
         client,
         active_symbol_source=lambda: [entry["symbol"] for entry in load_active()],
+        kill_switch=repository,
     )
     try:
         await run_bitget_monitor_loop(

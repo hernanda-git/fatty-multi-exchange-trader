@@ -8,13 +8,25 @@ import os
 
 from fatty_trader.exchanges.bitget.client import BitgetRestClient
 from fatty_trader.execution.bitget_monitor import BitgetMonitor
+from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.bitget_recovery import release_after_clean_monitor
 from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
+
+VENUE_SCOPE = "bitget"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--approval-reference", required=True)
+    parser.add_argument(
+        "--scope",
+        default=VENUE_SCOPE,
+        choices=[VENUE_SCOPE, PROTECTION_STREAM_SCOPE],
+        help=(
+            f"kill-switch scope to release; {PROTECTION_STREAM_SCOPE} latches when the "
+            f"protection stream dies, {VENUE_SCOPE} when venue-wide reconciliation fails"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -40,7 +52,7 @@ async def main() -> int:
         recovery = release_after_clean_monitor(
             report,
             repository,
-            scope="bitget",
+            scope=args.scope,
             approval_reference=args.approval_reference,
         )
         print(

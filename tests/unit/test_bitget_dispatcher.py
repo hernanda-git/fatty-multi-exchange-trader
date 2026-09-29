@@ -177,6 +177,40 @@ async def test_persistent_kill_switch_blocks_before_provider_post() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dead_protection_stream_scope_blocks_entries_without_touching_venue_scope() -> (
+    None
+):
+    """A dead protection stream halts entries on its own scope only.
+
+    The venue-wide `bitget` scope also gates the fallback TP/SL monitor, so
+    latching it on a dead WebSocket would switch off the stop-loss path for
+    exactly the positions that need it.
+    """
+    from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
+
+    class LatchedSwitch:
+        def is_active(self, scope: str) -> bool:
+            return scope == PROTECTION_STREAM_SCOPE
+
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        kill_switch=LatchedSwitch(),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "protection-stream-latched"
+    assert execution.post_count == 0
+    assert repository.transitions == [("QUEUED", "REJECTED", "protection-stream-latched")]
+    assert repository.alerts == ["protection-stream-latched"]
+
+
+@pytest.mark.asyncio
 async def test_symbol_protection_admission_blocks_before_preflight_without_global_kill_switch() -> (
     None
 ):

@@ -13,6 +13,7 @@ from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal, InstrumentSpec, VenueRiskConfig
 from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
+from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.entry_routing import EntryRoute, LimitEntryContext, route_entry
 from fatty_trader.risk.sizing import minimum_safe_plan
 
@@ -119,6 +120,14 @@ class BitgetDispatcher:
         if self._kill_switch is not None and self._kill_switch.is_active("bitget"):
             self._reject(dispatch, "kill-switch-latched")
             return "kill-switch-latched"
+        # A dead protection stream blocks entries on its own scope. It is kept
+        # separate from the venue scope so that latching it cannot disable the
+        # bot-managed fallback TP/SL path in bitget_monitor.
+        if self._kill_switch is not None and self._kill_switch.is_active(
+            PROTECTION_STREAM_SCOPE
+        ):
+            self._reject(dispatch, "protection-stream-latched")
+            return "protection-stream-latched"
         if not self._gate.execution_enabled:
             self._reject(dispatch, "cutover-gated")
             return "cutover-gated"

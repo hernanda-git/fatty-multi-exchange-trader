@@ -225,6 +225,10 @@ services:
       BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
       BITGET_PROTECTION_STREAM_SYMBOLS: ${BITGET_PROTECTION_STREAM_SYMBOLS:-}
       BITGET_PROTECTION_REST_WATCHDOG_SECONDS: ${BITGET_PROTECTION_REST_WATCHDOG_SECONDS:-5}
+      # Consecutive socket-death/provider-failure cycles before the protection
+      # stream latches its entry block. Plumbed here so tuning .env actually
+      # reaches the container; the in-code default (3) is only a fallback.
+      BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH: ${BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH:-3}
     healthcheck:
       # Probe this service *and* verify the cycle heartbeat is fresh. The inherited
       # dispatcher probe validated configuration only, which is why the 3h50m stall

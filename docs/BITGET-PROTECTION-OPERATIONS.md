@@ -305,6 +305,32 @@ If any criterion fails, keep execution closed. Do not blind-retry a POST.
 - Do not call a close/cancel merely because the socket is stale.
 - If provider state is unknown, preserve the intent as unknown/closing and reconcile.
 
+### Protection-stream kill switch latched
+
+The watchdog latches the `bitget-protection-stream` scope when the protection
+socket is dead (or cannot report its state) for 3 consecutive cycles, or when a
+provider protection read fails. This is a **dedicated** scope: it blocks new
+entries only, and does not latch the venue-wide `bitget` scope, so existing
+positions and fallback stops are not disabled.
+
+- Confirm the latch reason and the scope in the watchdog report
+  (`socket-not-connected` vs `protection-read-failed`).
+- Read provider position/order/plan state through REST before acting.
+- Do **not** clear the latch just because the socket has reconnected. The latch
+  persists across restarts and must not auto-clear.
+- Release only after the stream is genuinely healthy **and** a clean monitor
+  report is obtained, with an explicit approval reference:
+
+  ```bash
+  # DEMO only — the script refuses to run with BITGET_MODE=LIVE.
+  python scripts/recover_bitget_demo_kill_switch.py \
+    --scope bitget-protection-stream \
+    --approval-reference <approval-ticket>
+  ```
+
+- On LIVE there is no scripted release. Do not clear the row directly in the
+  database; the release path must be added and reviewed first.
+
 ### Missing native plan
 
 - Treat provider read-back as failed; do not infer protection from the POST ack.

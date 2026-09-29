@@ -331,7 +331,12 @@ class BitgetClassicWebSocket:
         """Return capped exponential backoff without mutating transport state."""
         if attempt < 1:
             raise ValueError("reconnect attempt must be positive")
-        delay = self._reconnect_base_delay * float(2 ** (attempt - 1))
+        # Clamp the exponent: 2**1024 overflows to float and raises, and on a
+        # permanently dead endpoint that is reached in a few hours. The raise
+        # was swallowed by the reconnect handler, leaving a tight no-sleep
+        # spin loop at 100% CPU.
+        exponent = min(attempt - 1, 30)
+        delay = self._reconnect_base_delay * float(2**exponent)
         return min(
             self._reconnect_max_delay,
             delay,
@@ -355,9 +360,25 @@ class BitgetClassicWebSocket:
                         if attempt:
                             await asyncio.sleep(self.reconnect_delay(attempt))
                         await self.connect()
+                        if attempt:
+                            print(
+                                f"component=bitget-websocket state=recovered "
+                                f"endpoint={self._endpoint} "
+                                f"consecutive_failures={attempt} symbols={len(self._symbols)}",
+                                flush=True,
+                            )
                         attempt = 0
-                    except Exception:
+                    except Exception as exc:
                         attempt += 1
+                        # Never fail silently: a dead endpoint must be visible in
+                        # logs, not just a stale freshness check.
+                        print(
+                            f"component=bitget-websocket state=connect_error "
+                            f"endpoint={self._endpoint} "
+                            f"consecutive_failures={attempt} "
+                            f"error_type={type(exc).__name__} error={exc}",
+                            flush=True,
+                        )
                         continue
                 try:
                     await self.send_heartbeat_if_due()
