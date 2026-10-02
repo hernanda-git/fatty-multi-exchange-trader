@@ -1,0 +1,13 @@
+[Unit]
+Description=Fatty PostgreSQL custom-format backup (compose-operated)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
+# Keep dumps outside the repository; the repo tree must never carry a live snapshot.
+Environment=BACKUP_DIR=/home/valarion/backups/fatty-trader
+Environment=BACKUP_RETAIN_DAYS=14
+ExecStart=/usr/bin/flock -n /tmp/fatty-backup.lock /bin/bash /home/valarion/apps/fatty-multi-exchange-trader/scripts/backup_postgres.sh
+TimeoutStartSec=300

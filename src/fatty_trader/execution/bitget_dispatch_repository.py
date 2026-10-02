@@ -9,6 +9,27 @@ from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL, expire_source_dispatch
+
+
+def _retire_stale(cursor: Any) -> None:
+    cursor.execute(
+        """SELECT d.id FROM dispatches d
+        JOIN canonical_signals s ON s.id=d.source_id
+        JOIN telegram_messages tm ON tm.id=s.message_id
+        WHERE d.exchange='bitget' AND d.state='QUEUED'
+          AND (d.claimed_by IS NULL OR d.lease_until <= clock_timestamp())
+          AND NOT COALESCE(("""
+        + SOURCE_ELIGIBLE_SQL.format(alias="tm")
+        + """), false)
+        FOR UPDATE OF d SKIP LOCKED"""
+    )
+    ids = []
+    while (row := cursor.fetchone()) is not None:
+        ids.append(row[0])
+    for dispatch_id in ids:
+        expire_source_dispatch(cursor, dispatch_id, "QUEUED")
+
 
 class Cursor(Protocol):
     def execute(self, statement: str, params: tuple[Any, ...] = ()) -> object: ...
@@ -36,11 +57,17 @@ class BitgetDispatch:
     source_message_id: int | None = None
 
 
-_CLAIM_SQL = """
+_CLAIM_SQL = (
+    """
 WITH next_dispatch AS (
     SELECT d.id
     FROM dispatches d
+    JOIN canonical_signals s ON s.id=d.source_id
+    JOIN telegram_messages tm ON tm.id=s.message_id
     WHERE d.exchange = 'bitget'
+      AND ("""
+    + SOURCE_ELIGIBLE_SQL.format(alias="tm")
+    + """)
       AND d.state = 'QUEUED'
       AND (claimed_by IS NULL OR lease_until <= now())
     ORDER BY d.created_at, d.id
@@ -57,6 +84,7 @@ WHERE d.id = n.id AND s.id = d.source_id AND tm.id = s.message_id
 RETURNING d.id, d.state, d.claimed_by, d.attempts, s.pair_token, s.direction,
           s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id;
 """
+)
 
 _RESERVE_CANARY_ENTRY_SQL = """
 WITH canary_lock AS (
@@ -65,15 +93,20 @@ WITH canary_lock AS (
     INSERT INTO canary_entry_reservations (dispatch_id, exchange)
     SELECT %s, %s FROM canary_lock
     WHERE (
-        SELECT count(*) FROM live_order_intents
-        WHERE exchange = %s AND role = 'ENTRY'
-          AND state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled')
-    ) + (
-        SELECT count(*)
-        FROM canary_entry_reservations r
-        JOIN dispatches reserved_dispatch ON reserved_dispatch.id = r.dispatch_id
-        WHERE r.exchange = %s
-          AND reserved_dispatch.state NOT IN ('FILLED', 'REJECTED', 'CANCELLED', 'RECONCILED')
+        SELECT count(*) FROM (
+            SELECT COALESCE(m.dispatch_id::text, 'intent:' || i.client_order_id) AS dispatch_key
+            FROM live_order_intents i
+            LEFT JOIN bitget_margin_reservations m
+              ON m.exchange = i.exchange AND m.client_order_id = i.client_order_id
+            WHERE i.exchange = %s AND i.role = 'ENTRY'
+              AND i.state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled')
+            UNION
+            SELECT r.dispatch_id::text
+            FROM canary_entry_reservations r
+            JOIN dispatches d ON d.id = r.dispatch_id
+            WHERE r.exchange = %s
+              AND d.state NOT IN ('FILLED', 'REJECTED', 'CANCELLED', 'RECONCILED')
+        ) unique_dispatches
     ) < %s
     ON CONFLICT (dispatch_id) DO NOTHING
     RETURNING dispatch_id
@@ -96,6 +129,7 @@ class PostgresBitgetDispatchRepository:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            _retire_stale(cursor)
             cursor.execute(_CLAIM_SQL, (worker_id, lease_seconds))
             row = cursor.fetchone()
             connection.commit()
@@ -103,6 +137,132 @@ class PostgresBitgetDispatchRepository:
             connection.rollback()
             raise
         return _dispatch_from_row(row) if row is not None else None
+
+    def entry_source_eligible(self, dispatch_id: UUID) -> bool:
+        """Recheck immediately before a new ENTRY, not read-only recovery."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT d.state, COALESCE(("
+                + SOURCE_ELIGIBLE_SQL.format(alias="tm")
+                + "), false) FROM dispatches d JOIN canonical_signals s ON s.id=d.source_id "
+                "JOIN telegram_messages tm ON tm.id=s.message_id WHERE d.id=%s FOR UPDATE OF d",
+                (dispatch_id,),
+            )
+            row = cursor.fetchone()
+            eligible = row is not None and row[0] in {"QUEUED", "SUBMITTING"} and row[1]
+            if not eligible and row is not None and row[0] in {"QUEUED", "SUBMITTING"}:
+                expire_source_dispatch(cursor, dispatch_id, row[0])
+            connection.commit()
+            return bool(eligible)
+        except Exception:
+            connection.rollback()
+            raise
+
+    def recovery_candidates(self) -> list[tuple[BitgetDispatch, str]]:
+        """Load canonical expectations for durable owned ENTRYs, not just active margin.
+
+        Consumed reservations and FILLED dispatches deliberately remain eligible.
+        A lost canonical source raises rather than silently declaring recovery ready.
+        Legacy entries without reservation ownership require a separate migration/
+        operator reconciliation; this API never adopts a manual provider position.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT d.id, d.state, d.claimed_by, d.attempts,
+                          s.pair_token, s.direction, s.entry_price, s.stop_loss,
+                          s.take_profits, tm.channel_id, tm.message_id, i.client_order_id
+                   FROM live_order_intents i
+                   JOIN bitget_margin_reservations m ON m.exchange = i.exchange
+                       AND m.client_order_id = i.client_order_id
+                   JOIN dispatches d ON d.id = m.dispatch_id AND d.exchange = i.exchange
+                   LEFT JOIN canonical_signals s ON s.id = d.source_id
+                   LEFT JOIN telegram_messages tm ON tm.id = s.message_id
+                   WHERE i.exchange = 'bitget' AND i.role = 'ENTRY'
+                     AND (i.filled_qty > 0 OR i.state NOT IN
+                          ('rejected', 'cancelled', 'reconciled'))
+                   ORDER BY d.created_at, d.id"""
+            )
+            rows = []
+            while (row := cursor.fetchone()) is not None:
+                if row[4] is None or row[9] is None:
+                    raise ValueError("recovery canonical source missing")
+                rows.append((_dispatch_from_row(row[:11]), str(row[11])))
+            connection.commit()
+            return rows
+        except Exception:
+            connection.rollback()
+            raise
+
+    def unresolved_protection_issues(self) -> list[str]:
+        """Durable account admission veto; independent of optional capability gate.
+
+        FILLED is fill truth, never proof of protection. UNPROTECTED is an
+        explicit dispatcher verdict. Only verified recovery can clear either.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT EXISTS(
+                SELECT 1 FROM dispatches WHERE lower(exchange)='bitget'
+                AND (state='UNPROTECTED' OR terminal_reason='missing-protection-escalated'
+                     OR terminal_reason LIKE 'recovery-missing-protection:%%'
+                     OR terminal_reason LIKE 'recovery-filled-protection-unverified%%')
+            )""",
+                (),
+            )
+            blocked = cursor.fetchone()[0]
+            connection.commit()
+            return ["unresolved-protection"] if blocked else []
+        except Exception:
+            connection.rollback()
+            raise
+
+    def inventory_issues(self, environment: str) -> list[str]:
+        """Account-wide unresolved ownership is not an empty candidate set.
+
+        Intents have no environment column: unmatched rows cannot safely be scoped
+        away. Cross-environment ownership is similarly not adopted into this graph.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT EXISTS (
+                    SELECT 1 FROM live_order_intents i
+                    LEFT JOIN bitget_margin_reservations m ON m.exchange=i.exchange
+                        AND m.client_order_id=i.client_order_id
+                    LEFT JOIN dispatches d ON d.id=m.dispatch_id AND d.exchange=i.exchange
+                    WHERE i.exchange='bitget' AND i.role='ENTRY'
+                      AND (i.filled_qty>0 OR i.state NOT IN ('rejected','cancelled','reconciled'))
+                      AND (d.id IS NULL OR m.environment IS DISTINCT FROM %s)
+                ), EXISTS (
+                    SELECT 1 FROM bitget_margin_reservations m
+                    LEFT JOIN live_order_intents i ON i.exchange=m.exchange
+                        AND i.client_order_id=m.client_order_id AND i.role='ENTRY'
+                    WHERE m.exchange='bitget' AND m.state IN ('reserved','unknown','consumed')
+                      AND (m.environment=%s OR m.environment IS NULL) AND i.client_order_id IS NULL
+                )""",
+                (environment, environment),
+            )
+            row = cursor.fetchone()
+            connection.commit()
+            return [
+                reason
+                for active, reason in zip(
+                    row,
+                    ("orphan-entry-intent", "reservation-without-entry-intent"),
+                    strict=False,
+                )
+                if active
+            ]
+        except Exception:
+            connection.rollback()
+            raise
 
     def reserve_canary_entry(self, dispatch_id: UUID, exchange: str, max_orders: int) -> bool:
         if not exchange:
@@ -119,6 +279,19 @@ class PostgresBitgetDispatchRepository:
             reserved = cursor.fetchone() is not None
             connection.commit()
             return reserved
+        except Exception:
+            connection.rollback()
+            raise
+
+    def release_canary_entry(self, dispatch_id: UUID, exchange: str) -> None:
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "DELETE FROM canary_entry_reservations WHERE dispatch_id = %s AND exchange = %s",
+                (dispatch_id, exchange),
+            )
+            connection.commit()
         except Exception:
             connection.rollback()
             raise
@@ -168,7 +341,8 @@ class PostgresBitgetDispatchRepository:
                 """,
                 (
                     uuid4(),
-                    f"dispatch-transition:{dispatch_id}:{expected_state}:{target_state}",
+                    f"dispatch-transition:{dispatch_id}:{expected_state}:{target_state}:"
+                    f"{reason or ''}",
                     json.dumps(
                         {
                             "kind": "execution-event",

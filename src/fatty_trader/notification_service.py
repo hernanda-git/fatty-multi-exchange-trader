@@ -13,6 +13,7 @@ from fatty_trader.notifications import (
     PostgresNotificationOutbox,
     TelegramBotSender,
 )
+from fatty_trader.worker_health import owned_worker_health, worker_progress
 
 
 def notification_settings(environ: Mapping[str, str]) -> TelegramNotificationSettings | None:
@@ -23,6 +24,7 @@ def notification_settings(environ: Mapping[str, str]) -> TelegramNotificationSet
         return None
 
 
+@owned_worker_health("notification-sender")
 async def run(environ: Mapping[str, str]) -> None:
     settings = notification_settings(environ)
     if settings is None:
@@ -44,6 +46,8 @@ async def run(environ: Mapping[str, str]) -> None:
     lease_seconds = _positive_int(environ, "NOTIFICATION_LEASE_SECONDS", 30)
     while True:
         state = await worker.run_once("notification-sender", lease_seconds)
+        if state in {"idle", "sent"}:
+            worker_progress()
         print(f"service=notification-sender state={state}", flush=True)
         await asyncio.sleep(0 if state == "sent" else poll_seconds)
 
@@ -73,9 +77,9 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     if args.check:
-        # Missing bot configuration is valid: this service deliberately stays inert.
-        notification_settings(os.environ)
-        return 0
+        from fatty_trader.worker_health import check_worker_health
+
+        return check_worker_health("notification-sender", os.environ)
     asyncio.run(run(os.environ))
     return 0
 

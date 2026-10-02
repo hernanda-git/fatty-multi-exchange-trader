@@ -1,5 +1,9 @@
 # Agentic Ops Fast Path — Fatty Bitget
 
+> Read [current remediation gates](../remediation-verification.md) first.
+> This handoff's dated deployment facts remain historical, not current readiness
+> or mutation authorization. Verify current source/image/schema/provider lineage.
+
 **Purpose:** first-read handoff for any new Hermes/agent session operating
 `fatty-multi-exchange-trader`. It replaces repeated broad reading, grep, and
 search with a source map and one-pass evidence commands. It contains no
@@ -48,7 +52,9 @@ rows for the symbol. Read its JSON once before opening individual files.
   container rebuild.
 - `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`, `BITGET_EXECUTION_ENABLED=1`.
 - `BITGET_CANARY_MAX_ORDERS=5`, `BITGET_MAX_CLOCK_SKEW_MS=5000`.
-- Manual operator mutations are disabled; fallback mutations are `0`.
+- Manual operator (Telegram) mutations are disabled for `operator-bot`; `source-management`
+  is deliberately `BITGET_OPERATOR_MUTATIONS_ENABLED=1` in Compose (copy-trade TP1/SL/CLOSE
+  automation). Gate state is per-service; fallback mutations are `0`.
 - Authenticated Bitget probe: PASS; `787` contracts; `0` provider positions;
   `0` provider open orders; targeted `PONSUSDT` fills read returned `[]`.
 - Account read: equity/available `8.91215461 USDT`, unrealized PnL `0`.
@@ -163,3 +169,46 @@ Files under `docs/hermes-context/` with older dates, old runtime SHAs, or the
 pre-LIVE `BITGET_EXECUTION_ENABLED=0` state are preserved historical evidence.
 Use this fast path and the current handoff first; never merge historical counts
 or gates into current runtime claims.
+
+## Liveness and backups
+
+- `monitor-bitget` writes `/tmp/fatty-monitor-heartbeat` every monitor and protection
+  watchdog cycle. Its healthcheck probes **itself** and enforces heartbeat freshness
+  (`--heartbeat-max-age 90`), and a supervisor thread exits the process when the heartbeat
+  goes stale so `restart: unless-stopped` recovers a working one. It previously inherited
+  the dispatcher healthcheck, which validated configuration only: on 2026-09-27 the monitor
+  spun at ~100% CPU with a blocked event loop for 3h50m and still reported `(healthy)`.
+  Never move the monitor back onto the inherited probe.
+- Tune with `BITGET_MONITOR_CYCLE_TIMEOUT_SECONDS` (default 120) and
+  `BITGET_MONITOR_STALL_TIMEOUT_SECONDS` (default 90).
+- A daily Compose-operated backup runs from `fatty-backup.timer` into
+  `/home/valarion/backups/fatty-trader`, with `pg_restore --list` integrity checking and
+  14-day retention. Restore with `CONFIRM_RESTORE=YES scripts/restore_postgres.sh <dump>`;
+  it pipes the dump to `pg_restore` inside the postgres container because the service
+  publishes no host port. Restorability is proven by rehearsal, not assumed.
+- The analyzer's `codex_account_label` is an operator label, not an auth status; real auth
+  is the mounted `~/.codex/auth.json`.
+- A filled intent always leaves ledger evidence: when the provider confirms a fill with an
+  empty fill list, the intent update writes one `status-derived:<order-id>` fills row (never
+  an invented price or PnL). Those rows are not provider fills, so PnL aggregation that
+  already counted a real fill must ignore them.
+
+## Historical incident notes (do not re-litigate)
+
+- 2026-09-27 — monitor stall (see above).
+- 2026-09-27 — the intake went blind for 5h35m (17:45:47Z→23:20Z) because its Telethon
+  session was shared with a host PAPER listener; the source's 20:00:51Z ENA signal was
+  never persisted. Never let a second client use the same session, and rely on the
+  catch-up poll (below) rather than assuming a restart recovers missed messages.
+- 2026-09-28 — intake catch-up armed: every `TELEGRAM_CATCHUP_SECONDS` (default 60) the
+  intake asks each channel for messages with `min_id` = the newest persisted message id in
+  `telegram_messages` and ingests them through the normal path. It does nothing when a
+  channel has no persisted message yet, so a cold start cannot replay history. Ingest is
+  idempotent on `(channel_id, message_id, revision_hash)`, so realtime and catch-up can
+  overlap safely.
+- 2026-09-27 — three canonical signals (WLD/NEAR/PENGU) had no dispatch while their analysis
+  notification claimed `dispatches: 1`: the payload reported `len(exchanges)` instead of rows
+  written. It now counts rows, and a regression test covers media-flagged messages.
+- 2026-09-27 — the restore path had never worked on this host (host-side `pg_restore` against
+  an unpublished port); fixed and proven by restoring into a throwaway database.
+

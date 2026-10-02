@@ -245,6 +245,8 @@ class NotificationWorker:
 
 def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
+    if payload.get("kind") == "kaka-paper-digest":
+        return _format_kaka_digest_html(payload)
     if payload.get("kind") == "heartbeat":
         return _format_heartbeat_html(payload)
     if payload.get("kind") == "source-forward":
@@ -349,6 +351,19 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
             "Tidak ada order dikirim.\n"
             "Alasan: mode DEMO · eksekusi live belum diaktifkan."
         )
+    if reason == "approved-provider-flat-readback-no-order-or-intent":
+        return (
+            "🧹 <b>Rekonsiliasi Dispatch Selesai</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Status  : <code>RECONCILED</code>\n"
+            "Provider flat: posisi dan open order tidak ditemukan\n"
+            "Ledger   : Tidak ada order/intent lokal yang terkait\n"
+            "Aksi     : Reservation dilepas melalui audit transition\n"
+            "Proteksi : Tidak ada posisi aktif yang perlu ditutup\n"
+            "Entry    : Tidak ada entry yang diulang\n"
+            "LIVE     : Gate boleh berjalan setelah approval\n"
+            f"Ref      : <code>{dispatch_id}</code>"
+        )
     state = escape(_safe_value(payload.get("to_state", "diperbarui")))
     return (
         f"📈 <b>Status Eksekusi</b>\n"
@@ -376,6 +391,12 @@ def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
 def _format_system_event_html(payload: Mapping[str, Any]) -> str:
     message = escape(_safe_text(payload.get("message", ""), limit=1000))
     return f"🤖 <b>System Event</b>\n━━━━━━━━━━━━━━━━━━━━\n{message}"
+
+
+def _format_kaka_digest_html(payload: Mapping[str, Any]) -> str:
+    """Render the paper-lane digest. Paper results only: no venue, no live PnL."""
+    body = escape(str(payload.get("text") or ""))
+    return f"<b>Fatty Trader</b>  <i>Kaka paper digest</i>\n\n<pre>{body}</pre>"
 
 
 def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:

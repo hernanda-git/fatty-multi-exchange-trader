@@ -4,6 +4,7 @@ Wants=network-online.target
 After=network-online.target docker.service
 
 [Service]
+EnvironmentFile=/home/valarion/apps/fatty-multi-exchange-trader/.env
 Type=oneshot
 WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
 ExecStart=/usr/bin/flock -n /tmp/fatty-health-report.lock /home/valarion/.hermes/hermes-agent/venv/bin/python3 /home/valarion/apps/fatty-multi-exchange-trader/scripts/health_report.py

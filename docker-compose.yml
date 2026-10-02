@@ -44,12 +44,22 @@ services:
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: web
-      SERVICE_COMPONENTS: postgres=ready,migrate=ready
+      # Progress is worker-owned; each socket validates identity in its own PID namespace.
+      WEB_INTAKE_HEALTH_PATH: /run/fatty-health/intake/progress.json
+      WEB_INTAKE_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
+      WEB_ANALYZER_HEALTH_PATH: /run/fatty-health/analyzer/progress.json
+      WEB_ANALYZER_HEALTH_SOCKET_PATH: /run/fatty-health/analyzer/owner.sock
+      WEB_NOTIFICATION_HEALTH_PATH: /run/fatty-health/notification/progress.json
+      WEB_NOTIFICATION_HEALTH_SOCKET_PATH: /run/fatty-health/notification/owner.sock
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
       PGUSER: fatty_app
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+    volumes:
+      - health-intake:/run/fatty-health/intake:ro
+      - health-analyzer:/run/fatty-health/analyzer:ro
+      - health-notification:/run/fatty-health/notification:ro
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
     depends_on:
@@ -68,6 +78,8 @@ services:
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: intake
+      WORKER_HEALTH_PATH: /run/fatty-health/intake/progress.json
+      WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
@@ -76,8 +88,19 @@ services:
       TG_API_ID: ${TG_API_ID:-}
       TG_API_HASH: ${TG_API_HASH:-}
       TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
-      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
+      # @Kakatrades is paper-only: the analyzer is scoped to ANALYZER_CHANNEL_IDS, so
+      # this source can never create live dispatches.
+      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-@fattyfatclub,@Kakatrades}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
+      TELEGRAM_MEDIA_ROOT: /app/runtime/media
+      # Catch-up safety net: the listen path is realtime-only, so a dropped/stolen MTProto
+      # session used to lose every message in the blind window permanently (2026-09-27: the
+      # source's ENA signal). This polls for messages newer than the newest persisted one.
+      TELEGRAM_CATCHUP_SECONDS: ${TELEGRAM_CATCHUP_SECONDS:-60}
+      TELEGRAM_CATCHUP_LIMIT: ${TELEGRAM_CATCHUP_LIMIT:-50}
+    volumes:
+      - health-intake:/run/fatty-health/intake
+      - ./data/media:/app/runtime/media
     depends_on:
       init:
         condition: service_completed_successfully
@@ -88,10 +111,18 @@ services:
   analyzer:
     build: .
     user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"
+    # Image-only dedicated tree: intake UID/GID 10001 owns RW; analyzer only
+    # receives group read/traverse (0640 files / 0750 directories) plus an RO mount.
+    # Provision ./data/media as 10001:10001 mode 0750; never store credentials here.
+    # Existing private media needs an explicitly approved permission migration;
+    # application code intentionally does not chmod existing files/directories.
+    group_add: ["10001"]
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer"]
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: analyzer
+      WORKER_HEALTH_PATH: /run/fatty-health/analyzer/progress.json
+      WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/analyzer/owner.sock
       DISPATCH_EXCHANGES: bitget
       PGHOST: postgres
       PGPORT: "5432"
@@ -99,8 +130,12 @@ services:
       PGUSER: fatty_app
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       CODEX_HOME: /app/runtime/codex-home
-      CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}
+      # Operator-supplied label only; this is NOT an auth probe (the analyzer prints it
+      # as codex_account_label). Auth comes from the mounted ~/.codex/auth.json.
+      CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-unset}
+      BITGET_IMAGE_ANALYSIS_ENABLED: ${BITGET_IMAGE_ANALYSIS_ENABLED:-1}
     volumes:
+      - health-analyzer:/run/fatty-health/analyzer
       - ./runtime/codex-home:/app/runtime/codex-home
       - ${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json:/app/runtime/codex-home/auth.json:ro
       - ./data/media:/app/runtime/media:ro
@@ -149,6 +184,9 @@ services:
       BITGET_MODE: ${BITGET_MODE:-DEMO}
       # Closed by default; human approval is required before any cutover.
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}
+      # Capability admission is separately gated and remains disabled by default.
+      BITGET_PROTECTION_CAPABILITY_GATE_ENABLED: ${BITGET_PROTECTION_CAPABILITY_GATE_ENABLED:-0}
+      BITGET_PROTECTION_STALE_SECONDS: ${BITGET_PROTECTION_STALE_SECONDS:-5}
       BITGET_CANARY_MAX_ORDERS: ${BITGET_CANARY_MAX_ORDERS:-0}
       BITGET_CANARY_SYMBOL: ${BITGET_CANARY_SYMBOL:-}
       BITGET_APPROVAL_REFERENCE: ${BITGET_APPROVAL_REFERENCE:-}
@@ -158,9 +196,20 @@ services:
       BITGET_PRODUCT_TYPE: USDT-FUTURES
       BITGET_MARGIN_COIN: USDT
       BITGET_MARGIN_MODE: isolated
-      BITGET_MIN_LEVERAGE: "20"
-      BITGET_MAX_LEVERAGE: "50"
+      # Leverage CEILING is pinned at 20x and is never exceeded. The floor is the
+      # lowest leverage the sizing policy may back off to when a signal's stop needs
+      # more liquidation headroom than 20x leaves (per-symbol maintenance-margin rates
+      # vary: a 2.5% MMR symbol has ~2.4% of room at 20x). Lower leverage is safer and
+      # the position simply sizes smaller inside the same 1 USDT margin cap.
+      BITGET_MIN_LEVERAGE: "5"
+      BITGET_MAX_LEVERAGE: "20"
       BITGET_ALLOCATION_PCT: "0.20"
+      # Planned per-trade isolated-margin ceiling in USDT. Allocation is scaled by
+      # balance, so without this a growing balance silently raises per-trade
+      # margin. The cap binds regardless of balance size. Note it bounds the
+      # PLANNED margin: entries are market orders, so fill slippage can push
+      # exchange-side realized margin marginally above it.
+      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
       BITGET_MAX_NORMAL_POSITIONS: "5"
       BITGET_LIQUIDATION_BUFFER: "0.10"
     depends_on:
@@ -184,7 +233,68 @@ services:
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "monitor-bitget"]
     environment:
       SERVICE_NAME: monitor-bitget
+      # Liveness: exit-and-restart when the monitor stops cycling. On 2026-09-27 the
+      # process spun at 100% CPU with a blocked event loop for 3h50m and the inherited
+      # dispatcher healthcheck still reported it healthy.
+      BITGET_MONITOR_HEARTBEAT_PATH: ${BITGET_MONITOR_HEARTBEAT_PATH:-/tmp/fatty-monitor-heartbeat}
+      BITGET_MONITOR_CYCLE_TIMEOUT_SECONDS: ${BITGET_MONITOR_CYCLE_TIMEOUT_SECONDS:-120}
+      BITGET_MONITOR_STALL_TIMEOUT_SECONDS: ${BITGET_MONITOR_STALL_TIMEOUT_SECONDS:-90}
       BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
+      BITGET_PROTECTION_STREAM_STALE_SECONDS: ${BITGET_PROTECTION_STREAM_STALE_SECONDS:-5}
+      BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS: ${BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS:-25}
+      BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_SYMBOLS: ${BITGET_PROTECTION_STREAM_SYMBOLS:-}
+      BITGET_PROTECTION_REST_WATCHDOG_SECONDS: ${BITGET_PROTECTION_REST_WATCHDOG_SECONDS:-5}
+      # Consecutive socket-death/provider-failure cycles before the protection
+      # stream latches its entry block. Plumbed here so tuning .env actually
+      # reaches the container; the in-code default (3) is only a fallback.
+      BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH: ${BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH:-3}
+    healthcheck:
+      # Probe this service *and* verify the cycle heartbeat is fresh. The inherited
+      # dispatcher probe validated configuration only, which is why the 3h50m stall
+      # still reported (healthy); docker now marks the container unhealthy and the
+      # supervisor thread exits the process so restart:unless-stopped recovers it.
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-m",
+          "fatty_trader.service",
+          "--service",
+          "monitor-bitget",
+          "--check",
+          "--heartbeat-path",
+          "/tmp/fatty-monitor-heartbeat",
+          "--heartbeat-max-age",
+          "90",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Paper-only lane for the `Kaka trades` channel. No provider credentials are present in
+  # this block on purpose: the lane cannot reach the venue even if it wanted to.
+  paper-kaka:
+    build: .
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "paper-kaka"]
+    environment:
+      SERVICE_NAME: paper-kaka
+      TRADER_MODE: ${TRADER_MODE:-DEMO}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-fatty_trader}
+      PGUSER: fatty_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PAPER_KAKA_POLL_SECONDS: ${PAPER_KAKA_POLL_SECONDS:-20}
+      PAPER_KAKA_CHANNEL_ID: ${PAPER_KAKA_CHANNEL_ID:--1003763643270}
+      PAPER_KAKA_BATCH_SIZE: ${PAPER_KAKA_BATCH_SIZE:-25}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   operator-bot:
     build: .
@@ -206,6 +316,11 @@ services:
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}
       BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
+      BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
+      BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
+      BITGET_PROTECTION_CAPABILITY_GATE_ENABLED: ${BITGET_PROTECTION_CAPABILITY_GATE_ENABLED:-0}
       TELEGRAM_HEARTBEAT_SECONDS: ${TELEGRAM_HEARTBEAT_SECONDS:-21600}
     depends_on:
       init:
@@ -216,6 +331,8 @@ services:
 
   notification-sender:
     build: .
+    volumes:
+      - health-notification:/run/fatty-health/notification
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.notification_service"]
     environment:
       PGHOST: postgres
@@ -225,6 +342,8 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
+      WORKER_HEALTH_PATH: /run/fatty-health/notification/progress.json
+      WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/notification/owner.sock
       NOTIFICATION_POLL_SECONDS: ${NOTIFICATION_POLL_SECONDS:-5}
       NOTIFICATION_LEASE_SECONDS: ${NOTIFICATION_LEASE_SECONDS:-30}
       NOTIFICATION_RETRY_SECONDS: ${NOTIFICATION_RETRY_SECONDS:-30}
@@ -251,9 +370,31 @@ services:
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
       BITGET_MODE: ${BITGET_MODE:-DEMO}
-      BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
+      BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
     depends_on:
       init:
         condition: service_completed_successfully
     restart: unless-stopped
+
+# Linux-only, ephemeral metadata volumes. Sticky directories permit analyzer's
+# non-root UID; only its owner has RW access, web has RO, no other service mounts it.
+volumes:
+  health-intake:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=1777
+  health-analyzer:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=1777
+  health-notification:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=1777

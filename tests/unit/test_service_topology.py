@@ -19,6 +19,18 @@ def test_demo_never_enforces_bitget_kill_switch() -> None:
     assert bitget_kill_switch_enforced({"TRADER_MODE": "LIVE", "BITGET_MODE": "LIVE"}) is True
 
 
+def test_dispatcher_wires_the_kill_switch_in_every_mode() -> None:
+    """The operator stop must not depend on TRADER_MODE.
+
+    Regression guard: gating this wiring on LIVE/LIVE left a DEMO dispatcher with
+    ``BITGET_EXECUTION_ENABLED=1`` able to POST while an active kill switch was
+    ignored. The latch itself stays LIVE-only (see the test above).
+    """
+    source = (REPO_ROOT / "src/fatty_trader/service.py").read_text(encoding="utf-8")
+    assert "kill_switch=PostgresReconciliationRepository(" in source
+    assert "kill_switch=(" not in source
+
+
 def test_enabled_dispatch_exchanges_matches_deployed_engines() -> None:
     assert "DISPATCH_EXCHANGES: bitget" in COMPOSE
     assert enabled_dispatch_exchanges({"DISPATCH_EXCHANGES": "bitget"}) == ("bitget",)
@@ -117,6 +129,7 @@ def test_bitget_execution_runtime_is_constructed_only_after_explicit_cutover() -
         "BITGET_CANARY_SYMBOL": "BTCUSDT",
         "BITGET_APPROVAL_REFERENCE": "operator-ticket-123",
         "BITGET_MAX_CLOCK_SKEW_MS": "5000",
+        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
     }
     runtime = build_bitget_execution_runtime(
         enabled, client_factory=client_factory, intent_store_factory=lambda: object()
@@ -164,7 +177,7 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
         assert command in COMPOSE
     assert "service_completed_successfully" in COMPOSE
     assert "TRADER_MODE: DEMO" in COMPOSE
-    assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-UNCONFIGURED}" in COMPOSE
+    assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-unset}" in COMPOSE
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts ./scripts" in dockerfile
     assert "npm install --global @openai/codex@0.153.0" in dockerfile

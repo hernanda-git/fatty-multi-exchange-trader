@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
-from fatty_trader.exchanges.bitget.metadata import find_contract, metadata_from_contract
+from fatty_trader.exchanges.bitget.metadata import (
+    find_contract,
+    metadata_from_contract,
+    mm_tiers_from_position_lever,
+)
 from fatty_trader.exchanges.bitget.read_model import (
     BitgetAccountState,
     BitgetPositionState,
@@ -22,9 +28,11 @@ class AsyncBitgetClient(Protocol):
     async def get_account(self, symbol: str) -> Any: ...
     async def get_single_position(self, symbol: str) -> Any: ...
     async def get_contracts(self) -> Any: ...
+    async def get_position_lever(self, symbol: str) -> Any: ...
     async def get_ticker(self, symbol: str) -> Any: ...
     async def get_clock_skew_ms(self) -> int: ...
     async def set_margin_mode(self, symbol: str, margin_mode: str) -> Any: ...
+    async def set_leverage(self, symbol: str, leverage: str) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -39,11 +47,91 @@ class BitgetPreflightSnapshot:
         return self.account.available
 
 
+@dataclass(frozen=True)
+class BitgetActivePositionSnapshot:
+    # One symbol per non-flat row: hedge-side duplicates consume separate slots.
+    symbols: tuple[str, ...]
+    observed_at: datetime
+
+
 class AsyncBitgetVenue:
     """Async, read-only Bitget venue boundary for production worker preflight."""
 
     def __init__(self, client: AsyncBitgetClient) -> None:
         self._client = client
+
+    async def active_position_snapshot(self) -> BitgetActivePositionSnapshot:
+        """Strict all-symbol provider evidence from exactly one fresh REST read."""
+        get_all_positions = getattr(self._client, "get_all_positions", None)
+        if not callable(get_all_positions):
+            raise ValueError("Bitget client cannot read all positions for admission")
+        # Timestamp request start conservatively: a slow response cannot appear fresh.
+        observed_at = datetime.now(UTC)
+        payload = await get_all_positions()
+        if isinstance(payload, dict) and payload.get("code", "00000") != "00000":
+            raise ValueError("Bitget all-positions response reports provider failure")
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise ValueError("Bitget all-positions response must be a list")
+        symbols = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Bitget all-positions response contains invalid row")
+            symbol = row.get("symbol")
+            if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9]{2,20}", symbol):
+                raise ValueError("Bitget all-positions response has invalid symbol")
+            raw_total = row.get("total")
+            if isinstance(raw_total, bool) or not isinstance(raw_total, (str, int, float, Decimal)):
+                raise ValueError("Bitget all-positions response has invalid total")
+            try:
+                total = Decimal(str(raw_total))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError("Bitget all-positions response has invalid total") from exc
+            if not total.is_finite() or total < 0:
+                raise ValueError("Bitget all-positions response has invalid total")
+            if total > 0:
+                symbols.append(symbol)
+        return BitgetActivePositionSnapshot(tuple(symbols), observed_at)
+
+    async def active_position_count(self) -> int:
+        """Compatibility reader; production admission uses the symbol snapshot."""
+        return len((await self.active_position_snapshot()).symbols)
+
+    async def ensure_leverage(
+        self, symbol: str, planned_leverage: int, *, propagation_delay_seconds: float = 2.0
+    ) -> BitgetAccountState:
+        """Set and prove the exact isolated one-way leverage before an entry POST."""
+        if isinstance(planned_leverage, bool) or planned_leverage < 1:
+            raise ValueError("planned leverage must be a positive integer")
+        if propagation_delay_seconds < 0:
+            raise ValueError("leverage propagation delay must not be negative")
+        set_leverage = cast(
+            Callable[..., Awaitable[Any]] | None, getattr(self._client, "set_leverage", None)
+        )
+        if not callable(set_leverage):
+            raise ValueError("Bitget client cannot set planned leverage")
+        await set_leverage(symbol, leverage=str(planned_leverage))
+        account = await read_account_state(self._client, symbol)
+        if self._leverage_matches(account, planned_leverage):
+            return account
+        if propagation_delay_seconds:
+            import asyncio
+
+            await asyncio.sleep(propagation_delay_seconds)
+        account = await read_account_state(self._client, symbol)
+        if not self._leverage_matches(account, planned_leverage):
+            raise ValueError("Bitget account planned leverage was not confirmed")
+        return account
+
+    @staticmethod
+    def _leverage_matches(account: BitgetAccountState, planned_leverage: int) -> bool:
+        expected = Decimal(planned_leverage)
+        return (
+            account.margin_mode == "isolated"
+            and account.position_mode.lower() in _SUPPORTED_POSITION_MODES
+            and account.long_leverage == expected
+            and account.short_leverage == expected
+        )
 
     async def preflight(self, symbol: str) -> BitgetPreflightSnapshot:
         account = await read_account_state(self._client, symbol)
@@ -88,6 +176,20 @@ class AsyncBitgetVenue:
         if not isinstance(contracts, list):
             raise ValueError("Bitget contracts response must be a list")
         metadata = metadata_from_contract(find_contract(contracts, symbol))
+        # Maintenance-margin tiers are NOT in /market/contracts; without them the
+        # liquidation guard rejects every live signal. Fail closed on a bad payload.
+        read_position_lever = cast(
+            Callable[..., Awaitable[Any]] | None,
+            getattr(self._client, "get_position_lever", None),
+        )
+        if not callable(read_position_lever):
+            raise ValueError("Bitget client cannot read position-lever MMR tiers")
+        lever = await read_position_lever(symbol)
+        if not isinstance(lever, list) or not lever:
+            raise ValueError("Bitget position-lever response must be a non-empty list")
+        metadata = metadata.model_copy(
+            update={"mm_tiers": mm_tiers_from_position_lever(lever, symbol)}
+        )
         ticker = await self._client.get_ticker(symbol)
         if not isinstance(ticker, dict):
             raise ValueError("Bitget ticker response must be an object")

@@ -1,0 +1,32 @@
+{
+  "code": "00000",
+  "msg": "success",
+  "requestTime": 1693830000000,
+  "data": {
+    "entrustedList": [
+      {
+        "orderId": "native-sl-plan-1",
+        "planType": "pos_loss",
+        "holdSide": "buy",
+        "triggerPrice": "0.388",
+        "executePrice": "0",
+        "triggerType": "mark_price",
+        "planStatus": "live",
+        "stopLossClientOid": "entry-1-sl",
+        "size": ""
+      },
+      {
+        "orderId": "native-tp-plan-1",
+        "planType": "pos_profit",
+        "holdSide": "buy",
+        "triggerPrice": "0.427",
+        "executePrice": "0",
+        "triggerType": "mark_price",
+        "planStatus": "live",
+        "stopSurplusClientOid": "entry-1-tp",
+        "size": ""
+      }
+    ],
+    "endId": ""
+  }
+}

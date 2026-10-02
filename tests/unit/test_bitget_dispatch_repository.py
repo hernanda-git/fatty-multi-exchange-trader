@@ -15,7 +15,11 @@ class Cursor:
         self.statements.append((statement, params))
 
     def fetchone(self) -> dict[str, object] | None:
-        return self.rows.pop(0)
+        return (
+            None
+            if self.statements[-1][0].startswith("SELECT d.id FROM dispatches d")
+            else self.rows.pop(0)
+        )
 
 
 class Connection:
@@ -61,9 +65,9 @@ def test_claim_uses_skip_locked_and_two_workers_receive_distinct_queued_rows() -
 
     assert first is not None and first.id == first_id
     assert second is not None and second.id == second_id
-    assert "FOR UPDATE SKIP LOCKED" in first_cursor.statements[0][0]
-    assert "exchange = 'bitget'" in first_cursor.statements[0][0]
-    assert "state = 'QUEUED'" in first_cursor.statements[0][0]
+    assert "FOR UPDATE SKIP LOCKED" in first_cursor.statements[-1][0]
+    assert "exchange = 'bitget'" in first_cursor.statements[-1][0]
+    assert "state = 'QUEUED'" in first_cursor.statements[-1][0]
     assert first_connection.commits == second_connection.commits == 1
 
 
@@ -78,7 +82,7 @@ def test_claim_recovers_only_expired_lease_and_never_steals_active_lease() -> No
     recovered = PostgresBitgetDispatchRepository(lambda: recovered_connection).claim("worker-b", 30)
 
     assert recovered is not None and recovered.id == recovered_id
-    sql = recovered_cursor.statements[0][0]
+    sql = recovered_cursor.statements[-1][0]
     assert "claimed_by IS NULL OR lease_until <= now()" in sql
     assert "attempts = attempts + 1" in sql
     assert active_connection.commits == recovered_connection.commits == 1
@@ -94,7 +98,7 @@ def test_canary_reservation_uses_uppercase_entry_roles_and_a_transactional_excha
     )
 
     assert reserved is True
-    statement, params = cursor.statements[0]
+    statement, params = cursor.statements[-1]
     assert "pg_advisory_xact_lock" in statement
     assert "role = 'ENTRY'" in statement
     assert "canary_entry_reservations" in statement

@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$SOURCE_REVISION \
+      org.opencontainers.image.source="https://github.com/hernanda-git/fatty-multi-exchange-trader"
+
 WORKDIR /app
 RUN useradd --create-home --uid 10001 fatty
 RUN apt-get update \

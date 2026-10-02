@@ -8,12 +8,12 @@ import os
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 WIB = ZoneInfo("Asia/Jakarta")
-from pathlib import Path
-from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_PATH = ROOT / "runtime" / "autonomous-demo-cycle-state.json"

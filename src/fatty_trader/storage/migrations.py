@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Versioned, additive, idempotent migrations for durable trading state.
 
 Convention: ``MIGRATIONS`` is an append-only list of ``(version, sql)``
@@ -15,7 +16,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Final, Protocol
 
-from fatty_trader.storage.schema import BITGET_DISPATCH_SCHEMA_SQL, LIVE_SCHEMA_SQL
+from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
+from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
+from fatty_trader.storage.schema import (
+    ADMISSION_CONSTRAINTS_SCHEMA_SQL,
+    BITGET_DISPATCH_SCHEMA_SQL,
+    DURABLE_ADMISSION_SCHEMA_SQL,
+    LIVE_SCHEMA_SQL,
+)
+from fatty_trader.storage.verified_close_schema import VERIFIED_CLOSE_SCHEMA_SQL
 
 
 class MigrationCursor(Protocol):
@@ -27,6 +36,43 @@ SCHEMA_MIGRATIONS_SQL: Final = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+PAPER_KAKA_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS paper_kaka_trades (
+    id UUID PRIMARY KEY,
+    source_message_id BIGINT NOT NULL UNIQUE,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('LONG','SHORT')),
+    entry_price NUMERIC NOT NULL,
+    stop_loss NUMERIC NOT NULL,
+    take_profit NUMERIC,
+    dca_level NUMERIC,
+    notional_usdt NUMERIC NOT NULL,
+    margin_usdt NUMERIC NOT NULL,
+    leverage INT NOT NULL,
+    legs INT NOT NULL DEFAULT 1,
+    state TEXT NOT NULL CHECK (state IN ('open','closed','cancelled')),
+    close_price NUMERIC,
+    close_reason TEXT,
+    realized_pnl_usdt NUMERIC,
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS paper_kaka_trades_open_symbol
+    ON paper_kaka_trades (symbol) WHERE state = 'open';
+
+CREATE TABLE IF NOT EXISTS paper_kaka_events (
+    id UUID PRIMARY KEY,
+    trade_id UUID REFERENCES paper_kaka_trades(id),
+    source_message_id BIGINT NOT NULL,
+    event_type TEXT NOT NULL,
+    parse_path TEXT NOT NULL,
+    parsed_json JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_message_id, event_type)
 );
 """
 
@@ -156,8 +202,149 @@ MIGRATIONS: Final = [
         );
         """,
     ),
+    (
+        11,
+        """
+        CREATE TABLE IF NOT EXISTS bitget_protection_capabilities (
+            exchange TEXT NOT NULL CHECK (exchange IN ('binance', 'bitget')),
+            environment TEXT NOT NULL CHECK (environment IN ('DEMO', 'LIVE')),
+            symbol TEXT NOT NULL,
+            position_mode TEXT NOT NULL,
+            margin_mode TEXT NOT NULL,
+            native_state TEXT NOT NULL CHECK (
+                native_state IN ('UNKNOWN', 'VERIFIED', 'UNSUPPORTED', 'FAILED')
+            ),
+            fallback_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+            payload_profile TEXT NOT NULL,
+            last_verified_at TIMESTAMPTZ,
+            last_error TEXT,
+            stream_state TEXT NOT NULL CHECK (
+                stream_state IN ('DISABLED', 'CONNECTING', 'HEALTHY', 'STALE', 'FAILED')
+            ),
+            last_stream_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (exchange, environment, symbol)
+        );
+        CREATE INDEX IF NOT EXISTS bitget_protection_capabilities_symbol
+        ON bitget_protection_capabilities (exchange, environment, symbol);
+        """,
+    ),
+    (
+        12,
+        """
+        CREATE TABLE IF NOT EXISTS provider_reconciliation_events (
+            id UUID PRIMARY KEY,
+            exchange TEXT NOT NULL CHECK (exchange IN ('binance', 'bitget')),
+            provider_order_id TEXT,
+            provider_fill_id TEXT NOT NULL,
+            client_order_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+            source TEXT NOT NULL CHECK (source IN (
+                'SYSTEM_LIQUIDATION', 'BOT_FALLBACK_CLOSE', 'NATIVE_SL', 'PROVIDER_EXIT'
+            )),
+            quantity NUMERIC NOT NULL CHECK (quantity > 0),
+            price NUMERIC NOT NULL CHECK (price > 0),
+            fee NUMERIC NOT NULL DEFAULT 0 CHECK (fee >= 0),
+            realized_pnl NUMERIC NOT NULL DEFAULT 0,
+            state TEXT NOT NULL CHECK (state IN ('reconciled', 'unknown')),
+            observed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (exchange, provider_fill_id),
+            FOREIGN KEY (exchange, client_order_id)
+                REFERENCES live_order_intents (exchange, client_order_id)
+        );
+        CREATE INDEX IF NOT EXISTS provider_reconciliation_events_symbol_time
+        ON provider_reconciliation_events (exchange, symbol, created_at);
+        """,
+    ),
+    (
+        13,
+        """
+        ALTER TABLE telegram_messages ADD COLUMN has_media BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE telegram_messages ADD COLUMN media_path TEXT;
+        ALTER TABLE telegram_messages ADD COLUMN media_sha256 CHAR(64);
+        ALTER TABLE telegram_messages ADD COLUMN media_mime_type TEXT;
+        ALTER TABLE telegram_messages ADD COLUMN media_size_bytes INTEGER;
+        """,
+    ),
+    (
+        14,
+        """
+        ALTER TABLE live_order_intents ADD COLUMN planned_margin_usdt NUMERIC;
+        ALTER TABLE live_order_intents ADD COLUMN planned_notional_usdt NUMERIC;
+        ALTER TABLE live_order_intents ADD COLUMN balance_snapshot_id UUID;
+        ALTER TABLE live_order_intents ADD COLUMN margin_reservation_id UUID;
+        CREATE TABLE IF NOT EXISTS bitget_margin_reservations (
+            id UUID PRIMARY KEY,
+            exchange TEXT NOT NULL CHECK (exchange = 'bitget'),
+            dispatch_id UUID NOT NULL REFERENCES dispatches(id),
+            client_order_id TEXT NOT NULL,
+            balance_snapshot_id UUID NOT NULL REFERENCES balance_snapshots(id),
+            planned_margin_usdt NUMERIC NOT NULL CHECK (planned_margin_usdt > 0),
+            state TEXT NOT NULL CHECK (state IN ('reserved', 'consumed', 'released', 'unknown')),
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMPTZ,
+            resolution_reason TEXT,
+            UNIQUE (exchange, client_order_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS bitget_margin_reservations_active_dispatch
+        ON bitget_margin_reservations (exchange, dispatch_id)
+        WHERE state IN ('reserved', 'unknown');
+        CREATE INDEX IF NOT EXISTS bitget_margin_reservations_expiry
+        ON bitget_margin_reservations (exchange, state, expires_at);
+        """,
+    ),
+    (
+        15,
+        (
+            "\n"
+            "        CREATE TABLE IF NOT EXISTS bitget_post_fill_reconciliations (\n"
+            "            id UUID PRIMARY KEY,\n"
+            "            exchange TEXT NOT NULL CHECK (exchange = 'bitget'), "
+            "client_order_id TEXT NOT NULL,\n"
+            "            planned_leverage NUMERIC NOT NULL, planned_margin_usdt "
+            "NUMERIC NOT NULL,\n"
+            "            planned_notional_usdt NUMERIC, observed_leverage NUMERIC, "
+            "observed_margin_mode TEXT,\n"
+            "            observed_quantity NUMERIC, observed_entry_price NUMERIC, "
+            "observed_mark_price NUMERIC,\n"
+            "            observed_margin_usdt NUMERIC, status TEXT NOT NULL CHECK "
+            "(status IN ('matched','within_tolerance','mismatch','unavailable')),\n"
+            "            reason TEXT, observed_at TIMESTAMPTZ NOT NULL, created_at "
+            "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP\n"
+            "        );\n"
+            "        CREATE INDEX IF NOT EXISTS bitget_post_fill_reconciliations_la"
+            "test\n"
+            "        ON bitget_post_fill_reconciliations (exchange, created_at "
+            "DESC);\n"
+            "        "
+        ),
+    ),
+    # Migration 16 (later removed) pinned the Bitget kill switch to alert-only with
+    # a CHECK constraint. It is deliberately absent from MIGRATIONS: on a database
+    # that still holds an ``active = TRUE`` bitget row it would abort the whole
+    # migrate transaction (a CHECK validates existing rows), and fresh installs
+    # should never create a constraint that makes ``latch_kill_switch()`` impossible.
+    # Migration 17 removes it from databases where it was already applied.
+    (
+        17,
+        """
+        ALTER TABLE venue_kill_switches
+        DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only;
+        """,
+    ),
+    (
+        18,
+        PAPER_KAKA_SCHEMA_SQL,
+    ),
+    (19, DURABLE_ADMISSION_SCHEMA_SQL),
+    (20, ADMISSION_CONSTRAINTS_SCHEMA_SQL),
+    (21, INTAKE_COVERAGE_SCHEMA_SQL),
+    (22, FALLBACK_OWNERSHIP_SCHEMA_SQL),
+    (23, VERIFIED_CLOSE_SCHEMA_SQL),
 ]
-
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
 # Anything else is re-raised so real failures stay loud.
@@ -172,7 +359,14 @@ def _iter_statements(sql: str) -> list[str]:
 
 
 def _is_idempotent_error(exc: Exception) -> bool:
+    # A data uniqueness violation is NOT duplicate DDL. Never record a migration
+    # as applied after CREATE UNIQUE INDEX fails on conflicting existing rows.
+    sqlstate = getattr(exc, "sqlstate", None)
+    if sqlstate is not None:
+        return sqlstate in {"42710", "42P07", "42701"}
     message = str(exc).lower()
+    if "duplicate key" in message or "unique constraint" in message:
+        return False
     return any(marker in message for marker in _IDEMPOTENT_ERROR_MARKERS)
 
 
@@ -204,12 +398,47 @@ def apply_migrations(cursor: MigrationCursor) -> list[int]:
     for version, sql in MIGRATIONS:
         if version in applied:
             continue
+        if version == 20:
+            # Audit under exclusive locks BEFORE adding financial constraints.
+            # Existing invalid evidence aborts migration; never rewrite live rows.
+            cursor.execute("""LOCK TABLE live_order_intents, bitget_margin_reservations,
+                bitget_post_fill_reconciliations, balance_snapshots IN ACCESS EXCLUSIVE MODE""")
+            for table, columns in (
+                ("live_order_intents", ("planned_margin_usdt", "planned_notional_usdt")),
+                ("bitget_margin_reservations", ("planned_margin_usdt",)),
+                (
+                    "bitget_post_fill_reconciliations",
+                    ("planned_margin_usdt", "planned_notional_usdt", "planned_leverage"),
+                ),
+            ):
+                invalid = " OR ".join(
+                    f"""({(column)} IS NOT NULL AND NOT ({(column)} > 0 AND {
+                        (column)
+                    } < 'Infinity'::numeric))"""
+                    for column in columns
+                )
+                cursor.execute(f"SELECT count(*) FROM {table} WHERE {invalid}")
+                row: Any = cursor.fetchall()[0]
+                count = next(iter(row.values())) if isinstance(row, dict) else row[0]
+                if count:
+                    raise ValueError(
+                        f"""admission migration preflight: {(table)} has {
+                            (count)
+                        } invalid planned-amount rows"""
+                    )
         for statement in _iter_statements(sql):
+            # PostgreSQL marks the whole transaction failed after duplicate DDL.
+            # Contain tolerated replays in a savepoint so subsequent statements and
+            # migration bookkeeping still execute in the outer transaction.
+            cursor.execute("SAVEPOINT fatty_migration_statement")
             try:
                 cursor.execute(statement)
             except Exception as exc:
+                cursor.execute("ROLLBACK TO SAVEPOINT fatty_migration_statement")
                 if not _is_idempotent_error(exc):
                     raise
+            finally:
+                cursor.execute("RELEASE SAVEPOINT fatty_migration_statement")
         cursor.execute(f"INSERT INTO schema_migrations (version) VALUES ({version})")
         newly_applied.append(version)
     return newly_applied

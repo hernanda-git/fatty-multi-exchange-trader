@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from fatty_trader.exchanges.bitget.live import LiveIntentRecord
+from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore, LiveIntentRecord
 from fatty_trader.execution.bitget_monitor import BitgetMonitor
 from fatty_trader.storage.reconciliation import InMemoryReconciliationRepository
 
@@ -40,7 +40,7 @@ class ReadOnlyVenue:
         self.calls.append("get_order_detail")
         return self.details[client_oid]
 
-    async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+    async def get_fills(self, symbol: str | None = None) -> list[dict[str, str]]:
         self.calls.append("get_fills")
         return self.fills
 
@@ -118,6 +118,53 @@ async def test_demo_monitor_reports_but_never_latches_kill_switch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_persisted_post_fill_mismatch_latches_and_blocks_entries() -> None:
+    """A durable mismatch must latch: the recording adapter cannot block a restart."""
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.status == "kill-switch-latched"
+    assert report.reasons == ("post-fill-margin-or-leverage-mismatch",)
+    assert repository.kill_switch_active("bitget") is True
+    assert repository.alerts == ["post-fill-margin-or-leverage-mismatch"]
+
+
+@pytest.mark.asyncio
+async def test_post_fill_mismatch_is_alert_only_when_enforcement_is_off() -> None:
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+
+    report = await BitgetMonitor(venue, repository, enforce_kill_switch=False).run_once()
+
+    assert report.status == "degraded"
+    assert repository.kill_switch_active("bitget") is False
+
+
+@pytest.mark.asyncio
+async def test_release_clears_an_old_mismatch_but_a_new_one_relatches() -> None:
+    """A released switch must be releasable: only mismatches after it re-latch."""
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+    first = await BitgetMonitor(venue, repository).run_once()
+    assert first.status == "kill-switch-latched"
+
+    repository.release_kill_switch("bitget", "operator-approved-release")
+    released = await BitgetMonitor(venue, repository).run_once()
+    assert released.status == "ok"
+    assert repository.kill_switch_active("bitget") is False
+
+    repository.record_post_fill_mismatch()
+    again = await BitgetMonitor(venue, repository).run_once()
+    assert again.status == "kill-switch-latched"
+    assert repository.kill_switch_active("bitget") is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("positions", "orders", "plans", "clock_skew_ms", "reason"),
     [
@@ -158,6 +205,20 @@ async def test_unsafe_provider_read_latches_kill_switch_and_deduplicates_alert(
 
 
 @pytest.mark.asyncio
+async def test_missing_protection_is_alert_only_without_fallback_mutations() -> None:
+    venue = ReadOnlyVenue(
+        positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}]
+    )
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.status == "degraded"
+    assert report.reasons == ("missing-stop-loss",)
+    assert repository.kill_switch_active("bitget") is False
+
+
+@pytest.mark.asyncio
 async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,8 +230,9 @@ async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
     repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
     fallback_calls: list[str] = []
 
-    async def run_fallback(client: object) -> list[dict[str, str]]:
+    async def run_fallback(client: object, *, environment=None) -> list[dict[str, str]]:
         del client
+        assert environment is None
         fallback_calls.append("called")
         return []
 
@@ -204,3 +266,38 @@ async def test_unexpected_position_is_latched_even_when_native_protection_exists
 
     assert report.status == "kill-switch-latched"
     assert report.reasons == ("unexpected-position:BTCUSDT",)
+
+
+@pytest.mark.asyncio
+async def test_system_liquidation_fill_is_reconciled_without_global_switch() -> None:
+    venue = ReadOnlyVenue(
+        fills=[
+            {
+                "symbol": "WLDUSDT",
+                "side": "sell",
+                "ordId": "provider-order-1",
+                "tradeId": "provider-fill-1",
+                "fillSz": "91",
+                "fillPx": "0.3841",
+                "fillFee": "-0.02097366",
+                "profit": "-1.17999853",
+                "enterPointSource": "SYS",
+                "tradeSide": "burst_sell_single",
+            }
+        ]
+    )
+    reconciliation = InMemoryReconciliationRepository()
+    intents = InMemoryLiveIntentStore()
+
+    report = await BitgetMonitor(
+        venue,
+        reconciliation,
+        live_intent_store=intents,
+        enforce_kill_switch=False,
+    ).run_once()
+
+    assert report.status == "ok"
+    assert report.provider_exits_reconciled == 1
+    assert reconciliation.kill_switch_active("bitget") is False
+    assert len(intents.fills) == 1
+    assert intents.provider_events[0]["source"] == "SYSTEM_LIQUIDATION"

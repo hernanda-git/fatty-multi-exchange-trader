@@ -229,22 +229,20 @@ async def test_place_position_tpsl_uses_mark_price_triggers() -> None:
         assert request.url.path == "/api/v2/mix/order/place-pos-tpsl"
         body = json.loads(request.content.decode())
         assert body == {
-            "delegateType": "normal",
-            "holdSide": "long",
+            "holdSide": "buy",
             "marginCoin": "USDT",
             "productType": "USDT-FUTURES",
-            "size": "0.001",
             "stopLossClientOid": "sl-1",
-            "stopLossExecutePrice": "50000",
+            "stopLossExecutePrice": "0",
             "stopLossTriggerPrice": "50010",
             "stopLossTriggerType": "mark_price",
             "stopSurplusClientOid": "tp-1",
-            "stopSurplusExecutePrice": "51000",
+            "stopSurplusExecutePrice": "0",
             "stopSurplusTriggerPrice": "50990",
             "stopSurplusTriggerType": "mark_price",
             "symbol": "BTCUSDT",
         }
-        return httpx.Response(200, json=ok_envelope({"orderId": "plan-1"}))
+        return httpx.Response(200, json=ok_envelope([{"orderId": "plan-1"}]))
 
     client, _ = make_client(handler)
     result = await client.place_position_tpsl(
@@ -252,14 +250,112 @@ async def test_place_position_tpsl_uses_mark_price_triggers() -> None:
         hold_side="long",
         quantity="0.001",
         stop_loss="50010",
-        stop_loss_execute_price="50000",
         take_profit="50990",
-        take_profit_execute_price="51000",
         stop_loss_client_oid="sl-1",
         take_profit_client_oid="tp-1",
     )
-    assert result["orderId"] == "plan-1"
+    assert result[0]["orderId"] == "plan-1"
     await client.aclose()
+
+
+@pytest.mark.parametrize("legs", ["sl", "tp", "both"])
+async def test_place_position_tpsl_omission_preserves_other_wire_fields(legs: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/v2/mix/order/place-pos-tpsl"
+        return httpx.Response(200, json=ok_envelope([{"orderId": "offline-plan"}]))
+
+    client, seen = make_client(handler)
+    kwargs = {
+        "symbol": "PUMPUSDT",
+        "hold_side": "long",
+        "quantity": "1880",
+        "stop_loss": "0.005428" if legs != "tp" else None,
+        "take_profit": "0.00712" if legs != "sl" else None,
+        "stop_loss_execute_price": "0",
+        "take_profit_execute_price": "0",
+        "stop_loss_client_oid": "entry-pump-sl",
+        "take_profit_client_oid": "entry-pump-tp",
+        "stop_loss_size": "940" if legs != "tp" else None,
+        "take_profit_size": "940" if legs != "sl" else None,
+        "include_delegate_type": True,
+        "product_type": "USDT-FUTURES",
+        "margin_coin": "USDT",
+    }
+    try:
+        default_result = await client.place_position_tpsl(**kwargs)
+        result = await client.place_position_tpsl(**kwargs, omit_market_execute_prices=True)
+        assert result == default_result == [{"orderId": "offline-plan"}]
+        assert len(seen) == 2
+        default = json.loads(seen[0].content)
+        omitted = json.loads(seen[1].content)
+        assert omitted == {
+            key: value
+            for key, value in default.items()
+            if key not in {"stopLossExecutePrice", "stopSurplusExecutePrice"}
+        }
+        assert "omit_market_execute_prices" not in omitted
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("omit", [False, True])
+@pytest.mark.parametrize("leg", ["stop_loss", "take_profit"])
+@pytest.mark.parametrize("price", ["0.005428", "-1", "NaN", "Infinity", "bad"])
+async def test_tpsl_invalid_execute_price_rejected_before_post(
+    omit: bool,
+    leg: str,
+    price: str,
+) -> None:
+    from fatty_trader.exchanges.bitget.protection_contract import ProtectionContractError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pytest.fail("Invalid execute price must never reach HTTP transport")
+
+    client, seen = make_client(handler)
+    try:
+        with pytest.raises(ProtectionContractError, match="market execution"):
+            await client.place_position_tpsl(
+                symbol="PUMPUSDT",
+                hold_side="long",
+                quantity="1880",
+                stop_loss="0.005428",
+                take_profit="0.00712",
+                stop_loss_execute_price=price if leg == "stop_loss" else None,
+                take_profit_execute_price=price if leg == "take_profit" else None,
+                omit_market_execute_prices=omit,
+            )
+        assert seen == []
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("omit", [False, True])
+async def test_tpsl_43011_is_not_automatically_retried(omit: bool) -> None:
+    # Exact provider message supplied by the incident context; not a live call.
+    message = "presetSLExcutePrice must than 0"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"code": "43011", "msg": message})
+
+    client, seen = make_client(handler)
+    try:
+        with pytest.raises(BitgetApiError) as error:
+            await client.place_position_tpsl(
+                symbol="PUMPUSDT",
+                hold_side="long",
+                quantity="1880",
+                stop_loss="0.005428",
+                take_profit="0.00712",
+                stop_loss_client_oid="entry-pump-sl",
+                take_profit_client_oid="entry-pump-tp",
+                omit_market_execute_prices=omit,
+            )
+        assert error.value.code == "43011"
+        assert error.value.provider_msg == message
+        assert len(seen) == 1
+    finally:
+        await client.aclose()
 
 
 async def test_place_position_tpsl_allows_only_stop_loss() -> None:
@@ -268,13 +364,13 @@ async def test_place_position_tpsl_allows_only_stop_loss() -> None:
         body = json.loads(request.content.decode())
         assert body["stopLossTriggerPrice"] == "50010"
         assert "stopSurplusTriggerPrice" not in body
-        return httpx.Response(200, json=ok_envelope({"orderId": "plan-sl-1"}))
+        return httpx.Response(200, json=ok_envelope([{"orderId": "plan-sl-1"}]))
 
     client, _ = make_client(handler)
     result = await client.place_position_tpsl(
         symbol="BTCUSDT", hold_side="long", quantity="0.001", stop_loss="50010"
     )
-    assert result["orderId"] == "plan-sl-1"
+    assert result[0]["orderId"] == "plan-sl-1"
     await client.aclose()
 
 
@@ -391,10 +487,11 @@ async def test_pending_plan_orders_is_symbol_aware() -> None:
         assert request.url.path == "/api/v2/mix/order/orders-plan-pending"
         assert request.url.params["symbol"] == "BTCUSDT"
         assert request.url.params["productType"] == "USDT-FUTURES"
+        assert request.url.params["planType"] == "profit_loss"
         return httpx.Response(200, json=ok_envelope({"entrustedList": []}))
 
     client, _ = make_client(handler)
-    assert await client.get_pending_plan_orders("BTCUSDT") == {"entrustedList": []}
+    assert await client.get_pending_plan_orders("BTCUSDT") == []
     await client.aclose()
 
 

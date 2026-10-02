@@ -50,7 +50,7 @@ def _account_fields(value: Any) -> dict[str, Any]:
     }
 
 
-async def _run() -> int:
+async def _run(symbol="BTCUSDT") -> int:
     required = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE")
     if any(not os.environ.get(key, "").strip() for key in required):
         print(json.dumps({"status": "BLOCKED", "reason": "missing-credentials"}))
@@ -67,7 +67,7 @@ async def _run() -> int:
     )
     try:
         account, positions, orders, fills = await asyncio.gather(
-            client.get_account(),
+            client.get_account(symbol=symbol),
             client.get_all_positions(),
             client.get_pending_orders(),
             client.get_fills(),

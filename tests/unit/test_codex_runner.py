@@ -61,8 +61,15 @@ def test_runner_uses_literal_codex_exec_argv_without_a_shell() -> None:
         (
             [
                 "codex",
+                "--ask-for-approval",
+                "never",
                 "exec",
+                "--sandbox",
+                "read-only",
                 "--skip-git-repo-check",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--ephemeral",
                 "--model",
                 "gpt-5.6-luna",
                 "-c",
@@ -74,6 +81,9 @@ def test_runner_uses_literal_codex_exec_argv_without_a_shell() -> None:
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
                 "shell": False,
+                "env": calls[0][1]["env"],
+                "cwd": calls[0][1]["cwd"],
+                "start_new_session": True,
             },
         )
     ]

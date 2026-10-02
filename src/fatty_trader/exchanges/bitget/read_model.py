@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
@@ -17,6 +18,10 @@ class BitgetReadClient(Protocol):
 @dataclass(frozen=True)
 class BitgetAccountState:
     available: Decimal
+    total_balance: Decimal
+    equity: Decimal
+    margin_coin: str
+    observed_at: datetime
     margin_mode: str
     position_mode: str
     long_leverage: Decimal
@@ -33,6 +38,8 @@ class BitgetPositionState:
     leverage: Decimal
     stop_loss_id: str | None
     take_profit_id: str | None
+    mark_price: Decimal | None = None
+    margin_usdt: Decimal | None = None
 
 
 def _required_decimal(payload: dict[str, Any], field: str) -> Decimal:
@@ -43,6 +50,20 @@ def _required_decimal(payload: dict[str, Any], field: str) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise BitgetReadModelError(f"Bitget response has invalid decimal field: {field}") from exc
+
+
+def _optional_decimal(payload: dict[str, Any], *fields: str) -> Decimal | None:
+    for field in fields:
+        value = payload.get(field)
+        if value is None or str(value).strip() == "":
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if parsed.is_finite() and parsed >= 0:
+            return parsed
+    return None
 
 
 def _required_text(payload: dict[str, Any], field: str) -> str:
@@ -67,6 +88,10 @@ async def read_account_state(client: BitgetReadClient, symbol: str) -> BitgetAcc
         raise BitgetReadModelError("Bitget account response must be an object")
     return BitgetAccountState(
         available=_required_decimal(payload, "available"),
+        total_balance=_required_decimal(payload, "usdtEquity"),
+        equity=_required_decimal(payload, "accountEquity"),
+        margin_coin=_required_text(payload, "marginCoin").upper(),
+        observed_at=datetime.now(UTC),
         margin_mode=_required_text(payload, "marginMode").lower(),
         position_mode=_required_text(payload, "posMode"),
         long_leverage=_required_decimal(payload, "isolatedLongLever"),
@@ -91,6 +116,9 @@ async def read_position_state(client: BitgetReadClient, symbol: str) -> BitgetPo
         entry_price=_required_decimal(row, "openPriceAvg"),
         margin_mode=_required_text(row, "marginMode").lower(),
         leverage=_required_decimal(row, "leverage"),
+        mark_price=_optional_decimal(row, "markPrice"),
+        # Provider margin is optional: never infer it from notional/leverage.
+        margin_usdt=_optional_decimal(row, "marginSize", "margin"),
         stop_loss_id=str(row["stopLossId"]) if row.get("stopLossId") else None,
         take_profit_id=str(row["takeProfitId"]) if row.get("takeProfitId") else None,
     )

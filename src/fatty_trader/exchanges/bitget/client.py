@@ -12,6 +12,12 @@ from urllib.parse import urlencode
 
 import httpx
 
+from fatty_trader.exchanges.bitget.protection_contract import (
+    build_position_tpsl_payload,
+    normalize_pending_plan_response,
+    normalize_position_tpsl_response,
+)
+
 BASE_URL = "https://api.bitget.com"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_GET_RETRIES = 2
@@ -117,6 +123,11 @@ class BitgetRestClient:
     def timeout(self) -> float:
         return self._timeout
 
+    @property
+    def environment(self) -> str:
+        """Environment used by this authenticated client's signed requests."""
+        return self._mode
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -175,12 +186,23 @@ class BitgetRestClient:
             if response.status_code >= 500 and retryable and attempt < attempts - 1:
                 last_error = None
                 continue
+            if response.status_code >= 500 and not retryable:
+                raise BitgetUnknownResultError(
+                    f"Bitget POST {path} result unknown: HTTP {response.status_code}"
+                )
             if response.status_code >= 400:
                 try:
                     error_payload = response.json()
                 except ValueError:
                     error_payload = None
                 if isinstance(error_payload, dict):
+                    raw_code = error_payload.get("code")
+                    if not retryable and (
+                        not isinstance(raw_code, str) or not raw_code or raw_code == "00000"
+                    ):
+                        raise BitgetUnknownResultError(
+                            f"Bitget POST {path} result unknown: untrustworthy error envelope"
+                        )
                     code = str(error_payload.get("code", ""))
                     msg = str(error_payload.get("msg", ""))
                     if code or msg:
@@ -190,11 +212,27 @@ class BitgetRestClient:
                             code=code,
                             provider_msg=msg,
                         )
+                if not retryable:
+                    raise BitgetUnknownResultError(
+                        f"Bitget POST {path} result unknown: invalid error acknowledgement"
+                    )
                 raise BitgetApiError(f"Bitget {method.upper()} {path} HTTP {response.status_code}")
             try:
                 envelope = response.json()
             except ValueError as exc:
+                if not retryable:
+                    raise BitgetUnknownResultError(
+                        f"Bitget POST {path} result unknown: invalid JSON acknowledgement"
+                    ) from None
                 raise BitgetApiError(f"Bitget {path} invalid JSON") from exc
+            if not retryable and (
+                not isinstance(envelope, dict)
+                or not isinstance(envelope.get("code"), str)
+                or not envelope["code"]
+            ):
+                raise BitgetUnknownResultError(
+                    f"Bitget POST {path} result unknown: malformed acknowledgement"
+                )
             return _envelope_data(envelope)
         raise BitgetApiError(f"Bitget GET {path} transport failure") from last_error
 
@@ -234,6 +272,18 @@ class BitgetRestClient:
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> Any:
         return await self._get("/api/v2/mix/market/contracts", {"productType": product_type})
+
+    async def get_position_lever(
+        self,
+        symbol: str,
+        product_type: str = "USDT-FUTURES",
+    ) -> Any:
+        """Return maintenance-margin (keepMarginRate) tiers for ``symbol``."""
+        payload = await self._get(
+            "/api/v2/mix/market/query-position-lever",
+            {"productType": product_type, "symbol": symbol},
+        )
+        return payload.get("data") if isinstance(payload, dict) else payload
 
     async def get_account_bills(
         self,
@@ -352,12 +402,25 @@ class BitgetRestClient:
         symbol: str,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
-    ) -> Any:
+        order_id: str | None = None,
+        client_oid: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Read pending native TP/SL plans for exactly one symbol."""
-        return await self._get(
+        params: dict[str, Any] = {
+            "symbol": symbol.upper(),
+            "productType": product_type,
+            "marginCoin": margin_coin,
+            "planType": "profit_loss",
+        }
+        if order_id is not None:
+            params["orderId"] = order_id
+        if client_oid is not None:
+            params["clientOid"] = client_oid
+        data = await self._get(
             "/api/v2/mix/order/orders-plan-pending",
-            {"symbol": symbol, "productType": product_type, "marginCoin": margin_coin},
+            params,
         )
+        return normalize_pending_plan_response(data)
 
     async def get_order_detail(
         self,
@@ -497,42 +560,37 @@ class BitgetRestClient:
         take_profit_execute_price: str | None = None,
         stop_loss_client_oid: str | None = None,
         take_profit_client_oid: str | None = None,
+        stop_loss_size: str | None = None,
+        take_profit_size: str | None = None,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
-    ) -> dict[str, Any]:
-        """Place venue-native mark-price SL/TP for the confirmed position size."""
-        if hold_side not in {"long", "short"}:
-            raise ValueError("Bitget hold side must be long or short")
-        payload: dict[str, str] = {
-            "symbol": symbol.upper(),
-            "productType": product_type,
-            "marginCoin": margin_coin,
-            "size": quantity,
-            "holdSide": hold_side,
-            "delegateType": "normal",
-        }
-        if stop_loss is not None:
-            payload.update(
-                {
-                    "stopLossTriggerPrice": stop_loss,
-                    "stopLossTriggerType": "mark_price",
-                    "stopLossExecutePrice": stop_loss_execute_price or stop_loss,
-                    "stopLossClientOid": stop_loss_client_oid or f"sl-{int(time.time() * 1000)}",
-                }
-            )
-        if take_profit is not None:
-            payload.update(
-                {
-                    "stopSurplusTriggerPrice": take_profit,
-                    "stopSurplusTriggerType": "mark_price",
-                    "stopSurplusExecutePrice": take_profit_execute_price or take_profit,
-                    "stopSurplusClientOid": take_profit_client_oid
-                    or f"tp-{int(time.time() * 1000)}",
-                }
-            )
-        if stop_loss is None and take_profit is None:
-            raise ValueError("at least one of stop_loss or take_profit is required")
+        include_delegate_type: bool = False,
+        omit_market_execute_prices: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Place venue-native mark-price SL/TP for the confirmed position size.
+
+        ``omit_market_execute_prices=True`` opts into documented market execution
+        by omission instead of the default explicit ``0`` fields. Execute-price
+        validation still rejects limit prices before POST; this flag does not
+        enable any automatic retry or change trigger types or client OIDs.
+        See ``build_position_tpsl_payload`` for the official contract reference.
+        """
+        payload = build_position_tpsl_payload(
+            symbol=symbol,
+            hold_side=hold_side,
+            quantity=quantity,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            stop_loss_execute_price=stop_loss_execute_price,
+            take_profit_execute_price=take_profit_execute_price,
+            stop_loss_client_oid=stop_loss_client_oid,
+            take_profit_client_oid=take_profit_client_oid,
+            stop_loss_size=stop_loss_size,
+            take_profit_size=take_profit_size,
+            product_type=product_type,
+            margin_coin=margin_coin,
+            include_delegate_type=include_delegate_type,
+            omit_market_execute_prices=omit_market_execute_prices,
+        )
         data = await self._post("/api/v2/mix/order/place-pos-tpsl", payload)
-        if not isinstance(data, dict):
-            raise BitgetApiError("Bitget protection response is invalid")
-        return data
+        return normalize_position_tpsl_response(data)

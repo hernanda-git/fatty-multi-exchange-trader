@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -16,13 +18,24 @@ from fatty_trader.exchanges.bitget.live import (
     normalize_fill,
     summarize_fills,
 )
-from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
-from fatty_trader.exchanges.bitget.validation import validate_order
+from fatty_trader.exchanges.bitget.protection_capability import (
+    BitgetProtectionCapability,
+    NativeProtectionState,
+    StreamState,
+)
+from fatty_trader.exchanges.bitget.read_model import read_position_state
+from fatty_trader.exchanges.bitget.reconciliation import classify_missing_detail
+from fatty_trader.exchanges.bitget.reconciliation_live import (
+    NativeProtectionExpectation,
+    confirm_native_protection,
+)
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionReport, ProtectionState
 from fatty_trader.storage.live_intents import build_emergency_close_intent
 
 
 class AsyncBitgetExecutionClient(Protocol):
+    async def get_account(self, symbol: str) -> Any: ...
+
     async def place_entry_order(
         self, *, symbol: str, side: str, quantity: str, client_oid: str
     ) -> dict[str, Any]: ...
@@ -33,6 +46,8 @@ class AsyncBitgetExecutionClient(Protocol):
 
     async def get_single_position(self, symbol: str) -> Any: ...
 
+    async def get_pending_orders(self, symbol: str) -> Any: ...
+
     async def get_pending_plan_orders(self, symbol: str) -> Any: ...
 
     async def place_position_tpsl(
@@ -41,19 +56,28 @@ class AsyncBitgetExecutionClient(Protocol):
         symbol: str,
         hold_side: str,
         quantity: str,
-        stop_loss: str,
-        stop_loss_execute_price: str,
-        take_profit: str,
-        take_profit_execute_price: str,
-        stop_loss_client_oid: str,
-        take_profit_client_oid: str,
-    ) -> dict[str, Any]: ...
+        stop_loss: str | None,
+        stop_loss_execute_price: str | None,
+        take_profit: str | None,
+        take_profit_execute_price: str | None,
+        stop_loss_client_oid: str | None,
+        take_profit_client_oid: str | None,
+        omit_market_execute_prices: bool = False,
+    ) -> list[dict[str, Any]]: ...
 
     async def place_market_close(
         self, *, symbol: str, side: str, quantity: str, client_oid: str
     ) -> dict[str, Any]: ...
 
     async def aclose(self) -> None: ...
+
+
+class BitgetEntryVeto(RuntimeError):
+    """A winning durable claim was refused before any ENTRY POST began."""
+
+    def __init__(self, outcome: str) -> None:
+        super().__init__(outcome)
+        self.outcome = outcome
 
 
 @dataclass(frozen=True)
@@ -74,6 +98,27 @@ class AsyncProtectionResult:
     observed_quantity: Decimal
     reason: str | None = None
     emergency_close_oid: str | None = None
+
+
+@dataclass(frozen=True)
+class PostFillReconciliation:
+    """Append-only comparison of durable admission against provider position truth."""
+
+    exchange: str
+    client_order_id: str
+    symbol: str
+    planned_leverage: int
+    planned_margin_usdt: Decimal
+    planned_notional_usdt: Decimal | None
+    observed_leverage: Decimal | None
+    observed_margin_mode: str | None
+    observed_quantity: Decimal | None
+    observed_entry_price: Decimal | None
+    observed_mark_price: Decimal | None
+    observed_margin_usdt: Decimal | None
+    status: str
+    reason: str | None
+    observed_at: datetime
 
 
 def _matching_fills(
@@ -105,13 +150,50 @@ def _detail_decimal(detail: dict[str, Any], *keys: str) -> Decimal | None:
     return None
 
 
+def _placement_plan_id(placement: list[dict[str, Any]], *, client_oid: str, leg: str) -> str | None:
+    """Find the provider plan ID paired with one leg's returned client OID."""
+    oid_field = f"{leg}ClientOid"
+    for row in placement:
+        returned_oid = row.get(oid_field, row.get("clientOid"))
+        provider_id = row.get("orderId", row.get("planOrderId"))
+        if (
+            returned_oid is not None
+            and str(returned_oid) == client_oid
+            and provider_id is not None
+            and str(provider_id).strip()
+        ):
+            return str(provider_id).strip()
+    return None
+
+
 class AsyncBitgetExecution:
     """Production async execution adapter; POST is followed only by read-back GETs."""
 
-    def __init__(self, client: AsyncBitgetExecutionClient, venue: AsyncBitgetVenue) -> None:
+    def __init__(
+        self,
+        client: AsyncBitgetExecutionClient,
+        venue: AsyncBitgetVenue,
+        *,
+        capability_repository: Any | None = None,
+        reconciliation_repository: Any | None = None,
+        entry_admission_latch: Any | None = None,
+        fallback_protection_enabled: bool = False,
+        environment: str = "DEMO",
+    ) -> None:
         self._client = client
         self._venue = venue
         self._degraded = False
+        self._capability_repository = capability_repository
+        self._reconciliation_repository = reconciliation_repository
+        self._entry_admission_latch = entry_admission_latch
+        # Bot-managed TP/SL is only real protection when the monitor that would
+        # execute it is actually allowed to mutate. Registering a fallback row for
+        # a symbol that rejects native SL/TP while that monitor is gated off leaves
+        # the position naked, so the fallback path must fail closed instead.
+        self._fallback_protection_enabled = fallback_protection_enabled
+        self._environment = environment.strip().upper()
+        if self._environment not in {"DEMO", "LIVE"}:
+            raise ValueError("Bitget execution environment must be DEMO or LIVE")
 
     @property
     def degraded(self) -> bool:
@@ -123,16 +205,37 @@ class AsyncBitgetExecution:
         await self._client.aclose()
 
     async def submit_entry(self, intent: LiveIntentRecord) -> AsyncExecutionResult:
+        return await self._submit_entry(intent)
+
+    async def submit_entry_guarded(
+        self, intent: LiveIntentRecord, final_entry_check: Callable[[], None]
+    ) -> AsyncExecutionResult:
+        """Revalidate source and durable admission after awaited provider setup."""
+        return await self._submit_entry(intent, final_entry_check=final_entry_check)
+
+    async def _submit_entry(
+        self, intent: LiveIntentRecord, *, final_entry_check: Callable[[], None] | None = None
+    ) -> AsyncExecutionResult:
         if self._degraded:
             raise RuntimeError("Bitget execution is degraded; additional dispatches are blocked")
-        snapshot = await self._venue.preflight(intent.symbol)
-        validate_order(
-            intent.symbol,
-            intent.side,
-            snapshot.current_price,
-            intent.requested_qty,
-            snapshot.metadata,
-        )
+        if intent.role == "ENTRY" and (
+            intent.planned_leverage is None
+            or intent.margin_mode != "ISOLATED"
+            or intent.planned_margin_usdt is None
+            or intent.balance_snapshot_id is None
+            or intent.margin_reservation_id is None
+        ):
+            raise ValueError("Bitget entry lacks durable isolated-margin admission evidence")
+        # The dispatcher has already validated quantity against the single fresh
+        # admission snapshot. Do not perform a second account/balance preflight here:
+        # it would re-open the TOCTOU window after durable reservation.
+        if intent.role == "ENTRY":
+            planned_leverage = intent.planned_leverage
+            assert planned_leverage is not None
+            await self._venue.ensure_leverage(intent.symbol, planned_leverage)
+        if final_entry_check is not None:
+            # No await may intervene between this winning-claim check and POST.
+            final_entry_check()
         try:
             submitted = await self._client.place_entry_order(
                 symbol=intent.symbol,
@@ -141,12 +244,111 @@ class AsyncBitgetExecution:
                 client_oid=intent.client_oid,
             )
         except (BitgetUnknownResultError, TimeoutError):
-            return await self.reconcile_intent(intent)
-        return await self.reconcile_intent(intent, submitted)
+            result = await self.reconcile_intent(intent)
+        else:
+            result = await self.reconcile_intent(intent, submitted)
+        await self._reconcile_post_fill(intent, result)
+        return result
+
+    async def reconcile_post_fill(
+        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+    ) -> None:
+        """Apply the same provider observation to GET-only replayed fills."""
+        await self._reconcile_post_fill(intent, result)
+
+    async def _reconcile_post_fill(
+        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+    ) -> None:
+        if (
+            result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}
+            or intent.role != "ENTRY"
+        ):
+            return
+        if intent.planned_leverage is None or intent.planned_margin_usdt is None:
+            return
+        try:
+            position = await read_position_state(self._client, intent.symbol)
+            if position is None:
+                observation = PostFillReconciliation(
+                    intent.exchange,
+                    intent.client_oid,
+                    intent.symbol,
+                    intent.planned_leverage,
+                    intent.planned_margin_usdt,
+                    intent.planned_notional_usdt,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    "unavailable",
+                    "position-unavailable",
+                    datetime.now(UTC),
+                )
+            else:
+                mode = position.margin_mode.upper()
+                if (
+                    position.leverage != Decimal(intent.planned_leverage)
+                    or mode != intent.margin_mode
+                ):
+                    status, reason = "mismatch", "leverage-or-margin-mode-mismatch"
+                elif position.margin_usdt is None:
+                    status, reason = "unavailable", "provider-margin-unavailable"
+                elif position.margin_usdt == intent.planned_margin_usdt:
+                    status, reason = "matched", None
+                elif abs(position.margin_usdt - intent.planned_margin_usdt) <= Decimal("0.01"):
+                    status, reason = "within_tolerance", "margin-rounding-or-fee-tolerance"
+                else:
+                    status, reason = "mismatch", "margin-mismatch"
+                observation = PostFillReconciliation(
+                    intent.exchange,
+                    intent.client_oid,
+                    intent.symbol,
+                    intent.planned_leverage,
+                    intent.planned_margin_usdt,
+                    intent.planned_notional_usdt,
+                    position.leverage,
+                    mode,
+                    position.quantity,
+                    position.entry_price,
+                    position.mark_price,
+                    position.margin_usdt,
+                    status,
+                    reason,
+                    datetime.now(UTC),
+                )
+        except Exception as exc:
+            observation = PostFillReconciliation(
+                intent.exchange,
+                intent.client_oid,
+                intent.symbol,
+                intent.planned_leverage,
+                intent.planned_margin_usdt,
+                intent.planned_notional_usdt,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "unavailable",
+                f"provider-position-read-failed:{type(exc).__name__}",
+                datetime.now(UTC),
+            )
+        record = getattr(self._reconciliation_repository, "record", None)
+        if callable(record):
+            record(observation)
+        if observation.status == "mismatch":
+            self._degraded = True
+            latch = getattr(self._entry_admission_latch, "latch_kill_switch", None)
+            if callable(latch):
+                latch("bitget", "post-fill-margin-or-leverage-mismatch")
 
     async def reconcile_intent(
         self, intent: LiveIntentRecord, submitted: dict[str, Any] | None = None
     ) -> AsyncExecutionResult:
+        detail_not_found = False
         try:
             detail = await self._client.get_order_detail(
                 intent.symbol, client_oid=intent.client_oid
@@ -154,8 +356,35 @@ class AsyncBitgetExecution:
         except BitgetApiError as exc:
             if "40109" in str(exc) or "cannot be found" in str(exc):
                 detail = {}
+                detail_not_found = True
             else:
                 raise
+        if detail_not_found:
+            provider_order_id = (
+                (submitted or {}).get("orderId")
+                or (submitted or {}).get("providerOrderId")
+                or intent.provider_order_id
+            )
+            outcome = await classify_missing_detail(
+                intent,
+                read_fills=self._client.get_fills,
+                read_position=self._client.get_single_position,
+                read_pending_orders=self._client.get_pending_orders,
+                provider_order_id=(
+                    str(provider_order_id) if provider_order_id is not None else None
+                ),
+                missing_order_confirmed=True,
+            )
+            return AsyncExecutionResult(
+                client_oid=intent.client_oid,
+                status=outcome.status,
+                filled_qty=outcome.filled_qty,
+                avg_price=outcome.avg_price,
+                fee=outcome.fee,
+                provider_order_id=outcome.provider_order_id,
+                provider_fill_ids=outcome.provider_fill_ids,
+                provider_fills=outcome.provider_fills,
+            )
         fills = await self._client.get_fills(intent.symbol)
         if isinstance(fills, dict):
             fills = fills.get("fillList", [])
@@ -182,7 +411,11 @@ class AsyncBitgetExecution:
                 status = LiveOrderStatus.PARTIAL
             else:
                 status = (
-                    LiveOrderStatus.ACCEPTED if submitted is not None else LiveOrderStatus.UNKNOWN
+                    LiveOrderStatus.REJECTED
+                    if detail_not_found
+                    else LiveOrderStatus.ACCEPTED
+                    if submitted is not None
+                    else LiveOrderStatus.UNKNOWN
                 )
             return AsyncExecutionResult(
                 client_oid=intent.client_oid,
@@ -238,29 +471,87 @@ class AsyncBitgetExecution:
                 ),
             )
         try:
-            await self._client.place_position_tpsl(
+            stop_loss_client_oid = f"{intent.client_oid}-sl"
+            take_profit = plan.take_profits[0] if plan.take_profits else None
+            take_profit_client_oid = f"{intent.client_oid}-tp" if take_profit is not None else None
+            placement = await self._client.place_position_tpsl(
                 symbol=plan.symbol,
-                hold_side="long" if plan.direction.value == "LONG" else "short",
+                hold_side="buy" if plan.direction.value == "LONG" else "sell",
                 quantity=str(filled_quantity),
                 stop_loss=str(plan.stop_loss),
-                stop_loss_execute_price=str(plan.stop_loss),
-                take_profit=str(plan.take_profits[0]),
-                take_profit_execute_price=str(plan.take_profits[0]),
-                stop_loss_client_oid=f"{intent.client_oid}-sl",
-                take_profit_client_oid=f"{intent.client_oid}-tp",
+                stop_loss_execute_price="0",
+                take_profit=str(take_profit) if take_profit is not None else None,
+                take_profit_execute_price="0" if take_profit is not None else None,
+                stop_loss_client_oid=stop_loss_client_oid,
+                take_profit_client_oid=take_profit_client_oid,
+                omit_market_execute_prices=True,
+            )
+            if not isinstance(placement, list) or not all(
+                isinstance(row, dict) for row in placement
+            ):
+                raise BitgetApiError("Bitget protection placement response is invalid")
+            stop_loss_provider_order_id = _placement_plan_id(
+                placement, client_oid=stop_loss_client_oid, leg="stopLoss"
+            )
+            take_profit_provider_order_id = (
+                _placement_plan_id(placement, client_oid=take_profit_client_oid, leg="stopSurplus")
+                if take_profit_client_oid is not None
+                else None
+            )
+            if stop_loss_provider_order_id is None or (
+                take_profit is not None and take_profit_provider_order_id is None
+            ):
+                raise BitgetApiError("Bitget protection placement IDs are incomplete")
+            expectation = NativeProtectionExpectation(
+                symbol=plan.symbol,
+                hold_side="buy" if plan.direction.value == "LONG" else "sell",
+                quantity=filled_quantity,
+                stop_loss=plan.stop_loss,
+                take_profit=take_profit,
+                stop_loss_client_oid=stop_loss_client_oid,
+                take_profit_client_oid=take_profit_client_oid,
+                stop_loss_provider_order_id=stop_loss_provider_order_id,
+                take_profit_provider_order_id=take_profit_provider_order_id,
             )
             report = await confirm_native_protection(
                 lambda: self._client.get_single_position(plan.symbol),
                 lambda: self._client.get_pending_plan_orders(plan.symbol),
-                expected_quantity=filled_quantity,
+                expectation=expectation,
             )
         except Exception as exc:
-            # Some symbols (e.g. GRASSUSDT) don't support native SL/TP placement (43011).
-            # Register for bot-managed fallback TP/SL monitoring instead of emergency-closing.
-            if "43011" in str(exc):
+            # 43011 alone is parameter validation, not symbol-capability evidence.
+            # Require an explicit unsupported-symbol message before recording UNSUPPORTED.
+            provider_message = str(exc).lower()
+            if (
+                isinstance(exc, BitgetApiError)
+                and "43011" in str(exc)
+                and (
+                    "symbol does not support" in provider_message
+                    or "symbol is not supported" in provider_message
+                )
+            ):
+                self._persist_capability(
+                    plan.symbol,
+                    native_state=NativeProtectionState.UNSUPPORTED,
+                    last_error="native-protection-unsupported",
+                    fallback_allowed=True,
+                )
                 try:
                     from fatty_trader.execution.bitget_fallback_protection import register_fallback
 
+                    if not self._fallback_protection_enabled:
+                        self._persist_capability(
+                            plan.symbol,
+                            native_state=NativeProtectionState.UNSUPPORTED,
+                            last_error="fallback-monitor-mutations-disabled",
+                            fallback_allowed=False,
+                        )
+                        self._degraded = True
+                        return AsyncProtectionResult(
+                            ProtectionState.DEGRADED,
+                            filled_quantity,
+                            "fallback-monitor-mutations-disabled",
+                        )
                     if intent.avg_price is None or intent.avg_price <= 0:
                         self._degraded = True
                         return AsyncProtectionResult(
@@ -268,7 +559,10 @@ class AsyncBitgetExecution:
                             filled_quantity,
                             "fallback-entry-price-unavailable",
                         )
+                    epoch, environment = await self._fallback_identity(intent, plan, store)
                     register_fallback(
+                        provider_position_epoch=epoch,
+                        environment=environment,
                         exchange=intent.exchange,
                         symbol=intent.symbol,
                         direction=plan.direction.value,
@@ -285,19 +579,162 @@ class AsyncBitgetExecution:
                         filled_quantity,
                         "fallback-registration-failed",
                     )
+                # Canonical ownership and persistence are not proof of a healthy,
+                # runtime-verified enforcer. Registration remains observe-only.
                 self._degraded = True
                 return AsyncProtectionResult(
                     ProtectionState.DEGRADED,
                     filled_quantity,
-                    "native-protection-unsupported-fallback-registered",
+                    "native-protection-unsupported-fallback-registered-not-enforcing",
+                )
+            if isinstance(exc, BitgetApiError) and exc.code == "43011":
+                # Parameter rejection requires operator escalation, not a retry,
+                # fallback registration, emergency close, or global kill-switch latch.
+                self._persist_capability(
+                    plan.symbol,
+                    native_state=NativeProtectionState.FAILED,
+                    last_error="native-protection-parameter-rejected",
+                    fallback_allowed=False,
+                )
+                self._degraded = True
+                return AsyncProtectionResult(
+                    ProtectionState.DEGRADED,
+                    filled_quantity,
+                    "native-protection-parameter-rejected",
                 )
             report = ProtectionReport(
                 ProtectionState.FAILED, Decimal("0"), "protection-submit-failed"
             )
         if report.state is ProtectionState.VENUE_PROTECTED:
+            self._persist_capability(
+                plan.symbol,
+                native_state=NativeProtectionState.VERIFIED,
+                last_error=None,
+            )
             return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
+        self._persist_capability(
+            plan.symbol,
+            native_state=NativeProtectionState.FAILED,
+            last_error=report.reason or "native-protection-unconfirmed",
+        )
         self._degraded = True
         return await self._contain(intent, store, report)
+
+    async def _fallback_identity(
+        self, intent: LiveIntentRecord, plan: ProtectionPlan, store: LiveIntentStoreProtocol
+    ) -> tuple[str, str]:
+        """Prove the known entry owns this exact provider position lifetime.
+
+        A quantity/side match alone can adopt a replacement or manual position.
+        Require actual provider fills and the opening fill's exact canonical cTime.
+        Missing or ambiguous evidence leaves the fallback unregistered/degraded.
+        """
+        import re
+
+        environment = getattr(self._client, "environment", None)
+        known = store.get(intent.client_oid)
+        if (
+            environment not in {"DEMO", "LIVE"}
+            or environment != self._environment
+            or known != intent
+            or intent.role != "ENTRY"
+            or intent.state not in {"filled", "partially_filled"}
+            or not intent.provider_order_id
+            or intent.symbol != plan.symbol
+            or intent.side != ("BUY" if plan.direction.value == "LONG" else "SELL")
+        ):
+            raise ValueError("fallback-entry-identity-unproven")
+        rows = await self._client.get_single_position(intent.symbol)
+        if not isinstance(rows, list):
+            raise ValueError("fallback-position-unproven")
+        active = [r for r in rows if Decimal(str(r.get("total", "0"))) > 0]
+        if len(active) != 1:
+            raise ValueError("fallback-position-ambiguous")
+        position = active[0]
+        epoch = position.get("cTime")
+        side = "long" if plan.direction.value == "LONG" else "short"
+        if (
+            not isinstance(epoch, str)
+            or re.fullmatch(r"[1-9][0-9]*", epoch) is None
+            or position.get("symbol") != intent.symbol
+            or position.get("holdSide") != side
+            or Decimal(str(position["total"])) != intent.filled_qty
+        ):
+            raise ValueError("fallback-position-identity-unproven")
+        fills = await self._client.get_fills(intent.symbol)
+        if isinstance(fills, dict):
+            fills = fills.get("fillList")
+        if not isinstance(fills, list):
+            raise ValueError("fallback-fill-evidence-unavailable")
+        owned = [f for f in fills if f.get("orderId") == intent.provider_order_id]
+        if not owned or any(
+            f.get("symbol") != intent.symbol
+            or f.get("clientOid") not in {None, intent.client_oid}
+            or f.get("side") != intent.side.lower()
+            or f.get("tradeSide") != "open"
+            or not f.get("tradeId")
+            or not isinstance(f.get("cTime"), str)
+            or re.fullmatch(r"[1-9][0-9]*", f["cTime"]) is None
+            or Decimal(str(f.get("baseVolume", "0"))) <= 0
+            for f in owned
+        ):
+            raise ValueError("fallback-fill-identity-unproven")
+        ids = [f["tradeId"] for f in owned]
+        if (
+            len(set(ids)) != len(ids)
+            or min(int(f["cTime"]) for f in owned) != int(epoch)
+            or sum((Decimal(str(f["baseVolume"])) for f in owned), Decimal("0"))
+            != intent.filled_qty
+        ):
+            raise ValueError("fallback-entry-position-epoch-mismatch")
+        return epoch, environment
+
+    def _persist_capability(
+        self,
+        symbol: str,
+        *,
+        native_state: NativeProtectionState,
+        last_error: str | None,
+        fallback_allowed: bool | None = None,
+    ) -> None:
+        repository = self._capability_repository
+        if repository is None:
+            return
+        get = getattr(repository, "get", None)
+        upsert = getattr(repository, "upsert", None)
+        if not callable(get) or not callable(upsert):
+            return
+        current: Any = get("bitget", self._environment, symbol)
+        upsert(
+            BitgetProtectionCapability(
+                exchange="bitget",
+                environment=self._environment,
+                symbol=symbol,
+                position_mode=current.position_mode if current is not None else "one_way_mode",
+                margin_mode=current.margin_mode if current is not None else "isolated",
+                native_state=native_state,
+                fallback_allowed=(
+                    fallback_allowed
+                    if fallback_allowed is not None
+                    else current.fallback_allowed
+                    if current is not None
+                    else False
+                ),
+                payload_profile=(
+                    current.payload_profile if current is not None else "classic-v2-position"
+                ),
+                last_verified_at=(
+                    datetime.now(UTC)
+                    if native_state is NativeProtectionState.VERIFIED
+                    else current.last_verified_at
+                    if current is not None
+                    else None
+                ),
+                last_error=last_error,
+                stream_state=current.stream_state if current is not None else StreamState.DISABLED,
+                last_stream_at=current.last_stream_at if current is not None else None,
+            )
+        )
 
     async def _contain(
         self,
@@ -327,12 +764,20 @@ class AsyncBitgetExecution:
                 report.state, report.observed_quantity, "close-quantity-invalid"
             )
         close_intent = build_emergency_close_intent(entry, close_quantity)
-        existing = store.get(close_intent.client_oid)
-        if existing is not None:
-            return AsyncProtectionResult(
-                report.state, report.observed_quantity, report.reason, close_intent.client_oid
-            )
-        store.save(close_intent)
+        claim = getattr(store, "claim", None)
+        if callable(claim):
+            if not claim(close_intent):
+                return AsyncProtectionResult(
+                    report.state, report.observed_quantity, report.reason, close_intent.client_oid
+                )
+        else:
+            # Keep compatibility with legacy test stores, but production stores must expose claim.
+            existing = store.get(close_intent.client_oid)
+            if existing is not None:
+                return AsyncProtectionResult(
+                    report.state, report.observed_quantity, report.reason, close_intent.client_oid
+                )
+            store.save(close_intent)
         try:
             submitted = await self._client.place_market_close(
                 symbol=close_intent.symbol,
@@ -371,19 +816,27 @@ def _open_position_quantity(value: Any) -> Decimal | None:
         value = value.get("data", value.get("positionList", []))
     if isinstance(value, list) and not value:
         return Decimal("0")
-    rows = value if isinstance(value, list) else [value]
+    if not isinstance(value, list):
+        return None
     total = Decimal("0")
     found = False
-    for row in rows:
+    for row in value:
         if not isinstance(row, dict):
             continue
-        raw = row.get("total", row.get("size", row.get("quantity", "0")))
+        raw = next(
+            (row[field] for field in ("total", "size", "quantity") if field in row),
+            None,
+        )
+        if raw is None or str(raw).strip() == "":
+            continue
         try:
-            quantity = abs(Decimal(str(raw or "0")))
+            quantity = Decimal(str(raw))
         except (ArithmeticError, TypeError, ValueError):
             continue
+        if not quantity.is_finite():
+            continue
         found = True
-        total += quantity
+        total += abs(quantity)
     return total if found else None
 
 

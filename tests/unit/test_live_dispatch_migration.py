@@ -2,21 +2,42 @@ from fatty_trader.storage.migrations import MIGRATIONS
 
 
 def test_live_dispatch_migration_persists_take_profits() -> None:
-    matching = [sql for version, sql in MIGRATIONS if version >= 2 and "take_profits" in sql]
+    # Migration 2 owns canonical signal TP preservation; newer schemas may
+    # legitimately persist take_profits on unrelated tables (e.g. fallback).
+    sql = " ".join(dict(MIGRATIONS)[2].split())
+    assert (
+        "ALTER TABLE canonical_signals ADD COLUMN take_profits JSONB NOT NULL DEFAULT '[]'" in sql
+    )
 
-    assert matching
-    assert "canonical_signals" in matching[-1]
 
+def test_kill_switch_migration_keeps_schema_and_leaves_bitget_latchable() -> None:
+    """Bitget must stay latchable: the constraint may only ever be DROPPED.
 
-def test_kill_switch_migration_is_additive_and_persistent() -> None:
-    matching = [(version, sql) for version, sql in MIGRATIONS if "venue_kill_switches" in sql]
+    A CHECK pinning ``scope = 'bitget'`` to ``active = FALSE`` makes
+    ``latch_kill_switch()`` (``active = TRUE``) raise CheckViolation, so an anomaly
+    crashes the LIVE monitor instead of blocking entries. Asserting the constraint
+    exists (as this test once did) asserted the bug.
+    """
+    table_match = next(
+        (version, sql)
+        for version, sql in MIGRATIONS
+        if "CREATE TABLE IF NOT EXISTS venue_kill_switches" in sql
+    )
+    table_version, table_sql = table_match
+    dropping = [
+        (version, sql) for version, sql in MIGRATIONS if "bitget_kill_switch_alert_only" in sql
+    ]
 
-    assert matching
-    version, sql = matching[-1]
-    assert version >= 4
-    assert "venue_kill_switches" in sql
-    assert "CREATE TABLE IF NOT EXISTS" in sql
-    assert "active" in sql
+    assert table_version >= 4
+    assert "active" in table_sql
+    assert dropping, "some migration must remove the alert-only constraint"
+    for _, sql in dropping:
+        assert "DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only" in sql
+        assert "ADD CONSTRAINT bitget_kill_switch_alert_only" not in sql
+        assert "scope <> 'bitget' OR active = FALSE" not in sql
+    final_sql = dict(MIGRATIONS)[17]
+    assert "DROP CONSTRAINT IF EXISTS bitget_kill_switch_alert_only" in final_sql
+    assert "ADD CONSTRAINT" not in final_sql
 
 
 def test_canary_reservations_have_an_additive_durable_schema() -> None:
@@ -27,3 +48,37 @@ def test_canary_reservations_have_an_additive_durable_schema() -> None:
     assert version > 6
     assert "CREATE TABLE IF NOT EXISTS" in sql
     assert "dispatch_id UUID PRIMARY KEY REFERENCES dispatches(id)" in sql
+
+
+def test_bitget_protection_capability_migration_is_additive() -> None:
+    matching = [
+        (version, sql) for version, sql in MIGRATIONS if "bitget_protection_capabilities" in sql
+    ]
+
+    assert matching
+    version, sql = matching[-1]
+    assert version > 10
+    assert "CREATE TABLE IF NOT EXISTS bitget_protection_capabilities" in sql
+    for field in (
+        "environment",
+        "native_state",
+        "fallback_allowed",
+        "payload_profile",
+        "stream_state",
+        "last_stream_at",
+    ):
+        assert field in sql
+
+
+def test_provider_reconciliation_migration_is_additive_and_idempotent() -> None:
+    matching = [
+        (version, sql) for version, sql in MIGRATIONS if "provider_reconciliation_events" in sql
+    ]
+
+    assert matching
+    version, sql = matching[-1]
+    assert version > 11
+    assert "CREATE TABLE IF NOT EXISTS provider_reconciliation_events" in sql
+    assert "provider_fill_id" in sql
+    assert "SYSTEM_LIQUIDATION" in sql
+    assert "UNIQUE (exchange, provider_fill_id)" in sql

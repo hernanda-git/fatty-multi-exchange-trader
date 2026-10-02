@@ -52,7 +52,19 @@ Canary constraints:
 - **Bounded entries**: max 5 live orders.
 - **Smallest permitted notional** (min-order amount × current price × 1.02).
 - **Dynamic symbols**: any provider-listed pair passing metadata preflight.
-- Manual operator mutations remain disabled.
+- Manual operator (Telegram) mutations remain disabled — see the per-service note below.
+
+### Mutation gates are per-service, not global
+
+`BITGET_OPERATOR_MUTATIONS_ENABLED` is read by two different services with two different
+intended values, so a single "disabled" claim is wrong:
+
+| Service | Value | What it gates |
+|---|---|---|
+| `operator-bot` | `0` (`.env`) | Manual `/open`, `/close`, protection commands from Telegram. Closed. |
+| `source-management` | `1` (hard-coded in `docker-compose.yml`) | Automatic copy-trade management from source messages: TP1 booked (reduce-only 50% then SL to entry) and source CLOSE. Intentionally open. |
+
+Anyone auditing "are mutations closed?" must check the service, not just `.env`.
 
 ---
 
@@ -136,4 +148,6 @@ docker compose ps
 | /close SYM / position_id=ID | Close one | no |
 
 All commands require a **private, non-forwarded** chat from the configured operator id.
-Manual operator mutations are currently disabled (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`).
+Manual operator mutations are currently disabled for `operator-bot`
+(`BITGET_OPERATOR_MUTATIONS_ENABLED=0`). The value is per-service: `source-management`
+runs with `=1` on purpose so source TP1/SL/CLOSE actions are applied automatically.

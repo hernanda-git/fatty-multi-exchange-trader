@@ -1,0 +1,15 @@
+{
+  "symbol": "WLDUSDT",
+  "holdSide": "buy",
+  "total": "91",
+  "marginMode": "isolated",
+  "posMode": "one_way_mode",
+  "stopLossId": "native-sl-plan-1",
+  "takeProfitId": "native-tp-plan-1",
+  "stopLossTriggerPrice": "0.388",
+  "stopSurplusTriggerPrice": "0.427",
+  "stopLossTriggerType": "mark_price",
+  "stopSurplusTriggerType": "mark_price",
+  "stopLossExecutePrice": "0",
+  "stopSurplusExecutePrice": "0"
+}

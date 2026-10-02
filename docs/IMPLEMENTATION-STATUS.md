@@ -1,33 +1,66 @@
-# Implementation Status
+# Implementation status
 
-## Implemented and deployed (LIVE 2026-09-08)
+This file describes repository state, not the state of a running provider account.
+A deployment claim requires the post-deploy evidence in
+[`BITGET-PROTECTION-OPERATIONS.md`](BITGET-PROTECTION-OPERATIONS.md).
 
-- DEMO-only Python package and locked development toolchain.
-- Immutable canonical signal geometry validation and durable dispatch transition guard.
-- Decimal minimum-notional sizing with leverage-first escalation, margin caps, headroom, and rounded-exposure recheck.
-- Fail-closed deterministic text fallback and one-signal/two-independent-venue in-memory fan-out model.
-- Exact operator-ID/private-chat authorization, strict manual-trade grammar, and read-only dashboard health endpoint.
-- Portable Compose topology with PostgreSQL bind mount and loopback dashboard; no named volumes.
-- Literal Codex capability probe and explicit current blocker documentation.
-- **Bitget LIVE canary active**: `BITGET_EXECUTION_ENABLED=1`, `BITGET_CANARY_MAX_ORDERS=5`, `BITGET_MAX_CLOCK_SKEW_MS=5000`, kill switch released.
-- 780 Bitget USDⓈ-M Futures contracts verified.
-- Native SL/TP placement with confirmed-fill quantity guard.
-- Emergency close with deterministic OID, at-most-once submit.
-- Historical NOTUSDT incident (2026-09-08 03:46 UTC) fully reconciled.
+## Completed in this hardening branch
 
-## Not implemented yet
+- Native Bitget Classic V2 position SL/TP request contract and strict provider
+  read-back validation.
+- Confirmed filled-quantity protection sizing, provider response-array
+  normalization, and preserved plan IDs/client OIDs.
+- Symbol/environment-local protection capability records and admission policy.
+- Additive, idempotent migration 11 for protection capabilities.
+- Classic Bitget WebSocket login, mark-price/private event normalization,
+  per-symbol freshness, text heartbeat, reconnect/resubscribe, and stale state.
+- Observe-only stream runtime and REST watchdog with provider-first,
+  symbol-local fail-closed checks.
+- Atomic entry and fallback-close intent claims; deterministic close identity;
+  reduce-only quantity clamping; unknown-result reconciliation.
+- Liquidation buffer policy with direction, gap, tick, and latency/slippage
+  allowances.
+- Provider-only/system liquidation normalization and deduplication by provider
+  fill ID.
+- Additive, idempotent migration 12 for provider reconciliation events.
+- Service/Compose wiring with closed-by-default execution, capability, stream,
+  fallback, and operator mutation gates.
+- Full repository documentation for architecture, contracts, flags, migrations,
+  deployment, rollback, incident response, and canary acceptance.
 
-- Binance execution lane (disabled).
-- Telegram command delivery durability (process-memory offsets).
-- Source-trader lifecycle execution (TP1/SL/close parsing exists as classification only).
-- Manual protection mutation intent persistence.
-- Analyzer Codex availability inside Docker (deterministic fallback active).
+## Explicit limitations
 
-## Verified in production
+- The production WebSocket endpoint/channel compatibility has offline coverage
+  only; no live connection is enabled by this code deployment.
+- The stream threshold engine has a tested close callback seam, but the service
+  runtime remains observe-only until fallback-close wiring is independently
+  authorized and verified.
+- No LIVE canary, provider order/plan mutation, cancel, close, or historical WLD
+  replay is part of this implementation/deployment.
+- Migration 11/12 deployment state must be read from the target database; local
+  migration SQL is not proof of production schema state.
+- Local tests and mocked fixtures do not prove provider account state or live
+  read-back.
 
-- Runtime SHA: `6b34e25d496f740a15ea19802ebd4e1ec7e20a85`
-- `scripts/verify_bitget_runtime.sh` → `runtime_check=PASS`
-- All 8 Compose services healthy.
-- 0 positions, 0 open orders, 780 contracts.
-- Kill switch released (`hernanda-approved-live-20260908-historical-reconciled`).
-- Monitor: `state=ok`, `reasons=none`.
+## Local verification battery
+
+The required commands are documented in the operations runbook. Do not replace
+full-suite/static output with a previous checkpoint:
+
+```bash
+uv run pytest -q
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src
+uv run python -m compileall -q src tests
+git diff --check
+docker compose config --quiet
+```
+
+## Deployment state
+
+- Branch: `feat/bitget-protection-ws-hardening`
+- Deployment: pending controlled rollout and post-deploy read-only verification.
+- Provider mutation: not authorized by this document.
+- Runtime gates: preserve the target's existing approved state; keep all new
+  protection mutation flags disabled unless separately approved.

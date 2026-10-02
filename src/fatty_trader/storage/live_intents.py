@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from fatty_trader.storage.verified_closes import PostgresVerifiedCloseLifecycle
 from uuid import NAMESPACE_URL, uuid5
 
 from fatty_trader.exchanges.bitget.live import (
@@ -11,6 +14,10 @@ from fatty_trader.exchanges.bitget.live import (
     LiveIntentStoreProtocol,
     normalize_fill,
 )
+
+# States in which the provider has confirmed a completed fill for the intent, so the
+# ledger must carry fill evidence for it.
+_FILLED_STATES = {"filled", "reconciled"}
 
 
 class Cursor(Protocol):
@@ -22,6 +29,50 @@ class Connection(Protocol):
     def cursor(self) -> Cursor: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
+
+
+def insert_status_derived_fill(cursor: Cursor, record: LiveIntentRecord) -> None:
+    """Persist one ledger row for a filled intent the provider reported without fills.
+
+    Bitget can confirm a full fill on order status while returning an empty fill list,
+    and fills are only ever written from that list — which left closed positions with no
+    fill evidence and understated realized PnL (14 of 23 filled intents on 2026-09-27).
+    When the intent is filled, carries a quantity and price, and has no fill row yet,
+    record exactly what the order status reported. The provider_fill_id is explicitly
+    synthetic so it can never be mistaken for a provider-issued id, and realized PnL
+    stays zero rather than being invented.
+    """
+    if record.state not in _FILLED_STATES:
+        return
+    if record.filled_qty <= 0 or record.avg_price is None or record.avg_price <= 0:
+        return
+    provider_fill_id = f"status-derived:{record.provider_order_id or record.client_oid}"
+    cursor.execute(
+        """
+        INSERT INTO fills
+            (id, exchange, client_order_id, provider_fill_id, symbol, price, quantity,
+             fee, fee_ccy, realized_pnl, filled_at)
+        SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP
+        WHERE NOT EXISTS (
+            SELECT 1 FROM fills WHERE exchange = %s AND client_order_id = %s
+        )
+        ON CONFLICT (exchange, provider_fill_id) DO NOTHING
+        """,
+        (
+            uuid5(NAMESPACE_URL, f"fatty-fill:{record.exchange}:{provider_fill_id}"),
+            record.exchange,
+            record.client_oid,
+            provider_fill_id,
+            record.symbol,
+            record.avg_price,
+            record.filled_qty,
+            abs(record.fee),
+            "USDT",
+            Decimal("0"),
+            record.exchange,
+            record.client_oid,
+        ),
+    )
 
 
 def insert_provider_fills(
@@ -42,7 +93,13 @@ def insert_provider_fills(
         try:
             quantity_value = Decimal(str(quantity))
             price_value = Decimal(str(price))
-            if quantity_value <= 0 or price_value <= 0:
+            if (
+                not quantity_value.is_finite()
+                or not price_value.is_finite()
+                or quantity_value <= 0
+                or price_value <= 0
+                or str(provider_fill_id).startswith("status-derived:")
+            ):
                 continue
             fee = abs(Decimal(str(fill.get("fee", "0") or "0")))
             realized_pnl = Decimal(
@@ -77,6 +134,16 @@ def insert_provider_fills(
                 timestamp_ms,
             ),
         )
+        # Provider evidence supersedes the provisional aggregate in this same
+        # transaction. Durable intent retains status quantity/price/fee evidence.
+        cursor.execute(
+            """DELETE FROM fills WHERE exchange = %s AND client_order_id = %s
+                 AND provider_fill_id LIKE 'status-derived:%%'
+                 AND EXISTS (SELECT 1 FROM fills WHERE exchange = %s
+                     AND client_order_id = %s
+                     AND provider_fill_id NOT LIKE 'status-derived:%%')""",
+            (record.exchange, record.client_oid, record.exchange, record.client_oid),
+        )
 
 
 def build_emergency_close_intent(entry: LiveIntentRecord, quantity: Decimal) -> LiveIntentRecord:
@@ -103,6 +170,94 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     def __init__(self, connection_factory: Callable[[], Connection]) -> None:
         self._connection_factory = connection_factory
 
+    @property
+    def verified_close_lifecycle(self) -> PostgresVerifiedCloseLifecycle:
+        """Evidence-only lifecycle shared by operator POST and monitor reconciliation."""
+        from fatty_trader.storage.verified_closes import PostgresVerifiedCloseLifecycle
+
+        return PostgresVerifiedCloseLifecycle(self._connection_factory, self)
+
+    def claim(self, record: LiveIntentRecord) -> bool:
+        """Atomically insert an intent and report whether this caller won."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO live_order_intents
+                    (id, exchange, client_order_id, provider_order_id, symbol, side,
+                     role, state, requested_qty, filled_qty, leverage, margin_mode,
+                     planned_margin_usdt, planned_notional_usdt, balance_snapshot_id,
+                     margin_reservation_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (exchange, client_order_id) DO NOTHING
+                RETURNING client_order_id
+                """,
+                (
+                    uuid5(NAMESPACE_URL, f"fatty-live:{record.exchange}:{record.client_oid}"),
+                    record.exchange,
+                    record.client_oid,
+                    record.provider_order_id,
+                    record.symbol,
+                    record.side,
+                    record.role,
+                    record.state,
+                    record.requested_qty,
+                    record.filled_qty,
+                    record.planned_leverage,
+                    record.margin_mode,
+                    record.planned_margin_usdt,
+                    record.planned_notional_usdt,
+                    record.balance_snapshot_id,
+                    record.margin_reservation_id,
+                ),
+            )
+            claimed = cursor.fetchone() is not None
+            connection.commit()
+            return claimed
+        except Exception:
+            connection.rollback()
+            raise
+
+    def record_provider_event(self, observation: Any, client_oid: str) -> None:
+        """Persist provider source classification without duplicating a fill event."""
+        exchange = str(observation.exchange)
+        provider_fill_id = str(observation.provider_fill_id)
+        payload = observation.payload
+        observed_at = payload.get("fillTime", payload.get("uTime", payload.get("cTime")))
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO provider_reconciliation_events
+                    (id, exchange, provider_order_id, provider_fill_id, client_order_id,
+                     symbol, side, source, quantity, price, fee, realized_pnl, state, observed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'reconciled',
+                        COALESCE(to_timestamp(%s / 1000.0), CURRENT_TIMESTAMP))
+                ON CONFLICT (exchange, provider_fill_id) DO NOTHING
+                """,
+                (
+                    uuid5(NAMESPACE_URL, f"fatty-provider-event:{exchange}:{provider_fill_id}"),
+                    exchange,
+                    observation.provider_order_id,
+                    provider_fill_id,
+                    client_oid,
+                    observation.symbol,
+                    observation.side,
+                    observation.source,
+                    observation.quantity,
+                    observation.price,
+                    observation.fee,
+                    observation.realized_pnl,
+                    observed_at,
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
     def save(self, record: LiveIntentRecord) -> None:
         connection = self._connection_factory()
         try:
@@ -111,8 +266,10 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 """
                 INSERT INTO live_order_intents
                     (id, exchange, client_order_id, provider_order_id, symbol, side,
-                     role, state, requested_qty, filled_qty)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     role, state, requested_qty, filled_qty, leverage, margin_mode,
+                     planned_margin_usdt, planned_notional_usdt, balance_snapshot_id,
+                     margin_reservation_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (exchange, client_order_id) DO NOTHING
                 """,
                 (
@@ -126,6 +283,12 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                     record.state,
                     record.requested_qty,
                     record.filled_qty,
+                    record.planned_leverage,
+                    record.margin_mode,
+                    record.planned_margin_usdt,
+                    record.planned_notional_usdt,
+                    record.balance_snapshot_id,
+                    record.margin_reservation_id,
                 ),
             )
             connection.commit()
@@ -140,7 +303,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             """
             SELECT exchange, client_order_id, symbol, side, role, state,
                    requested_qty, filled_qty, filled_price, fee, provider_order_id,
-                   provider_fill_ids
+                   provider_fill_ids, leverage, planned_margin_usdt, planned_notional_usdt,
+                   margin_mode, balance_snapshot_id, margin_reservation_id
             FROM live_order_intents
             WHERE client_order_id = %s
             """,
@@ -150,6 +314,9 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         if row is None:
             return None
         values = list(row.values()) if isinstance(row, dict) else list(row)
+        # Preserve compatibility with legacy row fakes and pre-admission snapshots;
+        # production SELECTs include all admission columns.
+        values.extend([None] * (18 - len(values)))
         raw_fill_ids = values[11] or []
         if isinstance(raw_fill_ids, str):
             raw_fill_ids = json.loads(raw_fill_ids)
@@ -166,6 +333,12 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             fee=Decimal(str(values[9] or "0")),
             provider_order_id=str(values[10]) if values[10] is not None else None,
             provider_fill_ids=tuple(str(item) for item in raw_fill_ids),
+            planned_leverage=int(values[12]) if values[12] is not None else None,
+            planned_margin_usdt=Decimal(str(values[13])) if values[13] is not None else None,
+            planned_notional_usdt=Decimal(str(values[14])) if values[14] is not None else None,
+            margin_mode=str(values[15]) if values[15] is not None else None,
+            balance_snapshot_id=values[16],
+            margin_reservation_id=values[17],
         )
 
     def update(self, record: LiveIntentRecord) -> None:
@@ -198,6 +371,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 raise ValueError("live intent provider order id conflict or missing record")
             if record.provider_fills:
                 insert_provider_fills(cursor, record, record.provider_fills)
+            insert_status_derived_fill(cursor, record)
             connection.commit()
         except Exception:
             connection.rollback()
@@ -206,7 +380,13 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None:
         connection = self._connection_factory()
         try:
-            insert_provider_fills(connection.cursor(), record, fills)
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT id FROM live_order_intents "
+                "WHERE exchange = %s AND client_order_id = %s FOR UPDATE",
+                (record.exchange, record.client_oid),
+            )
+            insert_provider_fills(cursor, record, fills)
             connection.commit()
         except Exception:
             connection.rollback()

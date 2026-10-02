@@ -59,6 +59,18 @@ def _rows(value: object, field: str) -> Sequence[Mapping[str, Any]]:
     return value
 
 
+def _protection_ack_is_valid(value: object) -> bool:
+    """Accept the Classic V2 mapping/list response forms, never an empty ack."""
+    if isinstance(value, Mapping):
+        return True
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and bool(value)
+        and all(isinstance(row, Mapping) for row in value)
+    )
+
+
 class BitgetOperatorGateway:
     """Provider adapter that exposes only sanitized operator DTOs.
 
@@ -123,6 +135,12 @@ class BitgetOperatorGateway:
             payload.get("available", payload.get("availableBalance")), "available balance"
         )
 
+    def get_account_snapshot(self) -> dict[str, Any]:
+        payload = self._run(self._client.get_account())
+        if not isinstance(payload, Mapping):
+            raise ValueError("Bitget account response is invalid")
+        return dict(payload)
+
     def get_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
         payload = self._run(self._client.get_all_positions())
         expected_symbol = symbol.upper() if symbol else None
@@ -153,6 +171,13 @@ class BitgetOperatorGateway:
                         row.get("stopSurplusTriggerPrice", row.get("presetStopSurplusPrice")),
                         "position take profit",
                     ),
+                    "mark": row.get("markPrice"),
+                    "unrealized_pl": row.get("unrealizedPL"),
+                    "leverage": row.get("leverage"),
+                    "margin_mode": row.get("marginMode"),
+                    "liquidation_price": row.get("liquidationPrice"),
+                    "stop_loss_id": row.get("stopLossId"),
+                    "take_profit_id": row.get("takeProfitId"),
                 }
             )
         return positions
@@ -227,7 +252,7 @@ class BitgetOperatorGateway:
                 take_profit=str(take_profit) if take_profit is not None else None,
             )
         )
-        if not isinstance(submitted, Mapping):
+        if not _protection_ack_is_valid(submitted):
             return {"symbol": symbol, "state": "reconciliation-pending"}
         current = self.get_positions(symbol)
         if len(current) != 1:
@@ -265,6 +290,9 @@ class BitgetOperatorGateway:
             requested_qty=position["size"],
         )
         self._intent_store.save(intent)
+        lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.bind_requested_close(self._client, client_oid)
         try:
             submitted = self._run(
                 self._client.place_market_close(
@@ -313,6 +341,9 @@ class BitgetOperatorGateway:
             "bitget", client_oid, symbol, side, "CLOSE", "requested", quantity
         )
         self._intent_store.save(intent)
+        lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.bind_requested_close(self._client, client_oid)
         try:
             submitted = self._run(
                 self._client.place_market_close(
@@ -372,7 +403,7 @@ class BitgetOperatorGateway:
                 take_profit=None,
             )
         )
-        if not isinstance(submitted, Mapping):
+        if not _protection_ack_is_valid(submitted):
             intent.state = "unknown"
             self._intent_store.update(intent)
             raise SourceManagementReconciliationPending("stop-loss acknowledgement is invalid")

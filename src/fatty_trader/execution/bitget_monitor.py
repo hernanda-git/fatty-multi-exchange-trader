@@ -1,4 +1,9 @@
-"""Read-only Bitget monitor that alerts on anomalies without a hard kill switch."""
+"""Bitget monitor: reconciles provider state, alerts, and latches on anomalies.
+
+It owns no provider mutation methods. Anomalies become a durable kill-switch latch
+when enforcement is on (LIVE lane); a persisted post-fill margin/leverage mismatch
+is treated as a latchable anomaly so it blocks new entries across restarts.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,17 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
+from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
+    ProviderFillReconciliationError,
+    reconcile_provider_exit,
+)
 from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
 from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
 from fatty_trader.execution.protection import ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
 
-_FALLBACK_MANAGED_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
+_ALERT_ONLY_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
 
 
 class BitgetMonitorClient(Protocol):
@@ -21,7 +31,7 @@ class BitgetMonitorClient(Protocol):
     async def get_pending_plan_orders(self, symbol: str) -> Any: ...
     async def get_single_position(self, symbol: str) -> Any: ...
     async def get_order_detail(self, symbol: str, *, client_oid: str) -> Any: ...
-    async def get_fills(self, symbol: str) -> Any: ...
+    async def get_fills(self, symbol: str | None = None) -> Any: ...
     async def get_clock_skew_ms(self) -> int: ...
 
 
@@ -29,6 +39,7 @@ class BitgetMonitorClient(Protocol):
 class MonitorReport:
     status: str
     reasons: tuple[str, ...] = ()
+    provider_exits_reconciled: int = 0
 
 
 class BitgetMonitor:
@@ -43,6 +54,7 @@ class BitgetMonitor:
         max_clock_skew_ms: int = 10_000,
         enforce_kill_switch: bool = True,
         fallback_mutations_enabled: bool = False,
+        live_intent_store: LiveIntentStoreProtocol | None = None,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")
@@ -52,10 +64,12 @@ class BitgetMonitor:
         self._max_clock_skew_ms = max_clock_skew_ms
         self._enforce_kill_switch = enforce_kill_switch
         self._fallback_mutations_enabled = fallback_mutations_enabled
+        self._live_intent_store = live_intent_store
 
     async def run_once(self) -> MonitorReport:
         reasons: list[str] = []
         await self._reconcile_unresolved_intents(reasons)
+        provider_exits_reconciled = await self._reconcile_provider_exits(reasons)
         positions = await self._read_rows(
             self._client.get_all_positions, "provider-positions-invalid", reasons
         )
@@ -64,8 +78,21 @@ class BitgetMonitor:
         )
         await self._check_positions(positions, reasons)
         self._check_orders(orders, reasons)
+        # A post-fill margin/leverage mismatch is durable evidence that a position is
+        # not what the plan promised. The adapter that recorded it cannot block a
+        # replacement worker, so the latch lives here: it survives restarts and blocks
+        # new entries until an operator releases the switch with an approval reference.
+        if self._repository.has_unhandled_post_fill_mismatch(self._scope):
+            reasons.append("post-fill-margin-or-leverage-mismatch")
         # Bot-managed TP/SL fallback for symbols that reject native SL/TP (43011)
         await self._run_fallback_monitor(reasons)
+        lifecycle = getattr(self._live_intent_store, "verified_close_lifecycle", None)
+        if lifecycle is not None:
+            try:
+                await lifecycle.reconcile(self._client)
+            except Exception:
+                # Retain reservations and surface read/DB failures; never infer release.
+                reasons.append("verified-close-evidence-unavailable")
         try:
             skew = await self._client.get_clock_skew_ms()
         except Exception:
@@ -78,34 +105,38 @@ class BitgetMonitor:
             latchable_reasons = tuple(
                 reason
                 for reason in unique_reasons
-                if not (
-                    self._fallback_mutations_enabled
-                    and reason in _FALLBACK_MANAGED_PROTECTION_REASONS
-                )
+                if reason not in _ALERT_ONLY_PROTECTION_REASONS
+                and not reason.startswith(("fallback-sl_hit:", "fallback-tp_hit:"))
             )
             if not latchable_reasons:
-                return MonitorReport("degraded", unique_reasons)
+                return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
             if not self._enforce_kill_switch:
-                return MonitorReport("degraded", unique_reasons)
+                return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
             for reason in latchable_reasons:
                 self._repository.latch_kill_switch(self._scope, reason)
-            return MonitorReport("kill-switch-latched", latchable_reasons)
+            return MonitorReport(
+                "kill-switch-latched", latchable_reasons, provider_exits_reconciled
+            )
         if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
-            return MonitorReport("kill-switch-latched")
-        return MonitorReport("ok")
+            return MonitorReport(
+                "kill-switch-latched", provider_exits_reconciled=provider_exits_reconciled
+            )
+        return MonitorReport("ok", provider_exits_reconciled=provider_exits_reconciled)
 
     async def _run_fallback_monitor(self, reasons: list[str]) -> None:
         """Run bot-managed TP/SL only behind a separate explicit mutation gate."""
-        if not self._fallback_mutations_enabled or (
-            self._enforce_kill_switch and self._repository.kill_switch_active(self._scope)
-        ):
+        # Entry admission latches do not shut down existing reduce-only stops.
+        # Operator-directed protection shutdown remains the explicit mutation gate.
+        if not self._fallback_mutations_enabled:
             return
         try:
             from fatty_trader.execution.bitget_fallback_protection import (
                 run_fallback_monitor_async,
             )
 
-            triggered = await run_fallback_monitor_async(self._client)
+            triggered = await run_fallback_monitor_async(
+                self._client, environment=getattr(self._client, "environment", None)
+            )
             for t in triggered:
                 reasons.append(f"fallback-{t['reason']}:{t['symbol']}")
         except Exception as exc:
@@ -120,10 +151,40 @@ class BitgetMonitor:
                         symbol, client_oid=oid
                     ),
                     read_fills=self._client.get_fills,
+                    read_position=lambda symbol: self._client.get_single_position(symbol),
+                    read_pending_orders=lambda _symbol: self._client.get_pending_orders(),
                 )
                 self._repository.update_intent(reconciled)
             except Exception:
                 reasons.append(f"unknown-intent-unreconciled:{intent.client_oid}")
+
+    async def _reconcile_provider_exits(self, reasons: list[str]) -> int:
+        """Persist unmatched provider exit fills without treating entries as exits."""
+        store = self._live_intent_store
+        if store is None:
+            return 0
+        try:
+            raw_fills = await self._client.get_fills(None)
+        except Exception:
+            reasons.append("provider-fills-invalid")
+            return 0
+        if isinstance(raw_fills, dict):
+            raw_fills = raw_fills.get("fillList", [])
+        if not isinstance(raw_fills, list) or not all(isinstance(fill, dict) for fill in raw_fills):
+            reasons.append("provider-fills-invalid")
+            return 0
+        reconciled = 0
+        for fill in raw_fills:
+            if not _looks_like_external_exit(fill):
+                continue
+            try:
+                result = reconcile_provider_exit(store, fill)
+            except ProviderFillReconciliationError:
+                reasons.append("provider-fill-reconciliation-error")
+                continue
+            if result.created:
+                reconciled += 1
+        return reconciled
 
     async def _read_rows(
         self,
@@ -187,4 +248,14 @@ def _open_quantity(position: dict[str, Any]) -> Decimal | None:
         quantity = Decimal(str(position.get("total", position.get("size", "0"))))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    return quantity if quantity >= 0 else None
+    return quantity if quantity.is_finite() and quantity >= 0 else None
+
+
+def _looks_like_external_exit(fill: dict[str, Any]) -> bool:
+    """Require provider evidence that an unmatched fill is an exit."""
+    if any(fill.get(field) for field in ("clientOid", "client_oid", "clientOrderId")):
+        return False
+    source = str(fill.get("enterPointSource", fill.get("orderSource", ""))).strip().upper()
+    trade_side = str(fill.get("tradeSide", "")).strip().lower()
+    reduce_only = str(fill.get("reduceOnly", "")).strip().upper()
+    return source == "SYS" or trade_side.startswith("burst_") or reduce_only in {"YES", "TRUE"}

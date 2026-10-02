@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -9,7 +10,12 @@ import pytest
 from fatty_trader.domain.enums import Exchange, MarginMode
 from fatty_trader.domain.models import InstrumentSpec, VenueRiskConfig
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
-from fatty_trader.execution.bitget_dispatcher import BitgetDispatcher, DispatchGate
+from fatty_trader.execution.bitget_dispatcher import (
+    BitgetDispatcher,
+    DispatchGate,
+    EntryRoutingSnapshot,
+)
+from fatty_trader.execution.entry_routing import EntryMode, LimitEntryContext
 
 
 class Repository:
@@ -104,6 +110,8 @@ def test_pair_token_is_normalized_to_bitget_usdt_symbol() -> None:
 
     assert _bitget_symbol("pump") == "PUMPUSDT"
     assert _bitget_symbol("SUSHIUSDT") == "SUSHIUSDT"
+    assert _bitget_symbol("BONK") == "1000BONKUSDT"
+    assert _bitget_symbol("BONKUSDT") == "1000BONKUSDT"
 
 
 @pytest.mark.asyncio
@@ -126,7 +134,7 @@ async def test_closed_gate_blocks_invalid_dispatch_without_provider_post() -> No
 
 
 @pytest.mark.asyncio
-async def test_invalid_geometry_or_missing_take_profit_never_posts_when_gate_is_open() -> None:
+async def test_stop_only_signal_is_sized_and_submitted_when_gate_is_open() -> None:
     repository = Repository(_dispatch(take_profits=()))
     execution = Execution()
     dispatcher = BitgetDispatcher(
@@ -138,9 +146,10 @@ async def test_invalid_geometry_or_missing_take_profit_never_posts_when_gate_is_
 
     result = await dispatcher.run_once("worker", 30)
 
-    assert result == "rejected"
-    assert execution.post_count == 0
-    assert repository.transitions == [("QUEUED", "REJECTED", "missing-take-profits")]
+    assert result == "filled"
+    assert execution.post_count == 1
+    assert ("QUEUED", "PREFLIGHT", None) in repository.transitions
+    assert ("SUBMITTING", "FILLED", None) in repository.transitions
 
 
 @pytest.mark.asyncio
@@ -165,6 +174,60 @@ async def test_persistent_kill_switch_blocks_before_provider_post() -> None:
     assert execution.post_count == 0
     assert repository.transitions == [("QUEUED", "REJECTED", "kill-switch-latched")]
     assert repository.alerts == ["kill-switch-latched"]
+
+
+@pytest.mark.asyncio
+async def test_dead_protection_stream_scope_blocks_entries_without_touching_venue_scope() -> None:
+    """A dead protection stream halts entries on its own scope only.
+
+    The venue-wide `bitget` scope also gates the fallback TP/SL monitor, so
+    latching it on a dead WebSocket would switch off the stop-loss path for
+    exactly the positions that need it.
+    """
+    from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
+
+    class LatchedSwitch:
+        def is_active(self, scope: str) -> bool:
+            return scope == PROTECTION_STREAM_SCOPE
+
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        kill_switch=LatchedSwitch(),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "protection-stream-latched"
+    assert execution.post_count == 0
+    assert repository.transitions == [("QUEUED", "REJECTED", "protection-stream-latched")]
+    assert repository.alerts == ["protection-stream-latched"]
+
+
+@pytest.mark.asyncio
+async def test_symbol_protection_admission_blocks_before_preflight_without_global_kill_switch() -> (
+    None
+):
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_ for _ in ()).throw(AssertionError("must not preflight")),
+        protection_admission=lambda symbol: (False, "fallback-stream-stale"),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert execution.post_count == 0
+    assert repository.transitions == [("QUEUED", "REJECTED", "fallback-stream-stale")]
+    assert repository.alerts == ["fallback-stream-stale"]
 
 
 @pytest.mark.asyncio
@@ -303,3 +366,108 @@ async def test_atomic_canary_reservation_rejects_at_cap_before_provider_post() -
     assert result == "rejected"
     assert execution.post_count == 0
     assert repository.transitions[-1] == ("VALIDATED", "REJECTED", "canary-order-cap-reached")
+
+
+@pytest.mark.asyncio
+async def test_context_aware_normal_pullback_fails_closed_without_routed_execution() -> None:
+    repository = Repository(_dispatch())
+    execution = Execution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        entry_routing=lambda _: EntryRoutingSnapshot(
+            market_price=Decimal("64000"),
+            limit_context=LimitEntryContext(
+                provider_acknowledged=False,
+                was_working=False,
+                observed_at=datetime.now(UTC),
+                near_entry_mark=None,
+                prior_mark=None,
+            ),
+        ),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "rejected"
+    assert execution.post_count == 0
+    assert repository.transitions[-1] == (
+        "VALIDATED",
+        "REJECTED",
+        "entry-routing-unsupported",
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_aware_near_limit_route_is_passed_to_routed_execution() -> None:
+    @dataclass
+    class RoutedExecution:
+        route: object | None = None
+
+        async def submit_entry_route(
+            self, dispatch: BitgetDispatch, quantity: Decimal, route: object
+        ) -> str:
+            self.route = route
+            assert quantity == Decimal("0.004")
+            return "FILLED"
+
+    repository = Repository(_dispatch())
+    execution = RoutedExecution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+        entry_routing=lambda _: EntryRoutingSnapshot(
+            market_price=Decimal("64200"),
+            limit_context=LimitEntryContext(
+                provider_acknowledged=True,
+                was_working=True,
+                observed_at=datetime.now(UTC),
+                near_entry_mark=Decimal("64000"),
+                prior_mark=Decimal("64000"),
+            ),
+        ),
+    )
+
+    result = await dispatcher.run_once("worker", 30)
+
+    assert result == "filled"
+    assert execution.route is not None
+    assert execution.route.mode is EntryMode.NEAR_LIMIT_SPLIT_MARKET_LIMIT
+    assert execution.route.market_quantity == Decimal("0.001")
+    assert execution.route.limit_quantity == Decimal("0.003")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome,target,result",
+    [
+        ("FILLED_UNPROTECTED", "FILLED", "filled"),
+        ("PARTIAL_UNPROTECTED", "PARTIALLY_FILLED", "partial"),
+    ],
+)
+async def test_missing_protection_keeps_valid_fill_state_with_durable_escalation(
+    outcome, target, result
+):
+    from fatty_trader.domain.enums import DispatchState
+
+    class UnsafeFillExecution(Execution):
+        async def submit_entry(self, dispatch, quantity):
+            self.post_count += 1
+            return outcome
+
+    repository = Repository(_dispatch())
+    execution = UnsafeFillExecution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+    )
+    assert await dispatcher.run_once("worker", 30) == result
+    assert repository.transitions[-1] == ("SUBMITTING", target, "missing-protection-escalated")
+    assert target in set(DispatchState)
+    assert execution.post_count == 1

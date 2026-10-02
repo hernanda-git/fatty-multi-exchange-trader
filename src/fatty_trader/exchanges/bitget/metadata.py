@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from fatty_trader.risk.liquidation import MMTier
 from fatty_trader.risk.sizing import SymbolMetadata
 
 
@@ -59,6 +60,55 @@ def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
         max_leverage=max_leverage,
         min_notional=min_notional,
     )
+
+
+def mm_tiers_from_position_lever(rows: list[dict[str, Any]], symbol: str) -> tuple[MMTier, ...]:
+    """Build MMR tiers from ``/api/v2/mix/market/query-position-lever`` rows.
+
+    Bitget does not publish maintenance-margin rates in ``/market/contracts``;
+    they live in the position-lever table, a flat list of
+    ``{symbol, level, startUnit, endUnit, keepMarginRate}`` rows ordered by size.
+    ``keepMarginRate`` IS the maintenance-margin rate (it is not a
+    complement, and ``keepMarginRate * tier leverage`` matches Bitget's published
+    liquidation rate).
+
+    Tiers are sorted by ``endUnit`` ascending and the widest is then forced to be
+    the catch-all (``None`` bound) so ``select_mmr`` can never fall through a gap.
+    Do not rely on a sentinel row: live payloads do not reliably include an
+    ``endUnit == 0`` tier (BTCUSDT's last tier reports ``1200000000``), so the
+    forced catch-all is the load-bearing part, not the sentinel check.
+    Fails closed on a bad payload rather than returning an empty tuple, which
+    would abort live sizing.
+    """
+    requested = symbol.upper()
+    matching = [row for row in rows if str(row.get("symbol", "")).upper() == requested]
+    if not matching:
+        raise ValueError(f"unknown Bitget position-lever symbol: {requested}")
+
+    tiers: list[MMTier] = []
+    for row in matching:
+        raw_bound = row.get("endUnit")
+        # Bitget marks the unbounded final tier with endUnit == 0.
+        bound = (
+            None
+            if raw_bound in (None, "", 0, "0")
+            else _decimal(raw_bound, "position-lever endUnit", positive=False)
+        )
+        mmr = _decimal(row.get("keepMarginRate"), "keepMarginRate", positive=False)
+        if mmr <= 0 or mmr > 1:
+            raise ValueError("keepMarginRate must be in (0, 1]")
+        tiers.append(MMTier(upper_bound_notional=bound, mmr=mmr))
+
+    ordered = sorted(
+        tiers,
+        key=lambda tier: (
+            tier.upper_bound_notional is None,
+            tier.upper_bound_notional or 0,
+        ),
+    )
+    # The widest tier becomes the catch-all so any notional resolves an MMR.
+    ordered[-1] = MMTier(upper_bound_notional=None, mmr=ordered[-1].mmr)
+    return tuple(ordered)
 
 
 def find_contract(contracts: list[dict[str, Any]], symbol: str) -> dict[str, Any]:

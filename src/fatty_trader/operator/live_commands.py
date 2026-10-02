@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from html import escape
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -11,13 +13,21 @@ from fatty_trader.operator.command_parser import (
     CancelCommand,
     CloseCommand,
     CommandError,
+    DiagnosticCommand,
+    HealthCommand,
+    HelpCommand,
     OpenCommand,
     OrdersCommand,
     PositionsCommand,
     PriceCommand,
     SetProtectionCommand,
+    TradeCommand,
     parse_operator_command,
 )
+
+
+def _safe(value: Any) -> str:
+    return escape(str(value), quote=False)
 
 
 class LiveGateway(Protocol):
@@ -25,6 +35,7 @@ class LiveGateway(Protocol):
 
     def get_price(self, symbol: str) -> Decimal: ...
     def get_balance(self) -> Decimal: ...
+    def get_account_snapshot(self) -> dict[str, Any]: ...
     def get_positions(self, symbol: str | None = None) -> list[dict[str, Any]]: ...
     def get_orders(self, symbol: str | None = None) -> list[dict[str, Any]]: ...
     def open_position(
@@ -65,12 +76,16 @@ class OperatorCommandService:
         require_confirmation: bool = True,
         mutations_enabled: bool = False,
         now: float | None = None,
+        health_reader: Callable[[], str] | None = None,
+        diagnostic_reader: Callable[[str], str] | None = None,
     ) -> None:
         self._gw = gateway
         self._operator_id = operator_id
         self._require_confirmation = require_confirmation
         self._mutations_enabled = mutations_enabled
         self._now = now
+        self._health_reader = health_reader
+        self._diagnostic_reader = diagnostic_reader
         self._confirm_token: str | None = None
         self._pending: _PendingConfirmation | None = None
 
@@ -114,6 +129,20 @@ class OperatorCommandService:
         self._pending = None
         return pending
 
+    def _confirm_open(
+        self, kind: str, fingerprint: str, display_target: str, token: str | None
+    ) -> str | None:
+        if not self._require_confirmation:
+            return None
+        expected_kind = f"{kind}:{fingerprint}"
+        if token is None:
+            challenge = self._issue_confirmation(expected_kind, display_target)
+            return f"""CONFIRM {(kind)} {(display_target)}; repeat the exact command with confirm={
+                (challenge)
+            }"""
+        self._consume_confirmation(token, expected_kind)
+        return None
+
     def handle(self, text: str, *, sender_id: int, is_private: bool, is_forwarded: bool) -> str:
         self._require_auth(sender_id=sender_id, is_private=is_private, is_forwarded=is_forwarded)
         command = parse_operator_command(text)
@@ -124,12 +153,22 @@ class OperatorCommandService:
             return self._on_price(command)
         if isinstance(command, BalanceCommand):
             return self._on_balance()
+        if isinstance(command, HealthCommand):
+            return self._on_health()
+        if isinstance(command, HelpCommand):
+            return self._on_help()
+        if isinstance(command, DiagnosticCommand):
+            return self._on_diagnostic(command)
         if isinstance(command, PositionsCommand):
             return self._on_positions()
         if isinstance(command, OrdersCommand):
             return self._on_orders()
         if isinstance(command, OpenCommand):
+            self._require_mutations_enabled()
             return self._on_open(command)
+        if isinstance(command, TradeCommand):
+            self._require_mutations_enabled()
+            return self._on_trade(command)
         if isinstance(command, CancelCommand):
             self._require_mutations_enabled()
             return self._on_cancel(command)
@@ -153,22 +192,96 @@ class OperatorCommandService:
         balance = self._gw.get_balance()
         return f"Saldo tersedia: {balance}"
 
+    def _on_health(self) -> str:
+        # Parity with the periodical cron: the card is rendered by the single
+        # shared formatter (health_report_format), not by a second renderer
+        # that can drift. The caller loads data; this only supplies the
+        # provider-only slice when no health_reader is wired.
+        if self._health_reader is not None:
+            return self._health_reader()
+        from fatty_trader.operator import health_report_format as fmt
+
+        positions = self._gw.get_positions()
+        orders = self._gw.get_orders()
+        account = {}
+        try:
+            account = self._gw.get_account_snapshot()
+        except Exception:
+            account = {}
+        return fmt.format_report(
+            positions if isinstance(positions, list) else None,
+            orders if isinstance(orders, list) else None,
+            {},
+            {},
+            [],
+            {},
+            account,
+            {"mode": "UNKNOWN", "venue_mode": "UNKNOWN", "execution_enabled": "UNKNOWN"},
+            {},
+            {},
+        )
+
+    def _on_help(self) -> str:
+        return (
+            "<b>FATTY OPERATOR COMMANDS</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>READ-ONLY</b>\n"
+            "/health — full provider/DB health\n"
+            "/status — concise runtime status\n"
+            "/positions — open provider positions\n"
+            "/orders — pending provider orders\n"
+            "/balance — available balance\n"
+            "/price SYMBOL — current ticker\n"
+            "/reconcile — provider vs DB drift\n"
+            "/protection — native/fallback protection\n"
+            "/fills — recent provider fills\n"
+            "/intents — recent durable intents\n"
+            "/dispatches — recent dispatch lifecycle\n"
+            "/signals — recent source/canonical signals\n\n"
+            "<b>MUTATING · CONFIRMATION REQUIRED</b>\n"
+            "/close SYMBOL | all\n"
+            "/cancel SYMBOL | all | order_id=ID\n"
+            "/setsl SYMBOL PRICE\n"
+            "/settp SYMBOL PRICE\n"
+            "/open SYMBOL LONG|SHORT margin=… leverage=… entry=market|limit:PRICE sl=… tp=…\n"
+            "/trade bitget LONG SYMBOL margin=… leverage=… entry=market sl=… tp=…\n\n"
+            "Mutations require the live operator gate and explicit confirmation."
+        )
+
+    def _on_diagnostic(self, command: DiagnosticCommand) -> str:
+        if self._diagnostic_reader is None:
+            raise CommandError("diagnostic reader is not configured")
+        return self._diagnostic_reader(command.kind)
+
     def _on_positions(self) -> str:
         positions = self._gw.get_positions()
         if not positions:
             return "Tidak ada posisi terbuka"
-        rows = []
+        rows = ["<b>OPEN POSITIONS · PROVIDER</b>", "━━━━━━━━━━━━━━━━━━━━"]
         for p in positions:
-            symbol = p.get("symbol")
-            side = p.get("side")
-            size = p.get("size")
-            entry = p.get("entry")
-            stop_loss = p.get("stop_loss") or "none"
-            take_profit = p.get("take_profit") or "none"
-            rows.append(
-                f"{symbol} {side} size={size} entry={entry} SL={stop_loss} TP={take_profit}"
+            symbol = _safe(p.get("symbol"))
+            side = _safe(p.get("side"))
+            native_sl = _safe(p.get("stop_loss") or "MISSING")
+            native_tp = _safe(p.get("take_profit") or "MISSING")
+            protection = "🟢 NATIVE" if p.get("stop_loss") or p.get("take_profit") else "🟡 CHECK"
+            rows.extend(
+                [
+                    f"<b>{symbol} {side}</b>",
+                    "<pre>"
+                    f"Size       {_safe(p.get('size'))}\n"
+                    f"Entry      {_safe(p.get('entry'))}\n"
+                    f"Mark       {_safe(p.get('mark') or 'N/A')}\n"
+                    f"uPnL       {_safe(p.get('unrealized_pl') or 'N/A')}\n"
+                    f"Leverage   {_safe(p.get('leverage') or 'N/A')}x · "
+                    f"{_safe(p.get('margin_mode') or 'N/A')}\n"
+                    f"Liq price  {_safe(p.get('liquidation_price') or 'N/A')}\n"
+                    f"Native SL  {native_sl}\n"
+                    f"Native TP  {native_tp}\n"
+                    f"Protection {protection}"
+                    "</pre>",
+                ]
             )
-        return "Posisi terbuka\n" + "\n".join(rows)
+        return "\n".join(rows)[:3900]
 
     def _on_orders(self) -> str:
         orders = self._gw.get_orders()
@@ -185,6 +298,20 @@ class OperatorCommandService:
         return "Pending order\n" + "\n".join(rows)
 
     def _on_open(self, command: OpenCommand) -> str:
+        fingerprint = "|".join(
+            (
+                command.symbol,
+                command.direction,
+                str(command.margin),
+                str(command.leverage),
+                command.entry,
+                str(command.stop_loss),
+                ",".join(map(str, command.take_profits)),
+            )
+        )
+        challenge = self._confirm_open("open", fingerprint, command.symbol, command.confirm_token)
+        if challenge is not None:
+            return challenge
         margin: Decimal
         if command.margin == "auto":
             margin = self._gw.get_balance() * Decimal("0.20")
@@ -201,6 +328,41 @@ class OperatorCommandService:
         )
         if result.get("error"):
             return f"SKIP {result['symbol']} reason={result['error']}"
+        return (
+            f"OPEN {result['symbol']} {result['side']} qty={result['qty']} "
+            f"lev={result['leverage']} entry={result['entry']} id={result['order_id']} "
+            f"state={result['state']}"
+        )
+
+    def _on_trade(self, command: TradeCommand) -> str:
+        if command.exchanges != ("bitget",):
+            raise CommandError("operator /trade currently supports bitget only")
+        fingerprint = "|".join(
+            (
+                ",".join(command.exchanges),
+                command.pair,
+                command.direction,
+                str(command.margin),
+                str(command.leverage),
+                command.entry,
+                str(command.stop_loss),
+                ",".join(map(str, command.take_profits)),
+            )
+        )
+        challenge = self._confirm_open("trade", fingerprint, command.pair, command.confirm_token)
+        if challenge is not None:
+            return challenge
+        result = self._gw.open_position(
+            symbol=command.pair,
+            direction=command.direction,
+            quantity=command.margin,
+            leverage=command.leverage or 1,
+            entry=command.entry,
+            stop_loss=command.stop_loss,
+            take_profits=command.take_profits,
+        )
+        if result.get("error"):
+            return f"SKIP {result.get('symbol', command.pair)} reason={result['error']}"
         return (
             f"OPEN {result['symbol']} {result['side']} qty={result['qty']} "
             f"lev={result['leverage']} entry={result['entry']} id={result['order_id']} "
@@ -229,6 +391,8 @@ class OperatorCommandService:
             self._consume_confirmation(command.confirm_token, confirmation_kind)
         if command.target == "all":
             result = self._gw.close_all()
+            if result.get("state") == "reconciliation-pending":
+                return f"CLOSE all attempted={result['count']} state=reconciliation-pending"
             return f"CLOSE all count={result['count']}"
         result = self._gw.close_position(command.target)
         if result.get("state") == "reconciliation-pending":

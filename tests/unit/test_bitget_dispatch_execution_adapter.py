@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -17,6 +18,7 @@ from fatty_trader.exchanges.bitget.live import (
     LiveIntentStoreProtocol,
     LiveOrderStatus,
 )
+from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
@@ -70,6 +72,30 @@ def _dispatch() -> BitgetDispatch:
     )
 
 
+def _submission(*, leverage: int = 20) -> BitgetEntrySubmission:
+    return BitgetEntrySubmission(
+        quantity=Decimal("0.002"),
+        effective_leverage=leverage,
+        planned_margin_usdt=Decimal("10"),
+        planned_notional_usdt=Decimal("128"),
+        margin_mode="ISOLATED",
+        balance_snapshot_id=UUID("12345678-1234-5678-1234-567812345678"),
+        margin_reservation_id=UUID("87654321-4321-8765-4321-876543218765"),
+        observed_at=datetime(2026, 9, 23, tzinfo=UTC),
+    )
+
+
+def test_intent_copies_immutable_sizing_admission() -> None:
+    intent = BitgetDispatchExecution._intent(_dispatch(), _submission())
+
+    assert intent.requested_qty == Decimal("0.002")
+    assert intent.planned_leverage == 20
+    assert intent.planned_margin_usdt == Decimal("10")
+    assert intent.margin_mode == "ISOLATED"
+    assert intent.balance_snapshot_id == UUID("12345678-1234-5678-1234-567812345678")
+    assert intent.margin_reservation_id == UUID("87654321-4321-8765-4321-876543218765")
+
+
 def test_source_identity_makes_replayed_dispatches_share_client_oid() -> None:
     first = BitgetDispatchExecution._intent(
         BitgetDispatch(
@@ -80,7 +106,7 @@ def test_source_identity_makes_replayed_dispatches_share_client_oid() -> None:
                 "source_message_id": 999999999,
             }
         ),
-        Decimal("0.002"),
+        _submission(),
     )
     second = BitgetDispatchExecution._intent(
         BitgetDispatch(
@@ -91,7 +117,7 @@ def test_source_identity_makes_replayed_dispatches_share_client_oid() -> None:
                 "source_message_id": 999999999,
             }
         ),
-        Decimal("0.002"),
+        _submission(),
     )
 
     assert first.client_oid == second.client_oid
@@ -127,7 +153,7 @@ async def test_persists_intent_then_posts_once_and_confirms_native_protection() 
     )
 
     status = await BitgetDispatchExecution(execution, store).submit_entry(
-        _dispatch(), Decimal("0.002")
+        _dispatch(), _submission()
     )
 
     oid = "live-bitget-BTCUSDT-1234567812345678"
@@ -155,6 +181,26 @@ async def test_persists_intent_then_posts_once_and_confirms_native_protection() 
 
 
 @pytest.mark.asyncio
+async def test_entry_submission_uses_atomic_intent_claim() -> None:
+    class ClaimOnlyStore(InMemoryLiveIntentStore):
+        def save(self, record: LiveIntentRecord) -> None:
+            raise AssertionError("entry submission must use atomic claim")
+
+    store = ClaimOnlyStore()
+    execution = Execution(
+        result=_result(),
+        protection=AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, Decimal("0.002")),
+    )
+
+    status = await BitgetDispatchExecution(execution, store).submit_entry(
+        _dispatch(), _submission()
+    )
+
+    assert status == "FILLED"
+    assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
+
+
+@pytest.mark.asyncio
 async def test_existing_durable_intent_uses_get_readback_without_a_second_post() -> None:
     store = InMemoryLiveIntentStore()
     oid = "live-bitget-BTCUSDT-1234567812345678"
@@ -173,17 +219,49 @@ async def test_existing_durable_intent_uses_get_readback_without_a_second_post()
     )
 
     status = await BitgetDispatchExecution(execution, store).submit_entry(
-        _dispatch(), Decimal("0.002")
+        _dispatch(), _submission()
     )
 
-    assert status == "FILLED"
+    assert status == "FILLED_UNPROTECTED"
     assert execution.submit_calls == []
     assert execution.reconcile_calls == [oid]
-    assert execution.protect_calls == [oid]
+    assert execution.protect_calls == []
 
 
 @pytest.mark.asyncio
-async def test_unconfirmed_native_protection_returns_unknown_after_containment() -> None:
+async def test_replayed_fill_runs_post_fill_observation_before_reporting_success() -> None:
+    class ReplayExecution(Execution):
+        def __init__(self) -> None:
+            super().__init__(
+                result=_result(),
+                protection=AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, Decimal("0.002")),
+            )
+            self.post_fill_calls: list[str] = []
+
+        async def reconcile_post_fill(
+            self, intent: LiveIntentRecord, result: AsyncExecutionResult
+        ) -> None:
+            self.post_fill_calls.append(intent.client_oid)
+
+    store = InMemoryLiveIntentStore()
+    oid = "live-bitget-BTCUSDT-1234567812345678"
+    store.save(LiveIntentRecord("bitget", oid, "BTCUSDT", "BUY", requested_qty=Decimal("0.002")))
+    execution = ReplayExecution()
+
+    status = await BitgetDispatchExecution(execution, store).submit_entry(
+        _dispatch(), _submission()
+    )
+
+    assert status == "FILLED_UNPROTECTED"
+    assert store.get(oid).state == "filled"
+    assert execution.submit_calls == []
+    assert execution.protect_calls == []
+    assert execution.reconcile_calls == [oid]
+    assert execution.post_fill_calls == [oid]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_native_protection_preserves_fill_truth_after_containment() -> None:
     store = InMemoryLiveIntentStore()
     execution = Execution(
         result=_result(),
@@ -196,10 +274,13 @@ async def test_unconfirmed_native_protection_returns_unknown_after_containment()
     )
 
     status = await BitgetDispatchExecution(execution, store).submit_entry(
-        _dispatch(), Decimal("0.002")
+        _dispatch(), _submission()
     )
 
-    assert status == "UNKNOWN"
+    assert status == "FILLED_UNPROTECTED"
+    stored = store.get("live-bitget-BTCUSDT-1234567812345678")
+    assert stored is not None and stored.state == "filled"
+    assert stored.provider_order_id == "provider-order-1"
     assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
     assert execution.protect_calls == ["live-bitget-BTCUSDT-1234567812345678"]
 
@@ -217,10 +298,11 @@ async def test_fallback_registered_fill_is_not_reported_as_provider_unknown() ->
     )
 
     status = await BitgetDispatchExecution(execution, store).submit_entry(
-        _dispatch(), Decimal("0.002")
+        _dispatch(), _submission()
     )
 
-    assert status == "FILLED_FALLBACK"
+    assert status == "FILLED_UNPROTECTED"
+    assert store.get("live-bitget-BTCUSDT-1234567812345678").state == "filled"
     assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
 
 
@@ -230,7 +312,7 @@ async def test_acknowledged_entry_returns_without_a_protection_post() -> None:
     execution = Execution(result=_result(LiveOrderStatus.ACCEPTED))
 
     status = await BitgetDispatchExecution(execution, store).submit_entry(
-        _dispatch(), Decimal("0.002")
+        _dispatch(), _submission()
     )
 
     assert status == "ACKNOWLEDGED"

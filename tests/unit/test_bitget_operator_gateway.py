@@ -58,13 +58,13 @@ class FakeBitgetClient:
         self.position_rows = []
         return self.close_result
 
-    async def place_position_tpsl(self, **kwargs: Any) -> dict[str, Any]:
+    async def place_position_tpsl(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("place_position_tpsl", kwargs))
         if kwargs.get("stop_loss") is not None:
             self.position_rows[0]["stopLossTriggerPrice"] = kwargs["stop_loss"]
         if kwargs.get("take_profit") is not None:
             self.position_rows[0]["stopSurplusTriggerPrice"] = kwargs["take_profit"]
-        return {"stopLossId": "sl-1", "stopSurplusId": "tp-1"}
+        return [{"orderId": "plan-1"}]
 
     async def cancel_all_orders(self, symbol: str | None = None) -> dict[str, Any]:
         self.calls.append(("cancel_all_orders", symbol))
@@ -98,6 +98,13 @@ def test_read_only_methods_return_sanitized_provider_dtos() -> None:
             "entry": Decimal("60000"),
             "stop_loss": None,
             "take_profit": None,
+            "mark": None,
+            "unrealized_pl": None,
+            "leverage": None,
+            "margin_mode": "isolated",
+            "liquidation_price": None,
+            "stop_loss_id": None,
+            "take_profit_id": None,
         }
     ]
     assert gateway.get_orders() == [

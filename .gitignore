@@ -3,6 +3,8 @@
 fatty-bitget-demo.env
 .venv/
 __pycache__/
+# Local verification receipts, disposable test environments and database sockets.
+artifacts/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -15,3 +17,7 @@ data/backups/
 backups/
 data/logs/
 *.py[cod]
+
+# Local pre-change database dumps (never commit a live DB snapshot).
+.backups/
+*.dump

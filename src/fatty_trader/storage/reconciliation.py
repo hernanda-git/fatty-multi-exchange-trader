@@ -32,6 +32,7 @@ class ReconciliationRepository(Protocol):
     def kill_switch_active(self, scope: str) -> bool: ...
     def latch_kill_switch(self, scope: str, reason: str) -> None: ...
     def release_kill_switch(self, scope: str, approval_reference: str) -> None: ...
+    def has_unhandled_post_fill_mismatch(self, scope: str) -> bool: ...
 
 
 class KillSwitch(Protocol):
@@ -51,6 +52,7 @@ class InMemoryReconciliationRepository:
         self._expected_symbols = set(expected_symbols or set())
         self._kill_switches: set[str] = set()
         self._alert_keys: set[tuple[str, str]] = set()
+        self._unhandled_mismatches: set[str] = set()
         self.alerts: list[str] = []
 
     def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
@@ -89,6 +91,15 @@ class InMemoryReconciliationRepository:
         if not approval_reference.strip():
             raise ValueError("approval reference is required")
         self._kill_switches.discard(scope)
+        # A release also handles any mismatch recorded before it.
+        self._unhandled_mismatches.discard(scope)
+
+    def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
+        return scope in self._unhandled_mismatches
+
+    def record_post_fill_mismatch(self, scope: str = "bitget") -> None:
+        """Test seam: simulate a durable post-fill mismatch observation."""
+        self._unhandled_mismatches.add(scope)
 
     def is_active(self, scope: str) -> bool:
         return self.kill_switch_active(scope)
@@ -195,6 +206,31 @@ class PostgresReconciliationRepository:
         except Exception:
             connection.rollback()
             raise
+
+    def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
+        """Return whether a post-fill mismatch was recorded since the last release.
+
+        A mismatch stays "unhandled" until the kill switch for ``scope`` is released:
+        ``release_kill_switch`` bumps ``updated_at``, so only mismatches newer than
+        that timestamp keep re-latching. Without that comparison a released switch
+        would re-latch forever on a historical row and could never be cleared.
+        """
+        connection = self._connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            """SELECT EXISTS (
+                   SELECT 1 FROM bitget_post_fill_reconciliations m
+                   WHERE m.exchange = %s
+                     AND m.status = 'mismatch'
+                     AND m.created_at > COALESCE(
+                         (SELECT k.updated_at FROM venue_kill_switches k WHERE k.scope = %s),
+                         TIMESTAMPTZ '1970-01-01 00:00:00+00'
+                     )
+               )""",
+            (scope, scope),
+        )
+        row = cursor.fetchone()
+        return bool(row["exists"] if isinstance(row, dict) else row[0])
 
     def release_kill_switch(self, scope: str, approval_reference: str) -> None:
         """Record an approved release and enqueue a durable operator event."""

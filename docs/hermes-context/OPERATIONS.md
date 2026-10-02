@@ -1,4 +1,8 @@
-# Operations status
+# Operations Status
+
+> HISTORICAL MIRROR: use [current operations](../OPERATIONS.md) and
+> [remediation gates](../remediation-verification.md). Preserve this older
+> capture for context; it is not current gate/account/readiness evidence.
 
 ## Local development
 
@@ -12,7 +16,7 @@ uv run mypy src
 
 ## Compose topology
 
-The production topology on `fspmi-hostinger` is **LIVE** on the Bitget lane with a bounded canary. `postgres` is the durable state store; `migrate` must complete before `init`, and all intake/analyzer/venue/operator services wait for `init`. Venue services are separate processes: Binance services receive only Binance credentials (currently disabled), Bitget services receive only Bitget credentials (LIVE), and the analyzer receives no exchange credentials. `WEB_HOST_PORT` defaults to `18081`.
+The production topology on `fspmi-hostinger` is configured for the **LIVE** Bitget account. New-entry and fallback/stream mutation gates remain closed during remediation; configured account mode is not trading authorization. `postgres` is the durable state store; `migrate` must complete before `init`, and all intake/analyzer/venue/operator services wait for `init`. Venue services are separate processes: Binance services receive only Binance credentials (currently disabled), Bitget services receive only Bitget credentials (LIVE), and the analyzer receives no exchange credentials. `WEB_HOST_PORT` defaults to `18081`.
 
 ```bash
 POSTGRES_PASSWORD='use-a-local-secret-manager-value' docker compose up -d --build

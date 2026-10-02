@@ -1,5 +1,11 @@
 # Bitget LIVE Readiness Report
 
+> HISTORICAL / STALE: preserved capture, not current release readiness. Some
+> earlier protection/reconciliation claims below are superseded by
+> [current evidence-led gates](remediation-verification.md). In particular,
+> generic 43011 does not prove unsupported TPSL, and close acknowledgement is
+> not proof of filled or flat. Do not execute recovery from this old report.
+
 **Captured:** 2026-09-11 00:30:00 UTC  
 **Repository:** `/home/valarion/apps/fatty-multi-exchange-trader`  
 **Git:** `d61f149` on `main`; equals `origin/main` at capture time.  

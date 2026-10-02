@@ -313,7 +313,9 @@ def test_demo_verify_public_symbol_metadata_and_price(demo: DemoBitgetClient) ->
 
 
 def test_demo_price_and_balance_commands(demo: DemoBitgetClient) -> None:
-    svc = OperatorCommandService(gateway=demo, operator_id=1, require_confirmation=False)
+    svc = OperatorCommandService(
+        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
+    )
     price_alert = svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
     assert "BTCUSDT" in price_alert and "60000" in price_alert
     bal_alert = svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=False)
@@ -393,7 +395,9 @@ def test_demo_reconciler_flags_unprotected_position(demo: DemoBitgetClient) -> N
 
 
 def test_demo_operator_open_price_balance_positions_flow(demo: DemoBitgetClient) -> None:
-    svc = OperatorCommandService(gateway=demo, operator_id=1, require_confirmation=False)
+    svc = OperatorCommandService(
+        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
+    )
     cmd = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
     # /open
     open_alert = svc.handle(cmd, sender_id=1, is_private=True, is_forwarded=False)
@@ -424,7 +428,9 @@ def test_demo_invalid_symbol_rejected(demo: DemoBitgetClient) -> None:
 
 def test_demo_insufficient_margin_skips(demo: DemoBitgetClient) -> None:
     demo.balance = Decimal("0")
-    svc = OperatorCommandService(gateway=demo, operator_id=1, require_confirmation=False)
+    svc = OperatorCommandService(
+        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
+    )
     cmd = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
     alert = svc.handle(cmd, sender_id=1, is_private=True, is_forwarded=False)
     # Alert returned, position not created due to zero qty
@@ -432,7 +438,9 @@ def test_demo_insufficient_margin_skips(demo: DemoBitgetClient) -> None:
 
 
 def test_demo_every_alert_contains_no_secrets(demo: DemoBitgetClient) -> None:
-    svc = OperatorCommandService(gateway=demo, operator_id=1, require_confirmation=False)
+    svc = OperatorCommandService(
+        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
+    )
     cmd = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
     alerts = [
         svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False),

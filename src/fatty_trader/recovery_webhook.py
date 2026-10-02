@@ -1,7 +1,7 @@
 """Auto-recovery webhook for the Bitget trading stack.
 
-Provides authenticated endpoints that reconcile stuck intents, release kill switches
-when safe, and fix dispatch states — enabling instant recovery without manual ops.
+Provides authenticated, read-only unresolved-intent inventory. No provider
+reconciliation, dispatch repair or kill-switch release is performed.
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ def create_recovery_app(
     async def recover_intents(
         authorization: str | None = Header(None),
     ) -> dict[str, object]:
-        """Reconcile all unresolved Bitget intents via GET-only provider reads."""
+        """Inventory unresolved intents without claiming provider reconciliation."""
         _auth(authorization)
-        reconciled = []
+        candidates = []
         errors = []
         with _get_connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -58,12 +58,18 @@ def create_recovery_app(
                 oid = row[1]
                 state = row[5]
                 if state in ("submitted", "unknown"):
-                    reconciled.append(oid)
+                    candidates.append(oid)
                 else:
                     errors.append({"oid": oid, "state": state, "reason": "not reconcilable"})
             except Exception as exc:
                 errors.append({"oid": row[1] if len(row) > 1 else "?", "reason": str(exc)})
-        return {"reconciled": reconciled, "errors": errors, "total": len(rows)}
+        return {
+            "read_only": True,
+            "reconciled": [],
+            "candidates": candidates,
+            "errors": errors,
+            "total": len(rows),
+        }
 
     @app.post("/recover/kill-switch")
     async def recover_kill_switch(

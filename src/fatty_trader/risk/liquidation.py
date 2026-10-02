@@ -101,24 +101,46 @@ def check_sl_before_liquidation(
     stop_loss: Decimal,
     liquidation_price: Decimal,
     buffer: Decimal = Decimal("0.10"),
+    minimum_gap_pct: Decimal = Decimal("0"),
+    minimum_ticks: int = 0,
+    price_tick: Decimal | None = None,
+    latency_slippage_allowance: Decimal = Decimal("0"),
 ) -> bool:
-    """Return True iff SL sits strictly between entry and liq with buffer gap.
+    """Return True iff SL clears both the legacy and latency-aware gap floors.
 
-    LONG:  liq < SL < entry  and (SL - liq) / (entry - liq) >= buffer.
-    SHORT: entry < SL < liq  and (liq - SL) / (liq - entry) >= buffer.
+    The existing span-relative ``buffer`` remains the first floor.  The optional
+    floors are expressed in price units so a low-priced symbol cannot pass with a
+    technically valid but operationally tiny liquidation gap.
     """
     side = Direction(direction)
     if entry <= 0 or stop_loss <= 0 or liquidation_price <= 0:
         return False
+    if buffer < 0 or minimum_gap_pct < 0 or latency_slippage_allowance < 0:
+        raise LiquidationGuardError("liquidation gap floors must be non-negative")
+    if minimum_ticks < 0:
+        raise LiquidationGuardError("minimum liquidation ticks must be non-negative")
+    if minimum_ticks and (price_tick is None or price_tick <= 0):
+        raise LiquidationGuardError("price_tick must be positive when minimum_ticks is set")
+    if price_tick is not None and price_tick < 0:
+        raise LiquidationGuardError("price_tick must be non-negative")
+
     gap: Decimal
+    span: Decimal
     if side is Direction.LONG:
         if not (liquidation_price < stop_loss < entry):
             return False
         span = entry - liquidation_price
-        gap = (stop_loss - liquidation_price) / span
+        gap = stop_loss - liquidation_price
     else:
         if not (entry < stop_loss < liquidation_price):
             return False
         span = liquidation_price - entry
-        gap = (liquidation_price - stop_loss) / span
-    return gap >= buffer
+        gap = liquidation_price - stop_loss
+
+    required_gap = max(
+        span * buffer,
+        entry * minimum_gap_pct,
+        (price_tick or Decimal("0")) * minimum_ticks,
+        latency_slippage_allowance,
+    )
+    return gap >= required_gap

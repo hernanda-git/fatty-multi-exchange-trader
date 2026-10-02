@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
 
@@ -32,8 +33,8 @@ def classifier_prompt(text: str) -> str:
         "Classify this arbitrary Telegram text as a trade signal. Return ONLY JSON with keys "
         "actionable, pair, side, entry, stop_loss, take_profits, confidence, reason. "
         "Use null or [] for values absent from the text; never infer or invent prices. "
-        "actionable is true only when pair, side, entry, stop_loss and at least one take profit "
-        "are explicitly present and their geometry is valid.\nTEXT:\n" + text
+        "actionable is true when pair, side, entry and stop_loss are explicitly present and "
+        "their geometry is valid; take_profits is optional and may be [].\nTEXT:\n" + text
     )
 
 
@@ -69,6 +70,13 @@ def _decimal(value: Any, name: str) -> Decimal | None:
 
 def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalClassification:
     actionable = data.get("actionable") is True
+    normalized_text = text.casefold()
+    if entry_stands_down(text):
+        actionable = False
+    else:
+        actionable = actionable and bool(
+            re.search(r"\b(?:long|short|entry|enter|buy|sell)\b", normalized_text)
+        )
     pair_value = data.get("pair")
     pair = str(pair_value).upper().replace("#", "").replace("$", "") if pair_value else None
     if pair:
@@ -88,13 +96,7 @@ def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalCla
     reason = str(data.get("reason") or "")
     signal = None
     if actionable:
-        if (
-            pair is None
-            or side not in {"LONG", "SHORT"}
-            or entry is None
-            or stop is None
-            or not take_profits
-        ):
+        if pair is None or side not in {"LONG", "SHORT"} or entry is None or stop is None:
             return SignalClassification(
                 False,
                 pair,

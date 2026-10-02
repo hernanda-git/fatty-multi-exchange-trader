@@ -12,6 +12,7 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "telethon>=1.42,<2",
   "uvicorn>=0.34,<1",
+  "websockets>=14,<16",
 ]
 
 [dependency-groups]
