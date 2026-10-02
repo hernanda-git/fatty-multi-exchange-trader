@@ -1,6 +1,8 @@
 """Final ENTRY kill boundary: real service graph/PG, offline venue only."""
 
 # ruff: noqa: F401, F811
+from threading import Event, Thread
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
@@ -15,7 +17,7 @@ from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", ["global", "bitget"])
-@pytest.mark.parametrize("activation", ["preflight", "leverage"])
+@pytest.mark.parametrize("activation", ["preflight", "leverage", "eligibility_lock"])
 async def test_service_final_kill_blocks_known_unsent_entry(
     postgres_schema, monkeypatch, scope, activation
 ):
@@ -45,6 +47,37 @@ async def test_service_final_kill_blocks_known_unsent_entry(
             "entry_price=2.32,stop_loss=2.25,take_profits='[2.60]'::jsonb"
         )
 
+    lock_ready = Event()
+    lock_wait_seen = Event()
+    lock_errors = []
+    lock_thread = None
+
+    def activate_during_eligibility_lock():
+        try:
+            with factory() as locker, factory(autocommit=True) as observer:
+                locker.execute("SELECT id FROM dispatches WHERE id=%s FOR UPDATE", (dispatch_id,))
+                locker_pid = locker.info.backend_pid
+                lock_ready.set()
+                deadline = monotonic() + 10
+                while monotonic() < deadline:
+                    row = observer.execute(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE %s = ANY(pg_blocking_pids(pid)) "
+                        "AND query LIKE '%%FOR UPDATE OF d%%')",
+                        (locker_pid,),
+                    ).fetchone()
+                    assert row is not None
+                    if row[0]:
+                        lock_wait_seen.set()
+                        kill.latch_kill_switch(scope, "offline-eligibility-lock-race")
+                        # Commit releases the real row lock only AFTER the kill is durable.
+                        return
+                    sleep(0.01)
+                raise AssertionError("final eligibility query never waited on dispatch row lock")
+        except BaseException as exc:
+            lock_errors.append(exc)
+            lock_ready.set()
+
     class Venue(fixtures["Venue"]):
         def __init__(self, client):
             super().__init__()
@@ -57,9 +90,15 @@ async def test_service_final_kill_blocks_known_unsent_entry(
             return snapshot
 
         async def ensure_leverage(self, symbol, leverage):
+            nonlocal lock_thread
             self.leverage_calls += 1
             if activation == "leverage":
                 kill.latch_kill_switch(scope, "offline-race")
+            elif activation == "eligibility_lock":
+                lock_thread = Thread(target=activate_during_eligibility_lock)
+                lock_thread.start()
+                assert lock_ready.wait(5), "row-lock holder did not start"
+                assert not lock_errors
 
     class Provider:
         def __init__(self):
@@ -103,7 +142,15 @@ async def test_service_final_kill_blocks_known_unsent_entry(
         preflight=runtime.preflight,
         kill_switch=kill,
     )
-    outcome = await dispatcher.run_once("offline", 30)
+    try:
+        outcome = await dispatcher.run_once("offline", 30)
+    finally:
+        if lock_thread is not None:
+            lock_thread.join(timeout=15)
+    if activation == "eligibility_lock":
+        assert lock_thread is not None and not lock_thread.is_alive()
+        assert not lock_errors
+        assert lock_wait_seen.is_set(), "kill must activate during an observed real PG lock wait"
     assert kill.is_active(scope)
     assert provider.posts == []
     assert outcome == "rejected"

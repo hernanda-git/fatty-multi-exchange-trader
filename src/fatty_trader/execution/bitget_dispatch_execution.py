@@ -285,33 +285,33 @@ class BitgetDispatchExecution:
         """
         repository = self._dispatch_repository
         unresolved = getattr(repository, "unresolved_protection_issues", None)
-        # Re-read both applicable scopes after preflight/leverage, at the
-        # guarded ENTRY boundary only. Never gate reconciliation or closes.
-        killed = self._kill_switch is not None and any(
-            (self._kill_switch.is_active("global"), self._kill_switch.is_active("bitget"))
-        )
-        if (
-            killed
-            or (callable(unresolved) and unresolved())
-            or (
-                callable(getattr(self._recovery_protection, "inventory", None))
-                and not self.recovery_ready
-            )
+        if (callable(unresolved) and unresolved()) or (
+            callable(getattr(self._recovery_protection, "inventory", None))
+            and not self.recovery_ready
         ):
             intent.state = "rejected"
             self._store.update(intent)
             self._resolve_reservation(intent, "REJECTED")
             return "REJECTED"
-        if repository is None:
-            return None
-        if repository.entry_source_eligible(dispatch.id):
-            return None
-        intent.state = "rejected"
-        self._store.update(intent)
-        # The first read must retain any durable ambiguous intent. This second
-        # read can retire our now-proven unsent rejected claim, never a replay.
-        repository.entry_source_eligible(dispatch.id)
-        return "EXPIRED"
+        if repository is not None and not repository.entry_source_eligible(dispatch.id):
+            intent.state = "rejected"
+            self._store.update(intent)
+            # The first read must retain any durable ambiguous intent. This second
+            # read can retire our now-proven unsent rejected claim, never a replay.
+            repository.entry_source_eligible(dispatch.id)
+            return "EXPIRED"
+        # Eligibility may wait on FOR UPDATE. Read BOTH kill scopes only after
+        # all eligibility/protection DB operations, immediately before permission.
+        # Never gate reconciliation or closes with this ENTRY-only boundary.
+        killed = self._kill_switch is not None and any(
+            (self._kill_switch.is_active("global"), self._kill_switch.is_active("bitget"))
+        )
+        if killed:
+            intent.state = "rejected"
+            self._store.update(intent)
+            self._resolve_reservation(intent, "REJECTED")
+            return "REJECTED"
+        return None
 
     async def reconcile_active_reservations(self) -> int:
         """GET-reconcile active commitments before a restarted worker admits entries."""
