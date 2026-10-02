@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 
 from fatty_trader.exchanges.bitget.client import BitgetRestClient
 from fatty_trader.execution.bitget_monitor import BitgetMonitor
@@ -15,9 +16,10 @@ from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 VENUE_SCOPE = "bitget"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--approval-reference", required=True)
+    parser.add_argument("--confirm", action="store_true")
     parser.add_argument(
         "--scope",
         default=VENUE_SCOPE,
@@ -27,11 +29,17 @@ def parse_args() -> argparse.Namespace:
             f"protection stream dies, {VENUE_SCOPE} when venue-wide reconciliation fails"
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-async def main() -> int:
-    args = parse_args()
+async def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if "--confirm" not in argv:
+        print("REFUSED: explicit --confirm required")
+        return 2
+    args = parse_args(argv)
+    if not args.approval_reference.strip():
+        raise ValueError("approval reference is required")
     if os.environ.get("BITGET_MODE", "").upper() != "DEMO":
         raise RuntimeError("kill-switch recovery is DEMO-only")
     import psycopg

@@ -2,10 +2,12 @@ from fatty_trader.storage.migrations import MIGRATIONS
 
 
 def test_live_dispatch_migration_persists_take_profits() -> None:
-    matching = [sql for version, sql in MIGRATIONS if version >= 2 and "take_profits" in sql]
-
-    assert matching
-    assert "canonical_signals" in matching[-1]
+    # Migration 2 owns canonical signal TP preservation; newer schemas may
+    # legitimately persist take_profits on unrelated tables (e.g. fallback).
+    sql = " ".join(dict(MIGRATIONS)[2].split())
+    assert (
+        "ALTER TABLE canonical_signals ADD COLUMN take_profits JSONB NOT NULL DEFAULT '[]'" in sql
+    )
 
 
 def test_kill_switch_migration_keeps_schema_and_leaves_bitget_latchable() -> None:

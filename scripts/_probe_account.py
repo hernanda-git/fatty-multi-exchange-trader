@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Helper: read Bitget account state. Run inside dispatcher-bitget container."""
+
 import asyncio
 import os
-import sys
-
-sys.path.insert(0, "/app/src")
 
 from fatty_trader.exchanges.bitget.client import BitgetRestClient  # noqa: E402, I001
 
-async def main():
+
+async def main(symbol="BTCUSDT"):
     client = BitgetRestClient(
         api_key=os.environ["BITGET_API_KEY"],
         api_secret=os.environ["BITGET_API_SECRET"],
@@ -16,7 +15,7 @@ async def main():
         mode="LIVE",
     )
     try:
-        acct = await client.get_account("BTCUSDT")
+        acct = await client.get_account(symbol=symbol)
         print(
             "|".join(
                 str(acct.get(key) if acct.get(key) is not None else "N/A")
@@ -34,4 +33,6 @@ async def main():
     finally:
         await client.aclose()
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())

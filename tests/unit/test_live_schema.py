@@ -1,14 +1,46 @@
 """Durable live-trading schema + migrations (Plan Task 3, TDD).
 
 Fresh-schema test: INITIAL + LIVE applied from scratch exposes every live table.
-Migration test: INITIAL applied (simulating the deployed DB), rows inserted,
-then migrations run — data must survive and new tables must appear.
+Migration tests: real PostgreSQL, isolated per-test schemas. INITIAL applied
+(simulating the deployed DB), rows inserted, then migrations run — data must
+survive and new tables must appear. SQLite is only used for fresh-schema checks.
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from collections.abc import Iterator
 from typing import Any
+from uuid import uuid4
+
+import pytest
+
+
+@pytest.fixture
+def postgres_db() -> Iterator[Any]:
+    """Run migrations unmodified in a unique, disposable PostgreSQL schema."""
+    dsn = os.environ.get("FATTY_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("set FATTY_TEST_POSTGRES_DSN to run PostgreSQL migration proofs")
+    psycopg = pytest.importorskip("psycopg")
+    schema = f"fatty_live_schema_{uuid4().hex}"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(psycopg.sql.SQL("CREATE SCHEMA {}").format(psycopg.sql.Identifier(schema)))
+        try:
+            conn.execute(
+                psycopg.sql.SQL("SET search_path TO {}").format(psycopg.sql.Identifier(schema))
+            )
+            # Migration SQL uses SAVEPOINTs and therefore requires a transaction.
+            conn.autocommit = False
+            yield conn
+        finally:
+            conn.rollback()
+            conn.autocommit = True
+            conn.execute("SET search_path TO public")
+            conn.execute(
+                psycopg.sql.SQL("DROP SCHEMA {} CASCADE").format(psycopg.sql.Identifier(schema))
+            )
 
 
 class SqliteCursorAdapter:
@@ -310,12 +342,12 @@ def test_invalid_intent_state_rejected_by_check_constraint() -> None:
         conn.close()
 
 
-def test_migration_from_deployed_schema_preserves_data() -> None:
+def test_migration_from_deployed_schema_preserves_data(postgres_db: Any) -> None:
     from fatty_trader.storage.migrations import apply_migrations
     from fatty_trader.storage.schema import apply_initial_schema
 
-    conn, cur = make_db()
-    try:
+    conn = postgres_db
+    with conn.cursor() as cur:
         apply_initial_schema(cur)  # what is currently deployed
         conn.execute(
             "INSERT INTO telegram_messages (id, channel_id, message_id, revision_hash,"
@@ -327,9 +359,27 @@ def test_migration_from_deployed_schema_preserves_data() -> None:
             " VALUES ('22222222-2222-2222-2222-222222222222', 'binance', 'keep-me',"
             " 'ENTRY', 'requested')"
         )
+        orders_before = conn.execute("SELECT * FROM orders").fetchall()
+        messages_before = conn.execute(
+            "SELECT row_to_json(telegram_messages) FROM telegram_messages"
+        ).fetchone()[0]
+        conn.commit()
         applied = apply_migrations(cur)
+        conn.commit()
+        assert conn.execute("SELECT * FROM orders").fetchall() == orders_before
+        messages_after = conn.execute(
+            "SELECT row_to_json(telegram_messages) FROM telegram_messages"
+        ).fetchone()[0]
+        # Additive migrations introduce metadata; every original field survives.
+        assert {key: messages_after[key] for key in messages_before} == messages_before
         assert applied, "expected pending migrations to be applied"
-        names = table_names(conn)
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = current_schema()"
+            ).fetchall()
+        }
         assert names >= LIVE_TABLES, f"missing after migrate: {LIVE_TABLES - names}"
         kept = conn.execute(
             "SELECT client_order_id FROM orders WHERE exchange = 'binance'"
@@ -337,29 +387,41 @@ def test_migration_from_deployed_schema_preserves_data() -> None:
         assert kept == [("keep-me",)]
         msgs = conn.execute("SELECT COUNT(*) FROM telegram_messages").fetchone()
         assert msgs == (1,)
-    finally:
-        conn.close()
 
 
-def test_migrations_are_idempotent_and_pending_only() -> None:
+def test_migrations_are_idempotent_and_pending_only(postgres_db: Any) -> None:
     from fatty_trader.storage.migrations import MIGRATIONS, apply_migrations
     from fatty_trader.storage.schema import apply_initial_schema
 
     assert [v for v, _ in MIGRATIONS] == sorted(v for v, _ in MIGRATIONS)
     assert MIGRATIONS[0][0] >= 1
 
-    conn, cur = make_db()
-    try:
+    conn = postgres_db
+    with conn.cursor() as cur:
         apply_initial_schema(cur)
         first = apply_migrations(cur)
         assert first == [v for v, _ in MIGRATIONS]
-        # New live row written between runs must survive the second run.
+        # New live row written between committed runs must survive the second run.
         conn.execute(
             "INSERT INTO live_order_intents (id, exchange, client_order_id, symbol, side,"
-            " role, state, requested_qty) VALUES ('a', 'binance', 'c1', 'BTCUSDT', 'BUY',"
+            " role, state, requested_qty) VALUES "
+            "('33333333-3333-3333-3333-333333333333', 'binance', 'c1', 'BTCUSDT', 'BUY',"
             " 'ENTRY', 'requested', 1)"
         )
+        live_before = conn.execute("SELECT * FROM live_order_intents").fetchall()
+        ledger_before = conn.execute(
+            "SELECT version, applied_at FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        conn.commit()
         second = apply_migrations(cur)
+        conn.commit()
+        assert conn.execute("SELECT * FROM live_order_intents").fetchall() == live_before
+        assert (
+            conn.execute(
+                "SELECT version, applied_at FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            == ledger_before
+        )
         assert second == []
         kept = conn.execute(
             "SELECT COUNT(*) FROM live_order_intents WHERE client_order_id = 'c1'"
@@ -367,5 +429,3 @@ def test_migrations_are_idempotent_and_pending_only() -> None:
         assert kept == (1,)
         versions = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         assert [row[0] for row in versions] == [v for v, _ in MIGRATIONS]
-    finally:
-        conn.close()

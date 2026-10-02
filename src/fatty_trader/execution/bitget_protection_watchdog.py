@@ -116,8 +116,13 @@ class BitgetProtectionWatchdog:
 
     async def run_once(self) -> WatchdogReport:
         socket_dead = self._socket_is_dead()
+        socket_state = getattr(self._socket, "state", None)
+        socket_ready = (
+            socket_state is not None
+            and str(getattr(socket_state, "value", socket_state)).upper() == "CONNECTED"
+        )
         reasons: list[str] = []
-        if socket_dead:
+        if socket_dead or not socket_ready:
             reasons.append("socket-not-connected")
 
         stream_fresh_by_symbol: dict[str, bool] = {}
@@ -153,7 +158,7 @@ class BitgetProtectionWatchdog:
             # A dead socket denies entries even if REST says the capability is
             # verified: without a live stream, protection is not being enforced.
             allow_new_entries[symbol] = (
-                read_ok and not socket_dead and (native_verified or stream_fresh)
+                read_ok and socket_ready and (native_verified or stream_fresh)
             )
             if native_verified and read_ok:
                 continue
@@ -184,7 +189,7 @@ class BitgetProtectionWatchdog:
             )
 
         unique_reasons = tuple(dict.fromkeys(reasons))
-        if socket_dead or provider_failure:
+        if not socket_ready or provider_failure:
             status = WatchdogStatus.FAILED
         elif "protection-stream-stale" in unique_reasons:
             status = WatchdogStatus.STALE

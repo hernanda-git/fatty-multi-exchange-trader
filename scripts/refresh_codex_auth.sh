@@ -50,9 +50,13 @@ docker compose restart analyzer
 
 printf '\nWaiting for analyzer health...\n'
 for _ in {1..30}; do
-  status="$(docker compose ps --format '{{.Service}} {{.Health}} {{.State}}' analyzer 2>/dev/null || true)"
+  if ! status="$(docker compose ps --format '{{.Service}} {{.Health}} {{.State}}' analyzer 2>/dev/null)"; then
+    status="unknown"
+  fi
   printf '%s\n' "${status}"
-  if [[ "${status}" == *"healthy"* ]]; then
+  # Match the complete row: "unhealthy" contains "healthy", and a stopped
+  # container or multiple rows must never be accepted as ready.
+  if [[ "${status}" == "analyzer healthy running" ]]; then
     printf 'Analyzer restarted and is healthy.\n'
     exit 0
   fi

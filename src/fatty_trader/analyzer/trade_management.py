@@ -31,6 +31,9 @@ _TP1 = re.compile(
 )
 _SL_TO_ENTRY = re.compile(r"\b(?:sl|stop\s*loss)\b.*\b(?:to|at)\s+(?:entry|be|breakeven)\b", re.I)
 _CLOSE = re.compile(r"\b(?:close|exit)\b.*\b(?:all|full|position)\b", re.I)
+_NEGATED_CLOSE = re.compile(
+    r"(?<![$#])\b(?:do\s+not|don't|dont|never|not)\s+(?:close|exit)\b", re.I
+)
 
 
 class ManagementAction(StrEnum):
@@ -56,11 +59,13 @@ def parse_source_management(text: str) -> SourceManagement | None:
     }
     if len(normalized) != 1:
         return None
+    if re.search(r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", text, re.I):
+        return None
     if _TP1.search(text):
         action = ManagementAction.TP1_BOOKED
     elif _SL_TO_ENTRY.search(text):
         action = ManagementAction.SL_TO_ENTRY
-    elif _CLOSE.search(text):
+    elif _CLOSE.search(text) and not _NEGATED_CLOSE.search(text):
         action = ManagementAction.CLOSE
     else:
         return None

@@ -37,6 +37,24 @@ def event(text: str) -> KakaEvent:
 # --------------------------------------------------------------------------- engine
 
 
+def test_cancel_tp_is_target_removal_not_position_cancel() -> None:
+    assert event("ETH Cancel TP").type is KakaEventType.TP_REMOVED
+
+
+def test_management_preserves_explicit_symbol() -> None:
+    for text in (
+        "ETH Set sl at be",
+        "ETH SL hit",
+        "ETH Close",
+        "ETH Remove tp",
+        "ETH Tp -120",
+        "ETH Take 2nd entry 110",
+        "ETH Move sl -95",
+        "ETH Cancelling the entry",
+    ):
+        assert parse_kaka_event(text, message_id=2).symbol == "ETHUSDT", text
+
+
 def test_open_uses_stated_entry_and_our_sizing() -> None:
     trade = open_trade(event("Short $ETH | SL -2401 | ENTRY -2400"), market_price=None)
 
@@ -70,7 +88,10 @@ def test_second_entry_averages_into_one_position() -> None:
     added = add_leg(trade, price=Decimal("110"), market_price=None)
 
     assert added.legs == 2
-    assert added.entry_price == Decimal("105")  # (100*20 + 110*20) / 40
+    assert added.entry_price == Decimal("40") / (Decimal("20") / 100 + Decimal("20") / 110)
+    assert abs(
+        added.notional_usdt / added.entry_price - (Decimal("20") / 100 + Decimal("20") / 110)
+    ) < Decimal("1e-26")
     assert added.notional_usdt == Decimal("40")
     assert added.margin_usdt == Decimal("2")
 
@@ -83,7 +104,7 @@ def test_breakeven_moves_the_stop_to_entry() -> None:
 def test_pnl_is_signed_and_charged_fees_on_both_sides() -> None:
     trade = open_trade(event("Long -$ETH | ENTRY -100 | SL -90"), market_price=None)
 
-    expected = Decimal("20") * Decimal("0.10") - Decimal("20") * TAKER_FEE_RATE * 2
+    expected = Decimal("20") * Decimal("0.10") - (Decimal("20") + Decimal("22")) * TAKER_FEE_RATE
     assert pnl_usdt(trade, Decimal("110")) == expected.quantize(Decimal("0.000001"))
     assert pnl_usdt(trade, Decimal("90")) < 0
 
@@ -131,6 +152,30 @@ class FakeCursor:
         return [
             entry for entry in self.statements if needle in entry[0] or needle in repr(entry[1])
         ]
+
+
+def test_duplicate_management_is_noop_before_target_or_price_lookup() -> None:
+    from dataclasses import asdict
+
+    trade = open_trade(event("Long ETH ENTRY 100 SL 90"), market_price=None)
+
+    class DuplicateCursor(FakeCursor):
+        def __init__(self):
+            super().__init__(
+                fetchone_row={"id": "11111111-1111-1111-1111-111111111111", **asdict(trade)}
+            )
+
+        def fetchall(self):
+            if "FROM paper_kaka_events" in self.statements[-1][0]:
+                return [{"source_message_id": 1000}]
+            return []
+
+    cursor = DuplicateCursor()
+    prices = []
+    worker.handle_event(cursor, event("ETH DCA 110"), lambda symbol: prices.append(symbol))
+    assert not cursor.statements_matching("UPDATE paper_kaka_trades")
+    assert prices == []
+    assert not cursor.statements_matching("SELECT id, source_message_id")
 
 
 def test_open_event_writes_a_paper_trade_only() -> None:

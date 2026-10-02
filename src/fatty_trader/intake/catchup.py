@@ -5,10 +5,11 @@ silently stops ingestion and every message in that window is lost forever. Incid
 2026-09-27: the session was shared with a host listener, the update stream died at
 17:45:47Z, and the source's 20:00:51Z ENA signal never reached the database.
 
-This module polls each configured channel for messages newer than the newest message
-already persisted. It deliberately does nothing on a cold start (no cursor for a channel)
-because fetching history there would replay old signals as if they were live; realtime
-ingestion owns the first sighting of a channel.
+This module polls each configured channel after an independent history-coverage
+watermark, never the maximum realtime ID. It deliberately does nothing on a cold start
+(no coverage baseline): the first persisted source sighting establishes that baseline.
+Reverse polling advances coverage only after durable handling; deleted Telegram IDs
+need not be manufactured or treated as unfillable numeric holes.
 """
 
 from __future__ import annotations
@@ -31,24 +32,42 @@ def telegram_peer_id(entity: Any) -> int:
     return int(get_peer_id(entity))
 
 
-def build_cursor_lookup(connection_factory: Callable[[], Any]) -> Callable[[int], int | None]:
-    """Return a callable giving the newest persisted message id for a channel."""
+class PostgresCatchupCoverage:
+    """Independent history coverage; realtime inserts must never advance it."""
 
-    def lookup(channel_id: int) -> int | None:
+    def __init__(self, connection_factory: Callable[[], Any]) -> None:
+        self._connection_factory = connection_factory
+
+    def __call__(self, channel_id: int) -> int | None:
         from contextlib import closing
 
-        with closing(connection_factory()) as connection, connection.cursor() as cursor:
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT max(message_id) FROM telegram_messages WHERE channel_id = %s",
+                "SELECT covered_message_id FROM telegram_catchup_coverage WHERE channel_id = %s",
                 (channel_id,),
             )
             row = cursor.fetchone()
         if row is None:
             return None
-        value = row.get("max") if isinstance(row, dict) else row[0]
+        value = row.get("covered_message_id") if isinstance(row, dict) else row[0]
         return int(value) if value is not None else None
 
-    return lookup
+    def advance(self, channel_id: int, message_id: int) -> None:
+        from contextlib import closing
+
+        with closing(self._connection_factory()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """UPDATE telegram_catchup_coverage
+                    SET covered_message_id = greatest(covered_message_id, %s)
+                    WHERE channel_id = %s""",
+                    (message_id, channel_id),
+                )
+            connection.commit()
+
+
+def build_cursor_lookup(connection_factory: Callable[[], Any]) -> PostgresCatchupCoverage:
+    return PostgresCatchupCoverage(connection_factory)
 
 
 async def catch_up_missed(
@@ -73,7 +92,13 @@ async def catch_up_missed(
         async for message in client.iter_messages(
             entity, min_id=cursor, reverse=True, limit=per_run_limit
         ):
-            await forwarder.handle_message(channel_id, message)
+            handler = getattr(forwarder, "handle_historical_message", forwarder.handle_message)
+            await handler(channel_id, message)
+            # A failed persistence/advance retries safely; duplicates are idempotent.
+            # Reverse history enumerates extant IDs, so deleted numeric IDs are not gaps.
+            advance = getattr(cursor_lookup, "advance", None)
+            if advance is not None:
+                advance(channel_id, int(message.id))
             ingested += 1
     return ingested
 

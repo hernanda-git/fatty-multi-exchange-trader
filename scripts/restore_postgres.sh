@@ -20,10 +20,19 @@ if ! $compose_bin exec -T postgres pg_restore --list <"$backup_file" >/dev/null;
   exit 1
 fi
 
-running="$($compose_bin ps --status running --services | grep -vx 'postgres' || true)"
-if [[ -n "$running" ]]; then
-  printf 'warning=app_services_running:%s\n' "$(printf '%s' "$running" | tr '\n' ',')" >&2
+# Refuse every running app service, including future workers. Failed discovery
+# is unknown state, not evidence that workers are stopped. Operators must keep
+# workers stopped throughout restore; this check does not lock Compose startup.
+if ! running="$($compose_bin ps --status running --services)"; then
+  printf 'refusing_restore_running_services_unknown\n' >&2
+  exit 2
 fi
+while IFS= read -r service; do
+  if [[ -n "$service" && "$service" != "postgres" ]]; then
+    printf 'refusing_restore_app_service_running=%s\n' "$service" >&2
+    exit 2
+  fi
+done <<<"$running"
 
 $compose_bin exec -T postgres pg_restore \
   --clean --if-exists --no-owner \

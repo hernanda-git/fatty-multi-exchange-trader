@@ -35,7 +35,7 @@ async def backfill_latest(
             async for message in client.iter_messages(entity, limit=1):
                 # Marked id (-100<id>): the realtime handler and catch-up both store
                 # event.chat_id, so the raw entity id would never match the cursor.
-                intake.ingest(channel_id=peer_id_of(entity), message=message)
+                intake.ingest(channel_id=peer_id_of(entity), message=message, origin="backfill")
                 saved += 1
     finally:
         await client.disconnect()

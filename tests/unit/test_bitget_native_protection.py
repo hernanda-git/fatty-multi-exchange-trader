@@ -331,3 +331,191 @@ async def test_pre_cutover_flat_account_never_calls_emergency_close() -> None:
     assert result.state is ProtectionState.FAILED
     assert result.emergency_close_oid is None
     assert client.close_calls == []
+
+
+# Exercise production execution -> real REST client -> serialized HTTP body.
+def _rest_protection_client(
+    intent,
+    *,
+    take_profit=True,
+    provider_error=None,
+    error_position_flat=True,
+):
+    import json
+
+    import httpx
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+
+    seen = []
+    plans = []
+    for leg, plan_type, trigger, suffix in (
+        ("stopLoss", "pos_loss", "49000", "sl"),
+        ("stopSurplus", "pos_profit", "51000", "tp"),
+    ):
+        if suffix == "tp" and not take_profit:
+            continue
+        plans.append(
+            {
+                "symbol": intent.symbol,
+                "holdSide": "buy",
+                "planType": plan_type,
+                "orderId": f"plan-{suffix}",
+                f"{leg}ClientOid": f"{intent.client_oid}-{suffix}",
+                "triggerPrice": trigger,
+                "triggerType": "mark_price",
+                "orderType": "market",
+                "planStatus": "live",
+                "size": "",
+            }
+        )
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/place-pos-tpsl"):
+            json.loads(request.content)  # Require a real serialized request.
+            if provider_error:
+                return httpx.Response(400, json={"code": "43011", "msg": provider_error})
+            data = plans
+        elif request.url.path.endswith("/single-position"):
+            # Failure containment observes flat, so this test cannot place a close.
+            data = (
+                []
+                if provider_error and error_position_flat
+                else [
+                    {
+                        "symbol": intent.symbol,
+                        "holdSide": "buy",
+                        "total": str(intent.filled_qty),
+                        "marginMode": "isolated",
+                        "posMode": "one_way_mode",
+                        "stopLossId": "plan-sl",
+                        "takeProfitId": "plan-tp" if take_profit else "",
+                    }
+                ]
+            )
+        elif request.url.path.endswith("/orders-plan-pending"):
+            data = {"entrustedList": plans}
+        else:
+            raise AssertionError(f"Unexpected HTTP request: {request.method} {request.url}")
+        return httpx.Response(200, json={"code": "00000", "data": data})
+
+    client = BitgetRestClient(
+        "offline-key",
+        "offline-secret",
+        "offline-passphrase",
+        mode="LIVE",
+        transport=httpx.MockTransport(handler),
+    )
+    return client, seen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("take_profit", [False, True])
+@pytest.mark.parametrize("filled_qty", ["0.01", "0.008"])
+async def test_production_native_market_protection_serializes_omission(take_profit, filled_qty):
+    import json
+    from dataclasses import replace
+
+    intent = _intent()
+    intent.filled_qty = Decimal(filled_qty)
+    plan = replace(_plan() if take_profit else _plan_stop_only(), quantity=intent.filled_qty)
+    client, seen = _rest_protection_client(intent, take_profit=take_profit)
+    capabilities = InMemoryProtectionCapabilityRepository()
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), capability_repository=capabilities, environment="LIVE"
+    )
+    try:
+        result = await adapter.protect_filled_position(intent, plan, InMemoryLiveIntentStore())
+    finally:
+        await client.aclose()
+    posts = [request for request in seen if request.method == "POST"]
+    assert len(posts) == 1
+    payload = json.loads(posts[0].content)
+    expected = {
+        "symbol": "BTCUSDT",
+        "productType": "USDT-FUTURES",
+        "marginCoin": "USDT",
+        "holdSide": "buy",
+        "stopLossTriggerPrice": "49000",
+        "stopLossTriggerType": "mark_price",
+        "stopLossClientOid": f"{intent.client_oid}-sl",
+    }
+    if take_profit:
+        expected.update(
+            stopSurplusTriggerPrice="51000",
+            stopSurplusTriggerType="mark_price",
+            stopSurplusClientOid=f"{intent.client_oid}-tp",
+        )
+    assert payload == expected  # No execute prices, size, delegateType, or phantom TP.
+    assert result.state is ProtectionState.VENUE_PROTECTED
+    assert result.observed_quantity == intent.filled_qty
+    assert adapter.degraded is False
+    capability = capabilities.get("bitget", "LIVE", intent.symbol)
+    assert capability.native_state.value == "VERIFIED"
+    assert capability.last_verified_at is not None
+    assert capability.last_error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        "presetSLExcutePrice must than 0",
+        "delegateType is error",
+        "The parameter does not meet the specification",
+    ],
+)
+async def test_native_parameter_rejection_is_failed_not_symbol_unsupported(provider_error):
+    intent = _intent()
+    client, seen = _rest_protection_client(intent, provider_error=provider_error)
+    capabilities = InMemoryProtectionCapabilityRepository()
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), capability_repository=capabilities, environment="LIVE"
+    )
+    try:
+        result = await adapter.protect_filled_position(intent, _plan(), InMemoryLiveIntentStore())
+    finally:
+        await client.aclose()
+    # 43011 is parameter validation, not evidence of a symbol capability.
+    assert len([request for request in seen if request.method == "POST"]) == 1
+    capability = capabilities.get("bitget", "LIVE", intent.symbol)
+    assert capability is not None
+    assert capability.native_state.value == "FAILED"
+    assert capability.fallback_allowed is False
+    assert capability.last_error == "native-protection-parameter-rejected"
+    assert result.state is ProtectionState.DEGRADED
+    assert result.reason == "native-protection-parameter-rejected"
+    assert adapter.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_native_parameter_error_degrades_open_position_without_emergency_close():
+    intent = _intent()
+    client, seen = _rest_protection_client(
+        intent,
+        provider_error="presetSLExcutePrice must than 0",
+        error_position_flat=False,
+    )
+    capabilities = InMemoryProtectionCapabilityRepository()
+    store = InMemoryLiveIntentStore()
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), capability_repository=capabilities, environment="LIVE"
+    )
+    try:
+        result = await adapter.protect_filled_position(intent, _plan(), store)
+    finally:
+        await client.aclose()
+    assert result.state is ProtectionState.DEGRADED
+    assert result.reason == "native-protection-parameter-rejected"
+    assert result.emergency_close_oid is None
+    assert store.get(f"{intent.client_oid}-emergency") is None
+    assert len([request for request in seen if request.method == "POST"]) == 1
+    capability = capabilities.get("bitget", "LIVE", intent.symbol)
+    assert capability is not None
+    assert capability.native_state.value == "FAILED"
+    assert capability.last_error == "native-protection-parameter-rejected"
+    assert adapter.degraded is True
+    # Protection failure cannot rewrite the separately proven entry fill.
+    assert intent.state == "filled"
+    assert intent.filled_qty == Decimal("0.008")

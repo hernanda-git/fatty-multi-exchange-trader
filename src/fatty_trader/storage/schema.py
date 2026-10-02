@@ -316,6 +316,110 @@ CREATE TABLE IF NOT EXISTS reconciliation_state (
 """
 
 
+# Additive admission DDL; historical bootstrap text above is intentionally frozen.
+DURABLE_ADMISSION_SCHEMA_SQL = """
+ALTER TABLE bitget_margin_reservations ADD COLUMN IF NOT EXISTS symbol TEXT;
+ALTER TABLE bitget_margin_reservations ADD COLUMN IF NOT EXISTS environment TEXT;
+-- Freeze provenance for exact pre-admission bindings, never infer LIVE/DEMO.
+-- The registry is migration-owned evidence, not a runtime admission write path.
+LOCK TABLE live_order_intents, bitget_margin_reservations IN ACCESS EXCLUSIVE MODE;
+CREATE TABLE IF NOT EXISTS admission_legacy_bindings (
+    reservation_id UUID PRIMARY KEY REFERENCES bitget_margin_reservations(id),
+    exchange TEXT NOT NULL,
+    client_order_id TEXT NOT NULL,
+    balance_snapshot_id UUID NOT NULL,
+    symbol TEXT NOT NULL CHECK (btrim(symbol) <> ''),
+    planned_margin_usdt NUMERIC NOT NULL,
+    UNIQUE (reservation_id, exchange, client_order_id, balance_snapshot_id,
+            symbol, planned_margin_usdt)
+);
+REVOKE INSERT, UPDATE, DELETE ON admission_legacy_bindings FROM PUBLIC;
+INSERT INTO admission_legacy_bindings
+    (reservation_id, exchange, client_order_id, balance_snapshot_id, symbol,
+     planned_margin_usdt)
+SELECT r.id, r.exchange, r.client_order_id, r.balance_snapshot_id, min(i.symbol),
+       r.planned_margin_usdt
+FROM bitget_margin_reservations r
+JOIN live_order_intents i ON i.margin_reservation_id = r.id
+WHERE r.symbol IS NULL AND r.environment IS NULL
+GROUP BY r.id
+HAVING count(DISTINCT i.symbol) = 1
+   AND bool_and(i.role = 'ENTRY' AND i.exchange = r.exchange
+       AND i.client_order_id = r.client_order_id
+       AND i.balance_snapshot_id IS NOT NULL
+       AND i.balance_snapshot_id = r.balance_snapshot_id
+       AND i.planned_margin_usdt IS NOT NULL
+       AND i.planned_margin_usdt = r.planned_margin_usdt
+       AND btrim(i.symbol) <> '')
+ON CONFLICT (reservation_id) DO NOTHING;
+-- Escaped PL/pgSQL separators preserve the historical migration SQL splitter.
+CREATE OR REPLACE FUNCTION reject_legacy_admission_provenance_write()
+RETURNS trigger LANGUAGE plpgsql AS
+E'BEGIN RAISE EXCEPTION ''immutable legacy admission provenance'' \
+USING ERRCODE = ''23514''\\073 END\\073';
+CREATE TRIGGER admission_legacy_provenance_immutable
+BEFORE INSERT OR UPDATE OR DELETE ON admission_legacy_bindings
+FOR EACH ROW EXECUTE FUNCTION reject_legacy_admission_provenance_write();
+CREATE TRIGGER admission_legacy_provenance_no_truncate
+BEFORE TRUNCATE ON admission_legacy_bindings
+FOR EACH STATEMENT EXECUTE FUNCTION reject_legacy_admission_provenance_write();
+ALTER TABLE bitget_margin_reservations ADD COLUMN IF NOT EXISTS legacy_binding_symbol TEXT;
+ALTER TABLE bitget_margin_reservations ADD COLUMN IF NOT EXISTS binding_symbol TEXT
+GENERATED ALWAYS AS (coalesce(symbol, legacy_binding_symbol)) STORED;
+UPDATE bitget_margin_reservations r
+SET legacy_binding_symbol = b.symbol
+FROM admission_legacy_bindings b
+WHERE r.id = b.reservation_id AND r.symbol IS NULL AND r.environment IS NULL
+      AND r.legacy_binding_symbol IS NULL;
+ALTER TABLE bitget_margin_reservations ADD CONSTRAINT admission_legacy_binding_provenance
+FOREIGN KEY (id, exchange, client_order_id, balance_snapshot_id,
+             legacy_binding_symbol, planned_margin_usdt)
+REFERENCES admission_legacy_bindings
+    (reservation_id, exchange, client_order_id, balance_snapshot_id, symbol,
+     planned_margin_usdt);
+ALTER TABLE bitget_margin_reservations ADD CONSTRAINT admission_symbol_environment
+CHECK ((symbol IS NULL AND environment IS NULL) OR
+       (symbol IS NOT NULL AND btrim(symbol) <> '' AND environment IS NOT NULL
+        AND environment IN ('DEMO', 'LIVE')));
+CREATE UNIQUE INDEX IF NOT EXISTS bitget_margin_reservations_symbol_owner
+ON bitget_margin_reservations (exchange, environment, symbol)
+WHERE state IN ('reserved', 'unknown', 'consumed');
+"""
+
+
+ADMISSION_CONSTRAINTS_SCHEMA_SQL = """
+ALTER TABLE bitget_margin_reservations
+ADD COLUMN IF NOT EXISTS has_exposure BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE live_order_intents ADD CONSTRAINT admission_planned_margin_finite
+CHECK (planned_margin_usdt IS NULL OR
+       (planned_margin_usdt > 0 AND planned_margin_usdt < 'Infinity'::numeric));
+ALTER TABLE live_order_intents ADD CONSTRAINT admission_planned_notional_finite
+CHECK (planned_notional_usdt IS NULL OR
+       (planned_notional_usdt > 0 AND planned_notional_usdt < 'Infinity'::numeric));
+ALTER TABLE bitget_margin_reservations ADD CONSTRAINT admission_reserved_margin_finite
+CHECK (planned_margin_usdt > 0 AND planned_margin_usdt < 'Infinity'::numeric);
+ALTER TABLE bitget_post_fill_reconciliations ADD CONSTRAINT admission_post_fill_planned_finite
+CHECK (planned_margin_usdt > 0 AND planned_margin_usdt < 'Infinity'::numeric
+       AND planned_leverage > 0 AND planned_leverage < 'Infinity'::numeric
+       AND (planned_notional_usdt IS NULL OR
+            (planned_notional_usdt > 0 AND planned_notional_usdt < 'Infinity'::numeric)));
+ALTER TABLE balance_snapshots ADD CONSTRAINT admission_snapshot_exchange_key UNIQUE (id, exchange);
+ALTER TABLE bitget_margin_reservations ADD CONSTRAINT admission_reservation_snapshot_exchange
+FOREIGN KEY (balance_snapshot_id, exchange) REFERENCES balance_snapshots (id, exchange);
+ALTER TABLE bitget_margin_reservations ADD CONSTRAINT admission_reservation_binding_key
+UNIQUE (id, exchange, client_order_id, balance_snapshot_id, binding_symbol, planned_margin_usdt);
+ALTER TABLE live_order_intents ADD CONSTRAINT admission_intent_binding_required
+CHECK (margin_reservation_id IS NULL OR
+       (role = 'ENTRY' AND exchange = 'bitget' AND balance_snapshot_id IS NOT NULL
+        AND planned_margin_usdt IS NOT NULL));
+ALTER TABLE live_order_intents ADD CONSTRAINT admission_intent_reservation_binding
+FOREIGN KEY (margin_reservation_id, exchange, client_order_id,
+             balance_snapshot_id, symbol, planned_margin_usdt)
+REFERENCES bitget_margin_reservations
+    (id, exchange, client_order_id, balance_snapshot_id, binding_symbol, planned_margin_usdt);
+"""
+
+
 def apply_live_schema(cursor: SqlCursor) -> None:
     """Apply the live-trading schema inside the caller's transaction boundary."""
     cursor.execute(LIVE_SCHEMA_SQL)

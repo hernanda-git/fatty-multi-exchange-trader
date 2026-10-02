@@ -129,6 +129,20 @@ class OperatorCommandService:
         self._pending = None
         return pending
 
+    def _confirm_open(
+        self, kind: str, fingerprint: str, display_target: str, token: str | None
+    ) -> str | None:
+        if not self._require_confirmation:
+            return None
+        expected_kind = f"{kind}:{fingerprint}"
+        if token is None:
+            challenge = self._issue_confirmation(expected_kind, display_target)
+            return f"""CONFIRM {(kind)} {(display_target)}; repeat the exact command with confirm={
+                (challenge)
+            }"""
+        self._consume_confirmation(token, expected_kind)
+        return None
+
     def handle(self, text: str, *, sender_id: int, is_private: bool, is_forwarded: bool) -> str:
         self._require_auth(sender_id=sender_id, is_private=is_private, is_forwarded=is_forwarded)
         command = parse_operator_command(text)
@@ -284,6 +298,20 @@ class OperatorCommandService:
         return "Pending order\n" + "\n".join(rows)
 
     def _on_open(self, command: OpenCommand) -> str:
+        fingerprint = "|".join(
+            (
+                command.symbol,
+                command.direction,
+                str(command.margin),
+                str(command.leverage),
+                command.entry,
+                str(command.stop_loss),
+                ",".join(map(str, command.take_profits)),
+            )
+        )
+        challenge = self._confirm_open("open", fingerprint, command.symbol, command.confirm_token)
+        if challenge is not None:
+            return challenge
         margin: Decimal
         if command.margin == "auto":
             margin = self._gw.get_balance() * Decimal("0.20")
@@ -309,6 +337,21 @@ class OperatorCommandService:
     def _on_trade(self, command: TradeCommand) -> str:
         if command.exchanges != ("bitget",):
             raise CommandError("operator /trade currently supports bitget only")
+        fingerprint = "|".join(
+            (
+                ",".join(command.exchanges),
+                command.pair,
+                command.direction,
+                str(command.margin),
+                str(command.leverage),
+                command.entry,
+                str(command.stop_loss),
+                ",".join(map(str, command.take_profits)),
+            )
+        )
+        challenge = self._confirm_open("trade", fingerprint, command.pair, command.confirm_token)
+        if challenge is not None:
+            return challenge
         result = self._gw.open_position(
             symbol=command.pair,
             direction=command.direction,
@@ -348,6 +391,8 @@ class OperatorCommandService:
             self._consume_confirmation(command.confirm_token, confirmation_kind)
         if command.target == "all":
             result = self._gw.close_all()
+            if result.get("state") == "reconciliation-pending":
+                return f"CLOSE all attempted={result['count']} state=reconciliation-pending"
             return f"CLOSE all count={result['count']}"
         result = self._gw.close_position(command.target)
         if result.get("state") == "reconciliation-pending":

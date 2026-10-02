@@ -124,7 +124,9 @@ def get_runtime_modes() -> dict:
 
 def get_current_price(symbol: str) -> Decimal | None:
     try:
-        url = f"https://api.bitget.com/api/v2/mix/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
+        url = f"""https://api.bitget.com/api/v2/mix/market/ticker?symbol={
+            (symbol)
+        }&productType=USDT-FUTURES"""
         with urllib.request.urlopen(url, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return Decimal(data["data"][0]["lastPr"])
@@ -402,6 +404,7 @@ def get_service_status() -> dict[str, int | str]:
             "docker",
             "compose",
             "ps",
+            "--all",
             "--format",
             "{{.Service}}|{{.State}}|{{.Health}}",
         ],
@@ -411,7 +414,46 @@ def get_service_status() -> dict[str, int | str]:
     )
     if result.returncode != 0:
         return {"status": "UNKNOWN", "total": 0, "running": 0, "healthy": 0}
+    config = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "config",
+            "--no-interpolate",
+            "--no-env-resolution",
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(PROJECT_ROOT),
+    )
+    try:
+        if config.returncode != 0:
+            raise ValueError("Compose config unavailable")
+        configured = json.loads(config.stdout)["services"]
+        # One-shot setup jobs and disabled lanes are not LIVE operational health.
+        excluded = {"init", "migrate", "paper-kaka", "dispatcher-binance", "monitor-binance"}
+        expected = {
+            name
+            for name, service in configured.items()
+            if name not in excluded
+            and not name.startswith("paper-")
+            and "demo" not in name.lower()
+            and not service.get("profiles")
+        }
+    except (ValueError, KeyError, TypeError):
+        return {"status": "UNKNOWN", "total": 0, "running": 0, "healthy": 0}
     rows = [line.split("|", 2) for line in result.stdout.splitlines() if line]
+    rows = [
+        row
+        for row in rows
+        if row[0] in expected
+        or (row[0] not in {"init", "migrate"} and len(row) > 1 and row[1].lower() == "running")
+    ]
+    unexpected = sum(row[0] not in expected for row in rows)
+    present = {row[0] for row in rows}
+    rows.extend([name, "missing", ""] for name in sorted(expected - present))
     running = sum(len(row) > 1 and row[1].lower() == "running" for row in rows)
     healthy = sum(len(row) > 2 and row[2].lower() == "healthy" for row in rows)
     starting = sum(len(row) > 2 and row[2].lower() == "starting" for row in rows)
@@ -423,12 +465,11 @@ def get_service_status() -> dict[str, int | str]:
         "healthy": healthy,
         "starting": starting,
         "unhealthy": unhealthy,
+        "unexpected_runtime": unexpected,
     }
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
-
-
 
 
 # ── Codex Usage ──────────────────────────────────────────────────────────
@@ -543,8 +584,6 @@ def get_codex_usage() -> dict:
 
 
 # ── Format ────────────────────────────────────────────────────────────────
-
-
 
 
 def send_direct(html: str) -> bool:

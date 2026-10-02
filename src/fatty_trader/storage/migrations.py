@@ -16,7 +16,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Final, Protocol
 
-from fatty_trader.storage.schema import BITGET_DISPATCH_SCHEMA_SQL, LIVE_SCHEMA_SQL
+from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
+from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
+from fatty_trader.storage.schema import (
+    ADMISSION_CONSTRAINTS_SCHEMA_SQL,
+    BITGET_DISPATCH_SCHEMA_SQL,
+    DURABLE_ADMISSION_SCHEMA_SQL,
+    LIVE_SCHEMA_SQL,
+)
+from fatty_trader.storage.verified_close_schema import VERIFIED_CLOSE_SCHEMA_SQL
 
 
 class MigrationCursor(Protocol):
@@ -290,19 +298,29 @@ MIGRATIONS: Final = [
     ),
     (
         15,
-        """
-        CREATE TABLE IF NOT EXISTS bitget_post_fill_reconciliations (
-            id UUID PRIMARY KEY,
-            exchange TEXT NOT NULL CHECK (exchange = 'bitget'), client_order_id TEXT NOT NULL,
-            planned_leverage NUMERIC NOT NULL, planned_margin_usdt NUMERIC NOT NULL,
-            planned_notional_usdt NUMERIC, observed_leverage NUMERIC, observed_margin_mode TEXT,
-            observed_quantity NUMERIC, observed_entry_price NUMERIC, observed_mark_price NUMERIC,
-            observed_margin_usdt NUMERIC, status TEXT NOT NULL CHECK (status IN ('matched','within_tolerance','mismatch','unavailable')),
-            reason TEXT, observed_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE INDEX IF NOT EXISTS bitget_post_fill_reconciliations_latest
-        ON bitget_post_fill_reconciliations (exchange, created_at DESC);
-        """,
+        (
+            "\n"
+            "        CREATE TABLE IF NOT EXISTS bitget_post_fill_reconciliations (\n"
+            "            id UUID PRIMARY KEY,\n"
+            "            exchange TEXT NOT NULL CHECK (exchange = 'bitget'), "
+            "client_order_id TEXT NOT NULL,\n"
+            "            planned_leverage NUMERIC NOT NULL, planned_margin_usdt "
+            "NUMERIC NOT NULL,\n"
+            "            planned_notional_usdt NUMERIC, observed_leverage NUMERIC, "
+            "observed_margin_mode TEXT,\n"
+            "            observed_quantity NUMERIC, observed_entry_price NUMERIC, "
+            "observed_mark_price NUMERIC,\n"
+            "            observed_margin_usdt NUMERIC, status TEXT NOT NULL CHECK "
+            "(status IN ('matched','within_tolerance','mismatch','unavailable')),\n"
+            "            reason TEXT, observed_at TIMESTAMPTZ NOT NULL, created_at "
+            "TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP\n"
+            "        );\n"
+            "        CREATE INDEX IF NOT EXISTS bitget_post_fill_reconciliations_la"
+            "test\n"
+            "        ON bitget_post_fill_reconciliations (exchange, created_at "
+            "DESC);\n"
+            "        "
+        ),
     ),
     # Migration 16 (later removed) pinned the Bitget kill switch to alert-only with
     # a CHECK constraint. It is deliberately absent from MIGRATIONS: on a database
@@ -321,6 +339,11 @@ MIGRATIONS: Final = [
         18,
         PAPER_KAKA_SCHEMA_SQL,
     ),
+    (19, DURABLE_ADMISSION_SCHEMA_SQL),
+    (20, ADMISSION_CONSTRAINTS_SCHEMA_SQL),
+    (21, INTAKE_COVERAGE_SCHEMA_SQL),
+    (22, FALLBACK_OWNERSHIP_SCHEMA_SQL),
+    (23, VERIFIED_CLOSE_SCHEMA_SQL),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
@@ -336,7 +359,14 @@ def _iter_statements(sql: str) -> list[str]:
 
 
 def _is_idempotent_error(exc: Exception) -> bool:
+    # A data uniqueness violation is NOT duplicate DDL. Never record a migration
+    # as applied after CREATE UNIQUE INDEX fails on conflicting existing rows.
+    sqlstate = getattr(exc, "sqlstate", None)
+    if sqlstate is not None:
+        return sqlstate in {"42710", "42P07", "42701"}
     message = str(exc).lower()
+    if "duplicate key" in message or "unique constraint" in message:
+        return False
     return any(marker in message for marker in _IDEMPOTENT_ERROR_MARKERS)
 
 
@@ -368,6 +398,34 @@ def apply_migrations(cursor: MigrationCursor) -> list[int]:
     for version, sql in MIGRATIONS:
         if version in applied:
             continue
+        if version == 20:
+            # Audit under exclusive locks BEFORE adding financial constraints.
+            # Existing invalid evidence aborts migration; never rewrite live rows.
+            cursor.execute("""LOCK TABLE live_order_intents, bitget_margin_reservations,
+                bitget_post_fill_reconciliations, balance_snapshots IN ACCESS EXCLUSIVE MODE""")
+            for table, columns in (
+                ("live_order_intents", ("planned_margin_usdt", "planned_notional_usdt")),
+                ("bitget_margin_reservations", ("planned_margin_usdt",)),
+                (
+                    "bitget_post_fill_reconciliations",
+                    ("planned_margin_usdt", "planned_notional_usdt", "planned_leverage"),
+                ),
+            ):
+                invalid = " OR ".join(
+                    f"""({(column)} IS NOT NULL AND NOT ({(column)} > 0 AND {
+                        (column)
+                    } < 'Infinity'::numeric))"""
+                    for column in columns
+                )
+                cursor.execute(f"SELECT count(*) FROM {table} WHERE {invalid}")
+                row: Any = cursor.fetchall()[0]
+                count = next(iter(row.values())) if isinstance(row, dict) else row[0]
+                if count:
+                    raise ValueError(
+                        f"""admission migration preflight: {(table)} has {
+                            (count)
+                        } invalid planned-amount rows"""
+                    )
         for statement in _iter_statements(sql):
             # PostgreSQL marks the whole transaction failed after duplicate DDL.
             # Contain tolerated replays in a savepoint so subsequent statements and

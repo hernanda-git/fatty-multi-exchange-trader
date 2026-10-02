@@ -30,9 +30,12 @@ class FakeSocket:
     absence as a dead socket (fail closed).
     """
 
-    def __init__(self, fresh: bool | dict[str, bool], *, state: WebSocketConnectionState = (
-        WebSocketConnectionState.CONNECTED
-    )) -> None:
+    def __init__(
+        self,
+        fresh: bool | dict[str, bool],
+        *,
+        state: WebSocketConnectionState = (WebSocketConnectionState.CONNECTED),
+    ) -> None:
         self.fresh = fresh
         self.state = state
 
@@ -83,6 +86,27 @@ async def test_healthy_stream_and_rest_read_allow_symbol(
     assert report.status is WatchdogStatus.HEALTHY
     assert report.allow_new_entries == {"BTCUSDT": True}
     assert reads == ["BTCUSDT"]
+
+
+@pytest.mark.asyncio
+async def test_connecting_socket_with_empty_symbols_is_not_healthy() -> None:
+    repository = InMemoryProtectionCapabilityRepository()
+
+    async def read_position(_: str) -> list[dict[str, str]]:
+        return []
+
+    watchdog = BitgetProtectionWatchdog(
+        FakeSocket(True, state=WebSocketConnectionState.CONNECTING),
+        repository,
+        environment="LIVE",
+        symbols=[],
+        read_position=read_position,
+        now=lambda: _NOW,
+    )
+    report = await watchdog.run_once()
+    assert report.status is WatchdogStatus.FAILED
+    assert report.reasons == ("socket-not-connected",)
+    assert report.allow_new_entries == {}
 
 
 @pytest.mark.asyncio

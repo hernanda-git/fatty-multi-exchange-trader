@@ -34,25 +34,35 @@ from fatty_trader.kaka.paper import (
 from fatty_trader.kaka.parser import KakaEventType, parse_kaka_event
 
 DEFAULT_JSONL = Path("/home/valarion/dumps/kaka_trades_since_20260901.jsonl")
-_CANDLES = "https://api.bitget.com/api/v2/mix/market/candles?symbol={symbol}&productType=USDT-FUTURES&granularity=1m&startTime={start}&endTime={end}&limit=200"
+_CANDLES = (
+    "https://api.bitget.com/api/v2/mix/market/candles?symbol={symbol}&produ"
+    "ctType=USDT-FUTURES&granularity=1m&startTime={start}&endTime={end}&lim"
+    "it=200"
+)
 _cache: dict[tuple[str, int], Decimal | None] = {}
 
 
 def price_at(symbol: str, when: datetime, *, retries: int = 2) -> Decimal | None:
-    """Close of the 1-minute candle containing ``when`` (public API, no credentials)."""
+    """Previous fully closed minute only; never use the decision minute's future close."""
     minute = int(when.timestamp() // 60) * 60
     key = (symbol, minute)
     if key in _cache:
         return _cache[key]
-    url = _CANDLES.format(symbol=symbol, start=minute * 1000, end=(minute + 60) * 1000)
+    start_ms = (minute - 60) * 1000
+    url = _CANDLES.format(symbol=symbol, start=start_ms, end=minute * 1000 - 1)
     price: Decimal | None = None
     for attempt in range(retries + 1):
         try:
             with urlopen(url, timeout=15) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             rows = payload.get("data") or []
-            if rows:
-                price = Decimal(str(rows[0][4]))  # close
+            for row in rows:
+                if len(row) >= 5 and int(row[0]) == start_ms:
+                    candidate = Decimal(str(row[4]))
+                    if candidate.is_finite() and candidate > 0:
+                        price = candidate
+                        break
+            if price is not None:
                 break
         except Exception:  # noqa: BLE001 - replay is best effort on prices
             time.sleep(0.5 + attempt)
@@ -71,11 +81,17 @@ def replay(rows: list[dict[str, Any]], *, price_lookup: Any = price_at) -> Repla
     open_trades: dict[str, Any] = {}
     trades: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    seen: set[int] = set()
 
     def price_of(symbol: str, when: datetime) -> Decimal | None:
         return price_lookup(symbol, when)
 
     for row in rows:
+        mid = int(row["message_id"])
+        if mid in seen:
+            skipped.append({"message_id": mid, "reason": "duplicate-message"})
+            continue
+        seen.add(mid)
         text = (row.get("text") or "").strip()
         if not text:
             skipped.append({"message_id": row["message_id"], "reason": "media-only"})
@@ -99,16 +115,11 @@ def replay(rows: list[dict[str, Any]], *, price_lookup: Any = price_at) -> Repla
             open_trades[event.symbol] = (trade, when)
             continue
 
-        # Management messages usually omit the symbol, and the channel often runs one trade at
-        # a time while talking about its most recent one. Resolve in that order: explicit
-        # symbol, the only open trade, then the most recently opened trade.
-        target_symbol = None
-        if event.symbol in open_trades:
-            target_symbol = event.symbol
-        elif len(open_trades) == 1:
+        # Match the worker: explicit symbol never falls back to a different trade;
+        # symbol-less management requires exactly one open trade.
+        target_symbol = event.symbol
+        if event.symbol is None and len(open_trades) == 1:
             target_symbol = next(iter(open_trades))
-        elif open_trades:
-            target_symbol = max(open_trades, key=lambda sym: open_trades[sym][1])
         if target_symbol is None or target_symbol not in open_trades:
             skipped.append(
                 {"message_id": row["message_id"], "reason": f"unmatched:{event.type.value}"}

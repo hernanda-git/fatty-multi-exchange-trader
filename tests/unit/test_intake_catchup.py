@@ -1,8 +1,8 @@
 """Offline tests for the intake catch-up safety net.
 
 Incident 2026-09-27: the realtime-only listen path went blind for 5h35m and the source's
-ENA signal was lost permanently. Catch-up polls for messages newer than the newest
-persisted one, so a blind window costs nothing.
+ENA signal was lost permanently. Catch-up polls after independent history coverage;
+resumed realtime rows must never move that watermark past an unconsumed blind window.
 """
 
 from __future__ import annotations
@@ -206,6 +206,9 @@ class FakeConnection:
     def cursor(self) -> FakeCursor:
         return FakeCursor(self._row)
 
+    def commit(self) -> None:
+        return None
+
     def close(self) -> None:
         return None
 
@@ -216,7 +219,7 @@ class FakeConnection:
         return None
 
 
-def test_cursor_lookup_reads_the_newest_persisted_message_id() -> None:
+def test_cursor_lookup_reads_the_independent_coverage_message_id() -> None:
     lookup = build_cursor_lookup(lambda: FakeConnection((16218,)))
 
     assert lookup(MARKED_CHANNEL_ID) == 16218

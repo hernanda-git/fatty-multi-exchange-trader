@@ -234,12 +234,20 @@ def format_report(
     codex = codex or {}
     services = services or {}
 
+    live_runtime = modes.get("mode") == "LIVE" and modes.get("venue_mode") == "LIVE"
+    health_title = "LIVE HEALTH" if live_runtime else "NON-LIVE / UNKNOWN HEALTH"
     provider_known = positions is not None and pending_orders is not None
-    service_unhealthy = _count(services.get("unhealthy")) > 0
+    service_unhealthy = (
+        services.get("status") != "OK"
+        or _count(services.get("unhealthy")) > 0
+        or _count(services.get("starting")) > 0
+        or _count(services.get("unexpected_runtime")) > 0
+        or _count(services.get("running")) < _count(services.get("total"))
+    )
     codex_unhealthy = codex.get("status") in {"AUTH_FAILED", "N/A"}
     overall = (
         "🟢 ONLINE"
-        if provider_known and not service_unhealthy and not codex_unhealthy
+        if live_runtime and provider_known and not service_unhealthy and not codex_unhealthy
         else "⚠️ DEGRADED"
     )
     execution_raw = str(modes.get("execution_enabled", "UNKNOWN"))
@@ -273,6 +281,8 @@ def format_report(
             service_line += f" · {services['starting']} starting"
         if _count(services.get("unhealthy")):
             service_line += f" · {services['unhealthy']} unhealthy"
+        if _count(services.get("unexpected_runtime")):
+            service_line += f" · {services['unexpected_runtime']} unexpected non-LIVE service(s)"
     else:
         service_line = "UNKNOWN"
 
@@ -280,7 +290,7 @@ def format_report(
         return "✅" if value.startswith("OK") else "⚠️"
 
     L = [
-        "📡 <b>Fatty Signal Relay</b>  <code>LIVE HEALTH</code>",
+        f"📡 <b>Fatty Signal Relay</b>  <code>{health_title}</code>",
         f"<i>{now}</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         "",
@@ -304,7 +314,7 @@ def format_report(
         + (f"\nReason    {_html(codex.get('error'))}" if codex.get("error") else "")
         + "</pre>",
         "",
-        "<b>💰 ACCOUNT</b> <code>Bitget LIVE</code>",
+        f"<b>💰 ACCOUNT</b> <code>Bitget {_html(modes.get('venue_mode', 'UNKNOWN'))}</code>",
     ]
 
     if account:

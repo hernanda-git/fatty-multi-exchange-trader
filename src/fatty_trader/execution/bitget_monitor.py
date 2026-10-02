@@ -86,6 +86,13 @@ class BitgetMonitor:
             reasons.append("post-fill-margin-or-leverage-mismatch")
         # Bot-managed TP/SL fallback for symbols that reject native SL/TP (43011)
         await self._run_fallback_monitor(reasons)
+        lifecycle = getattr(self._live_intent_store, "verified_close_lifecycle", None)
+        if lifecycle is not None:
+            try:
+                await lifecycle.reconcile(self._client)
+            except Exception:
+                # Retain reservations and surface read/DB failures; never infer release.
+                reasons.append("verified-close-evidence-unavailable")
         try:
             skew = await self._client.get_clock_skew_ms()
         except Exception:
@@ -96,7 +103,10 @@ class BitgetMonitor:
         unique_reasons = tuple(dict.fromkeys(reasons))
         if unique_reasons:
             latchable_reasons = tuple(
-                reason for reason in unique_reasons if reason not in _ALERT_ONLY_PROTECTION_REASONS
+                reason
+                for reason in unique_reasons
+                if reason not in _ALERT_ONLY_PROTECTION_REASONS
+                and not reason.startswith(("fallback-sl_hit:", "fallback-tp_hit:"))
             )
             if not latchable_reasons:
                 return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
@@ -115,16 +125,18 @@ class BitgetMonitor:
 
     async def _run_fallback_monitor(self, reasons: list[str]) -> None:
         """Run bot-managed TP/SL only behind a separate explicit mutation gate."""
-        if not self._fallback_mutations_enabled or (
-            self._enforce_kill_switch and self._repository.kill_switch_active(self._scope)
-        ):
+        # Entry admission latches do not shut down existing reduce-only stops.
+        # Operator-directed protection shutdown remains the explicit mutation gate.
+        if not self._fallback_mutations_enabled:
             return
         try:
             from fatty_trader.execution.bitget_fallback_protection import (
                 run_fallback_monitor_async,
             )
 
-            triggered = await run_fallback_monitor_async(self._client)
+            triggered = await run_fallback_monitor_async(
+                self._client, environment=getattr(self._client, "environment", None)
+            )
             for t in triggered:
                 reasons.append(f"fallback-{t['reason']}:{t['symbol']}")
         except Exception as exc:
@@ -236,7 +248,7 @@ def _open_quantity(position: dict[str, Any]) -> Decimal | None:
         quantity = Decimal(str(position.get("total", position.get("size", "0"))))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    return quantity if quantity >= 0 else None
+    return quantity if quantity.is_finite() and quantity >= 0 else None
 
 
 def _looks_like_external_exit(fill: dict[str, Any]) -> bool:

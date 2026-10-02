@@ -117,9 +117,7 @@ class BitgetV2WebSocket:
         # The private leg is expected to be quiet, so allow a missed heartbeat
         # plus slack before declaring it dead. Default to 2.5 heartbeat windows.
         self._private_silent_after = (
-            private_silent_after
-            if private_silent_after is not None
-            else heartbeat_interval * 2.5
+            private_silent_after if private_silent_after is not None else heartbeat_interval * 2.5
         )
         if self._private_silent_after <= 0:
             raise ValueError("Bitget v2 websocket private_silent_after must be positive")
@@ -129,6 +127,7 @@ class BitgetV2WebSocket:
         self._state = V2ConnectionState.DISCONNECTED
         self._last_event_at: float | None = None
         self._last_mark_event_at: dict[str, float] = {}
+        self._last_mark_event_ms: dict[str, int] = {}
         self._last_pong_at: float | None = None
         self._last_ping_at: float | None = None
         # Per-leg liveness. The private leg is only "live" once its login has
@@ -138,6 +137,8 @@ class BitgetV2WebSocket:
         self._readers: list[asyncio.Task[None]] = []
         self._queues: dict[str, asyncio.Queue[Any]] = {}
         self._any_event = asyncio.Event()
+        self._reader_error: _LegError | None = None
+        self._pending_error: _LegError | None = None
 
     # --- introspection -----------------------------------------------------
 
@@ -203,9 +204,7 @@ class BitgetV2WebSocket:
             private = await self._transport.connect(self._private_url)
             self._private = private
 
-            await public.send(
-                _json(build_v2_public_subscription(self._symbols, allow_empty=True))
-            )
+            await public.send(_json(build_v2_public_subscription(self._symbols, allow_empty=True)))
             await private.send(
                 _json(
                     build_v2_login_message(
@@ -305,7 +304,10 @@ class BitgetV2WebSocket:
             raise RuntimeError("Bitget v2 websocket is not connected")
         self._any_event.clear()
         # Re-check after clearing: an event may have arrived in between.
-        if not self._drain_ready():
+        ready = self._drain_ready()
+        if ready:
+            return ready
+        if not ready:
             try:
                 async with asyncio.timeout(self._heartbeat_interval * 2):
                     await self._any_event.wait()
@@ -412,6 +414,8 @@ class BitgetV2WebSocket:
 
     def stale_reason(self) -> str:
         """Human-readable reason for the current non-healthy verdict."""
+        if self._reader_error is not None:
+            return f"reader-error:{self._reader_error.leg}"
         if not self._both_legs_open():
             return "leg-closed"
         if not self._private_authenticated:
@@ -440,6 +444,8 @@ class BitgetV2WebSocket:
         positions and orders, so an unauthenticated or silent private leg
         means we cannot see the account state we are supposed to protect.
         """
+        if self._reader_error is not None:
+            return False
         if not self._both_legs_open():
             if self._state is not V2ConnectionState.DISCONNECTED:
                 self._state = V2ConnectionState.FAILED
@@ -478,6 +484,8 @@ class BitgetV2WebSocket:
         return self._public is not None and self._private is not None
 
     def _start_readers(self) -> None:
+        self._reader_error = None
+        self._pending_error = None
         self._queues = {"public": asyncio.Queue(), "private": asyncio.Queue()}
         self._any_event = asyncio.Event()
         self._readers = [
@@ -486,7 +494,13 @@ class BitgetV2WebSocket:
         ]
 
     def _drain_ready(self) -> list[BitgetWebSocketEvent]:
-        """Pull everything currently queued, raising any recorded leg error."""
+        """Deliver both legs' queued observations once, then raise the error.
+
+        A terminal marker must not discard earlier observations or the other
+        leg's finite batch. Health is fail-closed during observation delivery.
+        """
+        if self._pending_error is not None:
+            raise self._pending_error.error
         events: list[BitgetWebSocketEvent] = []
         for leg in ("public", "private"):
             queue = self._queues.get(leg)
@@ -495,16 +509,26 @@ class BitgetV2WebSocket:
             while not queue.empty():
                 item = queue.get_nowait()
                 if isinstance(item, _LegError):
-                    raise item.error
-                events.extend(item)
+                    self._record_reader_error(item)
+                    if self._pending_error is None:
+                        self._pending_error = item
+                else:
+                    events.extend(item)
+        if not events and self._pending_error is not None:
+            raise self._pending_error.error
         return events
+
+    def _record_reader_error(self, error: _LegError) -> None:
+        if self._reader_error is None:
+            self._reader_error = error
+        self._state = V2ConnectionState.RECONNECTING
 
     async def _reader_loop(self, leg: str, connection: WebSocketConnection | None) -> None:
         """Long-lived per-leg reader. Never cancels an in-flight recv()."""
         if connection is None:
-            self._queues.setdefault(leg, asyncio.Queue()).put_nowait(
-                _LegError(leg, RuntimeError(f"Bitget v2 {leg} socket is closed"))
-            )
+            error = _LegError(leg, RuntimeError(f"Bitget v2 {leg} socket is closed"))
+            self._record_reader_error(error)
+            self._queues.setdefault(leg, asyncio.Queue()).put_nowait(error)
             self._any_event.set()
             return
         queue = self._queues[leg]
@@ -524,10 +548,29 @@ class BitgetV2WebSocket:
                 if leg == "private":
                     # Any private frame proves the socket is alive.
                     self._last_private_activity_at = now
+                from fatty_trader.exchanges.bitget.websocket import fresh_mark
+
+                accepted = []
                 for event in events:
                     if event.kind == "mark_price":
-                        self._last_mark_event_at[event.symbol] = now
-                if events and self._state is V2ConnectionState.RECONNECTING:
+                        if leg != "public" or not fresh_mark(
+                            event,
+                            self._wall_clock(),
+                            self._stale_after,
+                            self._last_mark_event_ms.get(event.symbol),
+                        ):
+                            continue
+                        self._last_mark_event_ms[event.symbol] = event.event_time_ms
+                        self._last_mark_event_at[event.symbol] = now - (
+                            self._wall_clock() - event.event_time_ms / 1000
+                        )
+                    accepted.append(event)
+                events = accepted
+                if (
+                    events
+                    and self._state is V2ConnectionState.RECONNECTING
+                    and self._reader_error is None
+                ):
                     self._state = V2ConnectionState.CONNECTED
                 if events:
                     queue.put_nowait(events)
@@ -535,7 +578,9 @@ class BitgetV2WebSocket:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            queue.put_nowait(_LegError(leg, exc))
+            error = _LegError(leg, exc)
+            self._record_reader_error(error)
+            queue.put_nowait(error)
             self._any_event.set()
 
     async def _close_public(self) -> None:

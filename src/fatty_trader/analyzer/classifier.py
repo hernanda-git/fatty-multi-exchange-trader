@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
 
@@ -69,6 +70,13 @@ def _decimal(value: Any, name: str) -> Decimal | None:
 
 def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalClassification:
     actionable = data.get("actionable") is True
+    normalized_text = text.casefold()
+    if entry_stands_down(text):
+        actionable = False
+    else:
+        actionable = actionable and bool(
+            re.search(r"\b(?:long|short|entry|enter|buy|sell)\b", normalized_text)
+        )
     pair_value = data.get("pair")
     pair = str(pair_value).upper().replace("#", "").replace("$", "") if pair_value else None
     if pair:

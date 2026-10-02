@@ -1,0 +1,23 @@
+# Only explicitly copied application/build inputs enter the Docker context.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+!scripts/
+!scripts/**
+
+# Never include caches, backup copies or runtime credentials under allowed dirs.
+**/__pycache__/**
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.session
+**/*.session-journal
+**/*.dump
+**/*.bak
+**/*.bak-*
+**/auth.json
+**/*credentials*

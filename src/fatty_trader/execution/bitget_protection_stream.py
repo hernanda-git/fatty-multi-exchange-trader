@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 
 from fatty_trader.exchanges.bitget.protection_capability import StreamState
-from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket
+from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket, fresh_mark
 from fatty_trader.exchanges.bitget.ws_models import BitgetWebSocketEvent
 from fatty_trader.execution.bitget_fallback_protection import check_thresholds
 
@@ -46,7 +46,16 @@ class BitgetFallbackStreamEngine:
         self,
         entries: Callable[[], Iterable[Mapping[str, Any]]],
         close: CloseCallback,
+        *,
+        now: Callable[[], datetime] | None = None,
+        stale_after: float = 5.0,
+        transport_fresh: Callable[[str], bool] | None = None,
     ) -> None:
+        if stale_after <= 0:
+            raise ValueError("stale_after must be positive")
+        self._now = now or (lambda: datetime.now(UTC))
+        self._stale_after = stale_after
+        self._transport_fresh = transport_fresh or (lambda _symbol: False)
         self._entries = entries
         self._close = close
         self._last_event_ms: dict[str, int] = {}
@@ -65,7 +74,9 @@ class BitgetFallbackStreamEngine:
             return []
         symbol = event.symbol.strip().upper()
         previous = self._last_event_ms.get(symbol)
-        if previous is not None and event.event_time_ms <= previous:
+        if not fresh_mark(event, self._now().timestamp(), self._stale_after, previous):
+            return []
+        if not self._transport_fresh(symbol):
             return []
         self._last_event_ms[symbol] = event.event_time_ms
 
@@ -115,6 +126,7 @@ class BitgetProtectionStreamRuntime:
         environment: str,
         now: Callable[[], datetime] | None = None,
         active_symbol_source: Callable[[], Iterable[str]] | None = None,
+        stale_after: float = 5.0,
     ) -> None:
         self._socket = socket
         self._repository = repository
@@ -123,6 +135,10 @@ class BitgetProtectionStreamRuntime:
             raise ValueError("Bitget protection stream environment must be DEMO or LIVE")
         self._now = now or (lambda: datetime.now(UTC))
         self._active_symbol_source = active_symbol_source
+        if stale_after <= 0:
+            raise ValueError("stale_after must be positive")
+        self._stale_after = stale_after
+        self._last_event_ms: dict[str, int] = {}
 
     @property
     def socket(self) -> BitgetClassicWebSocket:
@@ -183,6 +199,15 @@ class BitgetProtectionStreamRuntime:
     async def _on_event(self, event: BitgetWebSocketEvent) -> None:
         if event.kind != "mark_price":
             return
+        now = self._now()
+        if not fresh_mark(
+            event, now.timestamp(), self._stale_after, self._last_event_ms.get(event.symbol)
+        ):
+            return
+        check = getattr(self._socket, "check_freshness", None)
+        if not callable(check) or not check(event.symbol):
+            return
+        self._last_event_ms[event.symbol] = event.event_time_ms
         get_capability = getattr(self._repository, "get", None)
         upsert_capability = getattr(self._repository, "upsert", None)
         if (
@@ -206,7 +231,7 @@ class BitgetProtectionStreamRuntime:
             self._environment,
             event.symbol,
             state=StreamState.HEALTHY,
-            last_stream_at=self._now(),
+            last_stream_at=datetime.fromtimestamp(event.event_time_ms / 1000, UTC),
             last_error=None,
         )
 

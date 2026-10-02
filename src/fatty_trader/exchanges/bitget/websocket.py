@@ -117,6 +117,7 @@ class BitgetClassicWebSocket:
         self._state = WebSocketConnectionState.DISCONNECTED
         self._last_event_at: float | None = None
         self._last_mark_event_at: dict[str, float] = {}
+        self._last_mark_event_ms: dict[str, int] = {}
         self._last_ping_at: float | None = None
         self._last_pong_at: float | None = None
         self._missed_heartbeat_windows = 0
@@ -284,14 +285,36 @@ class BitgetClassicWebSocket:
             raise
         now = self._clock()
         self._last_event_at = now
+        accepted = []
         for event in events:
             if event.kind == "mark_price":
-                self._last_mark_event_at[event.symbol] = now
+                if not fresh_mark(
+                    event,
+                    self._wall_clock(),
+                    self._stale_after,
+                    self._last_mark_event_ms.get(event.symbol),
+                ):
+                    continue
+                self._last_mark_event_ms[event.symbol] = event.event_time_ms
+                # Provider age consumes the freshness budget; receipt is not renewal.
+                self._last_mark_event_at[event.symbol] = now - (
+                    self._wall_clock() - event.event_time_ms / 1000
+                )
+            accepted.append(event)
+        events = accepted
         self._state = WebSocketConnectionState.CONNECTED
         return events
 
     def check_freshness(self, symbol: str | None = None) -> bool:
-        """Mark the stream stale when no valid frame arrived within the bound."""
+        """Require validated marks and a live authenticated account connection."""
+        if (
+            self._connection is None
+            or self._last_pong_at is None
+            or self._clock() - self._last_pong_at > self._heartbeat_interval * 2
+        ):
+            if self._state is WebSocketConnectionState.CONNECTED:
+                self._state = WebSocketConnectionState.STALE
+            return False
         if symbol is not None:
             normalized_symbol = symbol.strip().upper()
             if normalized_symbol not in self._symbols:
@@ -430,6 +453,28 @@ class BitgetClassicWebSocket:
             if symbol not in normalized:
                 normalized.append(symbol)
         return tuple(normalized)
+
+
+def fresh_mark(
+    event: BitgetWebSocketEvent,
+    wall_time: float,
+    max_age: float,
+    previous_ms: int | None = None,
+) -> bool:
+    """Validate epoch age independently of the monotonic receipt clock."""
+    # Bound the integer before float conversion: malformed future epochs can
+    # otherwise raise OverflowError instead of being rejected fail-closed.
+    if event.event_time_ms <= 0 or event.event_time_ms > wall_time * 1000:
+        return False
+    age = wall_time - event.event_time_ms / 1000
+    return (
+        event.event_time_ms > 0
+        and 0 <= age <= max_age
+        and (previous_ms is None or event.event_time_ms > previous_ms)
+        and event.mark_price is not None
+        and event.mark_price.is_finite()
+        and event.mark_price > 0
+    )
 
 
 def _json(payload: dict[str, Any]) -> str:

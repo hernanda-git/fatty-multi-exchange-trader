@@ -15,6 +15,7 @@ from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
 from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.entry_routing import EntryRoute, LimitEntryContext, route_entry
+from fatty_trader.intake.freshness import SourceFreshnessExpired
 from fatty_trader.risk.sizing import minimum_safe_plan
 
 
@@ -123,9 +124,7 @@ class BitgetDispatcher:
         # A dead protection stream blocks entries on its own scope. It is kept
         # separate from the venue scope so that latching it cannot disable the
         # bot-managed fallback TP/SL path in bitget_monitor.
-        if self._kill_switch is not None and self._kill_switch.is_active(
-            PROTECTION_STREAM_SCOPE
-        ):
+        if self._kill_switch is not None and self._kill_switch.is_active(PROTECTION_STREAM_SCOPE):
             self._reject(dispatch, "protection-stream-latched")
             return "protection-stream-latched"
         if not self._gate.execution_enabled:
@@ -178,6 +177,8 @@ class BitgetDispatcher:
                 )
                 submission = None
                 plan_quantity = plan.quantity
+        except SourceFreshnessExpired:
+            return "expired"
         except Exception as exc:
             self._reject_from(dispatch, "PREFLIGHT", _reason(exc))
             return "rejected"
@@ -240,10 +241,14 @@ class BitgetDispatcher:
             self._repository.alert(dispatch.id, reason)
             self._repository.release_canary_entry(dispatch.id, "bitget")
             return "unknown"
+        if status == "EXPIRED":
+            return "expired"
         target = {
             "ACKNOWLEDGED": "ACKNOWLEDGED",
             "FILLED": "FILLED",
             "FILLED_FALLBACK": "FILLED",
+            "FILLED_UNPROTECTED": "FILLED",
+            "PARTIAL_UNPROTECTED": "PARTIALLY_FILLED",
             "PARTIAL": "PARTIALLY_FILLED",
             "REJECTED": "REJECTED",
         }.get(status)
@@ -254,7 +259,13 @@ class BitgetDispatcher:
             dispatch,
             "SUBMITTING",
             target,
-            "fallback-protection-active" if status == "FILLED_FALLBACK" else None,
+            (
+                "missing-protection-escalated"
+                if status in {"FILLED_UNPROTECTED", "PARTIAL_UNPROTECTED"}
+                else "fallback-protection-active"
+                if status == "FILLED_FALLBACK"
+                else None
+            ),
         )
         return {
             "ACKNOWLEDGED": "acknowledged",

@@ -83,7 +83,8 @@ def add_leg(
         raise ValueError("second entry has no price and no market price available")
     added_notional = notional_for_leg()
     total_notional = trade.notional_usdt + added_notional
-    averaged = (trade.entry_price * trade.notional_usdt + fill * added_notional) / total_notional
+    quantity = trade.notional_usdt / trade.entry_price + added_notional / fill
+    averaged = total_notional / quantity
     return replace(
         trade,
         entry_price=averaged,
@@ -124,7 +125,8 @@ def pnl_usdt(trade: PaperTrade, exit_price: Decimal) -> Decimal:
         else (trade.entry_price - exit_price) / trade.entry_price
     )
     gross = trade.notional_usdt * move
-    fees = trade.notional_usdt * TAKER_FEE_RATE * 2
+    exit_notional = trade.notional_usdt / trade.entry_price * exit_price
+    fees = (trade.notional_usdt + exit_notional) * TAKER_FEE_RATE
     return (gross - fees).quantize(Decimal("0.000001"))
 
 

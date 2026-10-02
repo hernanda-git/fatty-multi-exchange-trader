@@ -2,16 +2,53 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from fatty_trader.analyzer.codex_runner import CodexRunResult
+from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.analyzer.trade_management import ManagementAction, SourceManagement
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
+
+
+def image_source_revision(
+    *,
+    image_path: str,
+    channel_id: int,
+    message_id: int,
+    text: str,
+    canonical_revision: str | None = None,
+    media_sha256: str | None = None,
+) -> str:
+    """Use intake's canonical identity, or hash real source identity and media bytes."""
+    from fatty_trader.intake.media import MAX_MEDIA_BYTES
+
+    with Path(image_path).open("rb") as image:
+        content = image.read(MAX_MEDIA_BYTES + 1)
+    if not content or len(content) > MAX_MEDIA_BYTES:
+        raise ValueError("media is empty or exceeds its bound")
+    digest = hashlib.sha256(content).hexdigest()
+    if media_sha256 is not None and digest != media_sha256:
+        raise ValueError("media does not match intake hash")
+    if canonical_revision is not None:
+        if re.fullmatch(r"[0-9a-f]{64}", canonical_revision) is None:
+            raise ValueError("invalid canonical source revision")
+        return canonical_revision
+    identity = {
+        "channel_id": channel_id,
+        "message_id": message_id,
+        "raw_text": text,
+        "media_sha256": digest,
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def image_classifier_prompt(text: str) -> str:
@@ -58,10 +95,15 @@ def analyze_image_json(
 
 
 def signal_from_image_json(
-    data: dict[str, Any], *, message_id: int, source_revision: str
+    data: dict[str, Any], *, message_id: int, source_revision: str, original_text: str = ""
 ) -> CanonicalSignal | None:
+    if entry_stands_down(original_text):
+        return None
     setup = data.get("setup")
-    if not isinstance(setup, dict) or str(setup.get("action", "ENTER")).upper() == "CLOSE":
+    if not isinstance(setup, dict) or str(setup.get("action", "")).upper() != "ENTER":
+        return None
+    caption = str(data.get("message") or "").casefold()
+    if entry_stands_down(caption):
         return None
     try:
         pair = str(setup.get("asset") or setup.get("pair") or "").upper()

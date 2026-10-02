@@ -24,6 +24,11 @@ def _amount(value: Any) -> str:
     return f"{parsed:,.6f}".rstrip("0").rstrip(".") or "0"
 
 
+def _valid_loss_stop(value: Any) -> bool:
+    parsed = _decimal(value)
+    return parsed is not None and parsed.is_finite() and parsed > 0
+
+
 def _pnl(value: Any) -> str:
     parsed = _decimal(value)
     if parsed is None:
@@ -119,17 +124,15 @@ def build_operator_health_report(
     else:
         db_error = None
 
-    # A fallback row is inert when the fallback mutation gate is off: the
-    # monitor returns early before closing anything. Presenting it as
-    # protection would tell the operator a 20x position is auto-closing when
-    # nothing will ever close it. Fail the label open.
-    fallback_can_close = str(fallback_mutations_enabled).strip() == "1"
-
     provider_count = len(positions) if provider_error is None else None
     db_count = int(metrics[2]) if metrics is not None else None
     drift = provider_count is not None and db_count is not None and provider_count != db_count
     kill_active = bool(metrics[6]) if metrics is not None and metrics[6] is not None else None
     kill_reason = metrics[7] if metrics is not None else None
+
+    # A fallback row is inert unless its mutation gate is on and the venue
+    # kill switch is explicitly inactive; unknown DB state fails closed.
+    fallback_can_close = str(fallback_mutations_enabled).strip() == "1" and kill_active is False
 
     lines = [
         "🩺 <b>FATTY HEALTH · ON-DEMAND</b>",
@@ -138,6 +141,12 @@ def build_operator_health_report(
         "",
         "<b>SYSTEM</b>",
         f"Runtime     <code>{_safe(mode)}</code> · venue <code>{_safe(venue_mode)}</code>",
+        "Policy      "
+        + (
+            "✅ LIVE-only runtime"
+            if mode == "LIVE" and venue_mode == "LIVE"
+            else "⚠️ DEGRADED · runtime does not satisfy LIVE-only policy"
+        ),
         f"Execution   <code>{'ENABLED' if execution_enabled else 'DISABLED'}</code>",
         f"Fallback mut <code>{_safe(fallback_mutations_enabled)}</code>",
         f"Stream      <code>{_safe(stream_enabled)} · {_safe(stream_mode)}</code>",
@@ -182,9 +191,13 @@ def build_operator_health_report(
             [
                 "",
                 "<b>RECONCILIATION</b>",
-                f"Provider positions  <code>{provider_count}</code>",
+                f"""Provider positions  <code>{
+                    (provider_count if provider_count is not None else "UNKNOWN")
+                }</code>""",
                 f"DB open positions   <code>{db_count}</code>",
-                f"State               {'⚠️ DRIFT' if drift else '✅ MATCH'}",
+                f"""State               {
+                    ("⚠️ UNKNOWN" if provider_count is None else "⚠️ DRIFT" if drift else "✅ MATCH")
+                }""",
                 f"Active intents      <code>{metrics[4]}</code>",
                 f"Fallback monitors   <code>{metrics[5]}</code>",
                 f"Messages/signals    <code>{metrics[0]}/{metrics[1]}</code>",
@@ -210,9 +223,12 @@ def build_operator_health_report(
             native_sl = position.get("stop_loss")
             native_tp = position.get("take_profit")
             fallback = fallback_by_symbol.get(symbol)
-            if native_sl is not None or native_tp is not None:
+            # A TP-only row cannot supply downside protection either.
+            if fallback and not _valid_loss_stop(fallback[3]):
+                fallback = None
+            if _valid_loss_stop(native_sl):
                 protection = "🟢 NATIVE"
-                why = "Provider has native protection fields."
+                why = "Provider reports a native loss stop; runtime execution is not probed."
                 action = "No operator action needed."
             elif fallback and not fallback_can_close:
                 protection = "🔴 GATED OFF · CANNOT CLOSE"
@@ -227,12 +243,13 @@ def build_operator_health_report(
             elif fallback:
                 protection = "🟡 FALLBACK"
                 why = "Native protection is absent; local fallback monitor owns the levels."
-                action = (
-                    "Verify stream freshness before relying on auto-close."
-                )
+                action = "Verify stream freshness before relying on auto-close."
             else:
-                protection = "🔴 MISSING"
-                why = "Neither native nor fallback protection is registered."
+                protection = "🔴 MISSING LOSS STOP"
+                why = (
+                    "No native loss stop or fallback loss stop is registered. TP alone "
+                    "does not limit loss."
+                )
                 action = "Do not treat this position as protected."
             if fallback and not fallback_can_close:
                 fallback_line = f"{_safe(fallback[6])} (registered, INERT)"
@@ -309,14 +326,18 @@ def build_operator_diagnostic(
     try:
         positions = gateway.get_positions()
         orders = gateway.get_orders()
+        provider_known = True
     except Exception as exc:
         positions, orders = [], []
+        provider_known = False
         lines.append(f"Provider read 🔴 FAILED · {_safe(type(exc).__name__)}")
+    provider_count = len(positions) if provider_known else "UNKNOWN"
+    order_count = len(orders) if provider_known else "UNKNOWN"
     if kind == "status":
         lines.extend(
             [
-                f"Provider positions: <code>{len(positions)}</code>",
-                f"Pending orders: <code>{len(orders)}</code>",
+                f"Provider positions: <code>{provider_count}</code>",
+                f"Pending orders: <code>{order_count}</code>",
                 "Scope: read-only provider snapshot.",
             ]
         )
@@ -368,9 +389,17 @@ def build_operator_diagnostic(
         db_positions, active_intents, fallback = rows[0] if rows else ("?", "?", "?")
         lines.extend(
             [
-                f"Provider positions: <code>{len(positions)}</code>",
+                f"Provider positions: <code>{provider_count}</code>",
                 f"DB open positions: <code>{db_positions}</code>",
-                f"State: {'⚠️ DRIFT' if str(db_positions) != str(len(positions)) else '✅ MATCH'}",
+                f"""State: {
+                    (
+                        "⚠️ UNKNOWN"
+                        if not provider_known or not rows
+                        else "⚠️ DRIFT"
+                        if str(db_positions) != str(provider_count)
+                        else "✅ MATCH"
+                    )
+                }""",
                 f"Active intents: <code>{active_intents}</code>",
                 f"Fallback monitors: <code>{fallback}</code>",
                 "Provider is authoritative; this command never rewrites the ledger.",
@@ -382,3 +411,128 @@ def build_operator_diagnostic(
     if not rows:
         lines.append("No records.")
     return "\n".join(lines)
+
+
+def create_shared_health_reader(snapshot_loader: Callable[[], dict[str, Any]]) -> Callable[[], str]:
+    """Wire slash health to the cron renderer without host/docker dependencies."""
+    from fatty_trader.operator import health_report_format
+
+    def read() -> str:
+        return health_report_format.format_report(**snapshot_loader())
+
+    return read
+
+
+def load_operator_health_snapshot(
+    gateway: Any,
+    connection_factory: Callable[[], Any],
+    *,
+    mode: str,
+    venue_mode: str,
+    execution_enabled: bool,
+) -> dict[str, Any]:
+    """Load read-only renderer inputs; failed reads are None, not flat lists.
+
+    Native fields show registered protection, not worker readiness. Host-only
+    Codex/docker probes and fallback runtime readiness are not inferred here.
+    """
+
+    def read_provider(method: Callable[[], Any], expected: type, unknown: Any) -> Any:
+        try:
+            value = method()
+            return value if isinstance(value, expected) else unknown
+        except Exception:
+            return unknown
+
+    raw_positions = read_provider(gateway.get_positions, list, None)
+    raw_orders = read_provider(gateway.get_orders, list, None)
+    account = read_provider(gateway.get_account_snapshot, dict, {})
+    positions = (
+        None
+        if raw_positions is None
+        else [
+            {
+                **p,
+                "direction": p.get("side"),
+                "qty": p.get("size"),
+                "entry_price": p.get("entry"),
+                "mark_price": p.get("mark"),
+            }
+            for p in raw_positions
+        ]
+    )
+    orders = (
+        None
+        if raw_orders is None
+        else [{**o, "qty": o.get("qty", o.get("size"))} for o in raw_orders]
+    )
+    sltp = {
+        p["symbol"]: {
+            "has_sl": _valid_loss_stop(p.get("stop_loss")),
+            "has_tp": _valid_loss_stop(p.get("take_profit")),
+            "native_sl": p.get("stop_loss"),
+            "native_tp": p.get("take_profit"),
+        }
+        for p in (raw_positions or [])
+    }
+    names = (
+        "messages",
+        "signals",
+        "open_positions",
+        "pending_orders",
+        "active_intents",
+        "fallback_positions",
+        "kill_switch",
+        "kill_reason",
+    )
+    metrics = dict.fromkeys(names, "UNKNOWN")
+    try:
+        row = _query_one(
+            connection_factory,
+            (
+                "\n"
+                "            SELECT\n"
+                "              (SELECT count(*) FROM telegram_messages),\n"
+                "              (SELECT count(*) FROM canonical_signals),\n"
+                "              (SELECT count(*) FROM positions WHERE closed_at IS "
+                "NULL),\n"
+                "              (SELECT count(*) FROM orders WHERE state NOT IN "
+                "('FILLED','CANCELLED','REJECTED','CLOSED')),\n"
+                "              (SELECT count(*) FROM live_order_intents WHERE "
+                "exchange='bitget'\n"
+                "                 AND state NOT IN ('filled','rejected','cancelled','re"
+                "conciled')),\n"
+                "              (SELECT count(*) FROM fallback_protection WHERE "
+                "exchange='bitget' AND state IN ('active','closing')),\n"
+                "              (SELECT active FROM venue_kill_switches WHERE "
+                "scope='bitget'),\n"
+                "              (SELECT reason FROM venue_kill_switches WHERE "
+                "scope='bitget')\n"
+                "        "
+            ),
+        )
+        if row is not None:
+            metrics.update(zip(names, row, strict=False))
+            metrics["kill_switch"] = (
+                "ACTIVE" if row[6] is True else "INACTIVE" if row[6] is False else "UNKNOWN"
+            )
+    except Exception:
+        pass
+    return {
+        "positions": positions,
+        "pending_orders": orders,
+        "sltp": sltp,
+        "pnl": {"fill_n": "UNKNOWN"},
+        "messages": [],
+        "metrics": metrics,
+        "account": {**account, "equity": account.get("equity", account.get("usdtEquity"))}
+        if account
+        else {},
+        "modes": {
+            "mode": mode,
+            "venue_mode": venue_mode,
+            "execution_enabled": "1" if execution_enabled else "0",
+        },
+        "codex": {"status": "N/A", "error": "Not probed in operator container"},
+        "services": {"status": "UNKNOWN"},
+    }

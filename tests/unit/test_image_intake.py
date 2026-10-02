@@ -64,10 +64,9 @@ def test_telegram_intake_downloads_and_persists_media(tmp_path: Path) -> None:
         media = object()
         file = File()
 
-        async def download_media(self, *, file: str) -> str:
-            path = Path(file)
-            path.write_bytes(b"chart-bytes")
-            return str(path)
+        async def download_media(self, *, file):
+            file.write(b"chart-bytes")
+            return file
 
     repository = InMemoryRawMessageRepository()
     item = asyncio.run(

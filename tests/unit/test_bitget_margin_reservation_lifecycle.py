@@ -117,10 +117,10 @@ async def test_startup_sweep_reconciles_acknowledged_reservation_with_provider_e
     store.save(intent)
     reservations = ActiveReservations()
 
-    reconciled = await BitgetDispatchExecution(
-        FilledExecution(), store, reservation_repository=reservations
-    ).reconcile_active_reservations()
+    adapter = BitgetDispatchExecution(FilledExecution(), store, reservation_repository=reservations)
+    reconciled = await adapter.reconcile_active_reservations()
 
+    assert adapter.recovery_ready is False  # Legacy sweep cannot prove protection readiness.
     assert reconciled == 1
     assert reservations.outcomes == ["FILLED"]
     assert store.get(intent.client_oid).state == "filled"  # type: ignore[union-attr]

@@ -113,4 +113,6 @@ async def test_intake_attaches_new_message_handler_for_configured_channels() -> 
 
     await intake.attach(FakeClient(), ("@example_source_channel",))
 
-    assert len(registrations) == 1
+    from telethon import events
+
+    assert [type(event) for _, event in registrations] == [events.NewMessage, events.MessageEdited]

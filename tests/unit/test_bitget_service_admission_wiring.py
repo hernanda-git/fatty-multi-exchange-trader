@@ -42,8 +42,8 @@ class Venue:
         assert symbol == "PENDLEUSDT"
         return self.snapshot
 
-    async def active_position_count(self) -> int:
-        return 0
+    async def active_position_snapshot(self):
+        return SimpleNamespace(symbols=(), observed_at=datetime.now(UTC))
 
 
 class Reservations:
@@ -51,6 +51,13 @@ class Reservations:
         self.kwargs: dict[str, Any] | None = None
 
     def reserve(self, **kwargs: object):
+        import inspect
+
+        from fatty_trader.storage.balance_reservations import (
+            PostgresBitgetMarginReservationRepository,
+        )
+
+        inspect.signature(PostgresBitgetMarginReservationRepository.reserve).bind(self, **kwargs)
         self.kwargs = kwargs
         from fatty_trader.storage.balance_reservations import BalanceAdmission
 
@@ -102,6 +109,12 @@ async def test_production_preflight_reserves_the_exact_admission_before_dispatch
     assert reservations.kwargs is not None
     assert reservations.kwargs["planned_margin_usdt"] == admission.submission.planned_margin_usdt
     assert reservations.kwargs["client_order_id"].startswith("live-bitget-PENDLEUSDT-")
+    assert reservations.kwargs["symbol"] == venue.snapshot.metadata.symbol
+    assert reservations.kwargs["environment"] == "DEMO"
+    assert reservations.kwargs["max_positions"] == 5
+    assert reservations.kwargs["provider_active_symbols"] == ()
+    assert reservations.kwargs["max_snapshot_age"].total_seconds() == 5
+    assert reservations.kwargs["max_future_skew"].total_seconds() == 1
 
 
 @pytest.mark.asyncio
@@ -147,8 +160,8 @@ async def test_env_margin_cap_binds_allocation_down_to_one_usdt_at_fixed_20x() -
 @pytest.mark.asyncio
 async def test_production_preflight_uses_authoritative_active_position_count() -> None:
     class ActiveVenue(Venue):
-        async def active_position_count(self) -> int:
-            return 5
+        async def active_position_snapshot(self):
+            return SimpleNamespace(symbols=("BTCUSDT",) * 5, observed_at=datetime.now(UTC))
 
     venue = ActiveVenue()
     venue.snapshot.account = venue.snapshot.account.__class__(
@@ -168,3 +181,87 @@ async def test_production_preflight_uses_authoritative_active_position_count() -
             {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
             reservation_repository=Reservations(),
         )(_dispatch())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source,offset", [("account", -60), ("account", 60), ("positions", -60), ("positions", 60)]
+)
+async def test_stale_or_future_evidence_cannot_reserve(source, offset):
+    from datetime import timedelta
+
+    venue = Venue()
+    stamp = datetime.now(UTC) + timedelta(seconds=offset)
+    if source == "account":
+        venue.snapshot.account.observed_at = stamp
+    else:
+
+        async def positions():
+            return SimpleNamespace(symbols=(), observed_at=stamp)
+
+        venue.active_position_snapshot = positions
+    reservations = Reservations()
+    with pytest.raises(ValueError, match="stale|future"):
+        await _bitget_dispatch_preflight(
+            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}, reservation_repository=reservations
+        )(_dispatch())
+    assert reservations.kwargs is None
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("BITGET_MODE", "PAPER"),
+        ("BITGET_MODE", ""),
+        ("BITGET_MAX_NORMAL_POSITIONS", "0"),
+        ("BITGET_MAX_NORMAL_POSITIONS", "-1"),
+        ("BITGET_MAX_NORMAL_POSITIONS", "1.5"),
+        ("BITGET_MAX_NORMAL_POSITIONS", "true"),
+        ("BITGET_BALANCE_MAX_AGE_SECONDS", "Infinity"),
+        ("BITGET_BALANCE_MAX_FUTURE_SKEW_SECONDS", "-1"),
+        ("BITGET_BALANCE_MAX_FUTURE_SKEW_SECONDS", "NaN"),
+    ],
+)
+def test_invalid_admission_policy_refuses_before_venue_reads(key, value):
+    with pytest.raises(ValueError):
+        _bitget_dispatch_preflight(
+            Venue(),
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1", key: value},
+            reservation_repository=Reservations(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_one_snapshot_supplies_duplicate_symbols_and_explicit_policy():
+    from datetime import timedelta
+
+    venue = Venue()
+    stamp = datetime.now(UTC) - timedelta(seconds=1)
+    calls = 0
+
+    async def positions():
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(symbols=("BTCUSDT", "BTCUSDT"), observed_at=stamp)
+
+    venue.active_position_snapshot = positions
+    reservations = Reservations()
+    await _bitget_dispatch_preflight(
+        venue,
+        {
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            "BITGET_MODE": "LIVE",
+            "BITGET_MAX_NORMAL_POSITIONS": "3",
+            "BITGET_BALANCE_MAX_AGE_SECONDS": "4",
+            "BITGET_BALANCE_MAX_FUTURE_SKEW_SECONDS": "0.5",
+        },
+        reservation_repository=reservations,
+    )(_dispatch())
+    assert calls == 1
+    assert reservations.kwargs is not None
+    assert reservations.kwargs["provider_active_symbols"] == ("BTCUSDT", "BTCUSDT")
+    assert reservations.kwargs["environment"] == "LIVE"
+    assert reservations.kwargs["max_positions"] == 3
+    assert reservations.kwargs["observed_at"] == stamp
+    assert reservations.kwargs["max_snapshot_age"] == timedelta(seconds=4)
+    assert reservations.kwargs["max_future_skew"] == timedelta(seconds=0.5)

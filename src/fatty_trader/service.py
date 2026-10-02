@@ -30,6 +30,7 @@ from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
 from fatty_trader.storage.migrations import apply_migrations
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
+from fatty_trader.worker_health import owned_worker_health, worker_progress
 
 SUPPORTED_SERVICES = (
     "intake",
@@ -327,8 +328,10 @@ def build_bitget_execution_runtime(
     from fatty_trader.exchanges.bitget.client import BitgetRestClient
     from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
     from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
+    from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
     from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+    from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
     using_default_client = client_factory is None
     if client_factory is None:
@@ -362,16 +365,26 @@ def build_bitget_execution_runtime(
         capability_repository_factory() if capability_repository_factory is not None else None
     )
     reservation_repository = PostgresBitgetMarginReservationRepository(psycopg.connect)
+    dispatch_repository = PostgresBitgetDispatchRepository(psycopg.connect)
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    recovery_reader = GetOnlyProtectionRecovery(
+        client, dispatch_repository, environment=config.venue_mode
+    )
     execution = BitgetDispatchExecution(
         AsyncBitgetExecution(
             cast(AsyncBitgetExecutionClient, client),
             venue,
             capability_repository=capability_repository,
             reconciliation_repository=reservation_repository,
+            fallback_protection_enabled=_bitget_fallback_mutations_enabled(environ),
             environment=config.venue_mode,
         ),
         cast(LiveIntentStoreProtocol, intent_store_factory()),
         reservation_repository=reservation_repository,
+        dispatch_repository=dispatch_repository,
+        kill_switch=PostgresReconciliationRepository(psycopg.connect),
+        recovery_protection=recovery_reader,
     )
     return BitgetExecutionRuntime(
         execution=execution,
@@ -382,16 +395,53 @@ def build_bitget_execution_runtime(
     )
 
 
+def _bitget_fallback_mutations_enabled(environ: Mapping[str, str]) -> bool:
+    """Whether bot-managed TP/SL closes can actually be submitted by the monitor.
+
+    Mirrors the monitor wiring: the flag alone is not enough, the kill switch
+    also has to permit mutations, otherwise the fallback row is never executed.
+    """
+    raw = environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0").strip().lower()
+    if raw not in {"0", "1"}:
+        raise ValueError("BITGET_FALLBACK_MUTATIONS_ENABLED must be 0 or 1")
+    return raw == "1" and bitget_kill_switch_enforced(environ)
+
+
 def _bitget_dispatch_preflight(
     venue: Any, environ: Mapping[str, str], *, reservation_repository: Any | None = None
 ) -> Callable[[Any], Any]:
     """Return a fail-closed admission factory; production always reserves first."""
+    from datetime import timedelta
+
+    environment = environ.get("BITGET_MODE", "DEMO").strip().upper()
+    if environment not in {"DEMO", "LIVE"}:
+        raise ValueError("BITGET_MODE must be DEMO or LIVE")
+    max_positions = int(environ.get("BITGET_MAX_NORMAL_POSITIONS", "5"))
+    if max_positions <= 0:
+        raise ValueError("BITGET_MAX_NORMAL_POSITIONS must be a positive integer")
     allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
     # Both bounds default to 20 so an unset environment is 20x, never 50x.
     max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "20"))
     min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
     max_age_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_AGE_SECONDS", "5"))
     ttl_seconds = Decimal(environ.get("BITGET_BALANCE_RESERVATION_TTL_SECONDS", "30"))
+    future_skew_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_FUTURE_SKEW_SECONDS", "1"))
+    if not all(value.is_finite() for value in (max_age_seconds, ttl_seconds, future_skew_seconds)):
+        raise ValueError("Bitget snapshot age policy must be finite")
+    if future_skew_seconds < 0:
+        raise ValueError("Bitget snapshot future skew must be non-negative")
+    max_snapshot_age = timedelta(seconds=float(max_age_seconds))
+    max_future_skew = timedelta(seconds=float(future_skew_seconds))
+
+    def validate_observed_at(value: Any, label: str) -> None:
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError(f"Bitget {label} snapshot timestamp is invalid")
+        now = datetime.now(UTC)
+        if now - value > max_snapshot_age:
+            raise ValueError(f"Bitget {label} snapshot is stale")
+        if value - now > max_future_skew:
+            raise ValueError(f"Bitget {label} snapshot is future-dated")
+
     if not (Decimal("0") < allocation_pct <= Decimal("1")):
         raise ValueError("BITGET_ALLOCATION_PCT must be in (0, 1]")
     # The ceiling is pinned at 20x: never above. The floor only bounds how far the
@@ -414,6 +464,8 @@ def _bitget_dispatch_preflight(
     liquidation_buffer = Decimal(environ.get("BITGET_LIQUIDATION_BUFFER", "0.10"))
     if not (Decimal("0") < liquidation_buffer <= Decimal("1")):
         raise ValueError("BITGET_LIQUIDATION_BUFFER must be in (0, 1]")
+    if environ.get("BITGET_MAX_MARGIN_FLOOR_ESCAPE_USDT", "").strip():
+        raise ValueError("floor-escape margin is not supported by the pinned LIVE policy")
     raw_margin_cap = environ.get("BITGET_MAX_MARGIN_PER_TRADE_USDT", "").strip()
     if not raw_margin_cap:
         raise ValueError(
@@ -428,13 +480,13 @@ def _bitget_dispatch_preflight(
         ) from exc
     if not max_margin_per_trade.is_finite() or max_margin_per_trade <= 0:
         raise ValueError("BITGET_MAX_MARGIN_PER_TRADE_USDT must be a finite positive amount")
-    # The policy is a hard ceiling of exactly 1 USDT, not a tunable. A larger
-    # value (including a huge exponent like 1e999999) would silently widen the
-    # cap, so anything other than exactly 1 is a configuration error.
+    # The policy is pinned, not a tunable. A different value could silently widen
+    # or narrow the approved cap, so reject every non-exact configuration.
     if max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
         raise ValueError(
             "Bitget LIVE margin cap is fixed at 1 USDT: "
-            f"BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly 1 (got {raw_margin_cap!r})"
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly 1 "
+            f"(got {raw_margin_cap!r})"
         )
 
     async def preflight(dispatch: Any) -> Any:
@@ -477,10 +529,7 @@ def _bitget_dispatch_preflight(
                 ),
             )
         observed_at = account.observed_at
-        if datetime.now(UTC) - observed_at > __import__("datetime").timedelta(
-            seconds=float(max_age_seconds)
-        ):
-            raise ValueError("Bitget balance snapshot is stale")
+        validate_observed_at(observed_at, "balance")
         from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
         from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
         from fatty_trader.execution.bitget_dispatcher import BitgetAdmission
@@ -492,17 +541,23 @@ def _bitget_dispatch_preflight(
             allocation_pct=allocation_pct,
             max_margin_per_trade_usdt=max_margin_per_trade,
             liquidation_buffer=liquidation_buffer,
+            max_normal_positions=max_positions,
         )
-        active_position_count = getattr(venue, "active_position_count", None)
-        if not callable(active_position_count):
+        read_positions = getattr(venue, "active_position_snapshot", None)
+        if not callable(read_positions):
             raise ValueError("Bitget venue cannot read all active positions for admission")
-        active_positions = await active_position_count()
-        if (
-            isinstance(active_positions, bool)
-            or not isinstance(active_positions, int)
-            or active_positions < 0
+        positions = await cast(Any, read_positions)()
+        validate_observed_at(positions.observed_at, "positions")
+        validate_observed_at(observed_at, "balance")
+        # Storage rechecks the oldest evidence after its admission lock wait.
+        observed_at = min(observed_at, positions.observed_at)
+        provider_active_symbols = positions.symbols
+        if not isinstance(provider_active_symbols, tuple) or any(
+            not isinstance(item, str) or not re.fullmatch(r"[A-Z0-9]{2,20}", item)
+            for item in provider_active_symbols
         ):
-            raise ValueError("Bitget active position count is invalid")
+            raise ValueError("Bitget active position symbols are invalid")
+        active_positions = len(provider_active_symbols)
         decision = plan_live_position(
             LiveSizingInput(
                 meta=metadata,
@@ -536,12 +591,22 @@ def _bitget_dispatch_preflight(
             headroom=Decimal("1"),
             ttl=__import__("datetime").timedelta(seconds=float(ttl_seconds)),
             max_margin_per_trade_usdt=max_margin_per_trade,
+            symbol=metadata.symbol,
+            environment=environment,
+            max_positions=risk.max_normal_positions,
+            provider_active_symbols=provider_active_symbols,
+            max_snapshot_age=max_snapshot_age,
+            max_future_skew=max_future_skew,
         )
         if (
             not admission.accepted
             or admission.snapshot_id is None
             or admission.reservation_id is None
         ):
+            if admission.reason == "stale-source-message":
+                from fatty_trader.intake.freshness import SourceFreshnessExpired
+
+                raise SourceFreshnessExpired(admission.reason)
             raise ValueError(f"Bitget margin admission rejected: {admission.reason or 'unknown'}")
         return BitgetAdmission(
             BitgetEntrySubmission(
@@ -590,11 +655,13 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         kill_switch=PostgresReconciliationRepository(cast(Any, psycopg.connect)),
         protection_admission=protection_admission,
     )
-    if runtime is not None:
-        await runtime.execution.reconcile_active_reservations()  # type: ignore[attr-defined]
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
     try:
+        if runtime is not None:
+            await runtime.execution.recover_entry_lifecycles()  # type: ignore[attr-defined]
+            if runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
+                raise RuntimeError("Bitget lifecycle recovery is not ready")
         while True:
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
             print(
@@ -1025,11 +1092,29 @@ def enabled_dispatch_exchanges(environ: Mapping[str, str]) -> tuple[str, ...]:
     return exchanges
 
 
+def build_codex_runner(
+    environ: Mapping[str, str], *, popen_factory: Callable[..., Any] | None = None
+) -> CodexRunner:
+    """Pass only purpose-supplied Codex auth, never the service capability environment.
+
+    CODEX_HOME must be a dedicated CLI home with only auth.json mounted read-only;
+    the runner ignores its user config/rules rather than enabling local MCP tools.
+    This mapping is explicit: no fallback to the parent process environment.
+    """
+    return CodexRunner(
+        auth_env={
+            key: environ[key] for key in ("CODEX_HOME", "OPENAI_API_KEY") if environ.get(key)
+        },
+        popen_factory=popen_factory,
+    )
+
+
+@owned_worker_health("analyzer")
 async def run_analyzer(environ: Mapping[str, str]) -> None:
     """Continuously analyze durable RECEIVED rows and enqueue DEMO intents."""
     import psycopg
 
-    runner = CodexRunner()
+    runner = build_codex_runner(environ)
     account_label = environ.get("CODEX_ACCOUNT_LABEL", "unset")
     codex_cli = "available" if shutil.which("codex") else "unavailable"
     poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "5"))
@@ -1052,9 +1137,11 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             f"codex_cli={codex_cli} codex_account_label={account_label}",
             flush=True,
         )
+        worker_progress()
         await asyncio.sleep(poll_seconds if processed == 0 else 0)
 
 
+@owned_worker_health("operator-bot")
 async def run_operator_bot(environ: Mapping[str, str]) -> None:
     """Run the private authenticated operator command listener in a dedicated thread."""
     import psycopg
@@ -1063,7 +1150,8 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
     from fatty_trader.operator.health import (
         build_operator_diagnostic,
-        build_operator_health_report,
+        create_shared_health_reader,
+        load_operator_health_snapshot,
     )
     from fatty_trader.operator.live_commands import OperatorCommandService
     from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
@@ -1095,17 +1183,14 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         gateway,
         operator_id=int(environ["TG_OPERATOR_ID"]),
         mutations_enabled=mutations_raw == "1",
-        health_reader=lambda: build_operator_health_report(
-            gateway,
-            psycopg.connect,
-            mode=environ.get("TRADER_MODE", "DEMO"),
-            venue_mode=mode,
-            execution_enabled=environ.get("BITGET_EXECUTION_ENABLED", "0") == "1",
-            fallback_mutations_enabled=environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0"),
-            stream_enabled=environ.get("BITGET_PROTECTION_STREAM_ENABLED", "0"),
-            stream_mode=environ.get("BITGET_PROTECTION_STREAM_MODE", "observe"),
-            stream_mutations_enabled=environ.get("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", "0"),
-            capability_gate_enabled=environ.get("BITGET_PROTECTION_CAPABILITY_GATE_ENABLED", "0"),
+        health_reader=create_shared_health_reader(
+            lambda: load_operator_health_snapshot(
+                gateway,
+                psycopg.connect,
+                mode=environ.get("TRADER_MODE", "DEMO"),
+                venue_mode=mode,
+                execution_enabled=environ.get("BITGET_EXECUTION_ENABLED", "0") == "1",
+            )
         ),
         diagnostic_reader=lambda kind: build_operator_diagnostic(kind, gateway, psycopg.connect),
     )
@@ -1123,6 +1208,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
             while True:
                 try:
                     poller.run_once()
+                    worker_progress()
                 except RuntimeError:
                     print("service=operator-bot state=poll-retry", flush=True)
                     time.sleep(3)
@@ -1183,6 +1269,7 @@ def intake_settings(environ: Mapping[str, str]) -> TelegramSettings | None:
         return None
 
 
+@owned_worker_health("intake")
 async def run_intake(
     environ: Mapping[str, str],
     *,
@@ -1233,9 +1320,19 @@ async def run_intake(
             f"service=intake event=catchup-armed interval_seconds={catchup_seconds}",
             flush=True,
         )
+
+    async def connected_progress() -> None:
+        # Same event loop as Telethon: no detached thread can mask a stalled loop.
+        while client.is_connected():
+            worker_progress()
+            await asyncio.sleep(10)
+
+    health_task = asyncio.create_task(connected_progress())
     try:
         await client.run_until_disconnected()
     finally:
+        health_task.cancel()
+        await asyncio.gather(health_task, return_exceptions=True)
         if catchup_task is not None:
             catchup_task.cancel()
 
@@ -1246,10 +1343,16 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
     Deliberately separate from the analyzer/dispatcher path: those write live dispatches,
     and a paper source must have no route into the money lane.
     """
+    import json
+
     import psycopg
     from psycopg.rows import dict_row
 
-    from fatty_trader.analyzer.image_analysis import analyze_image_json, signal_from_image_json
+    from fatty_trader.analyzer.image_analysis import (
+        analyze_image_json,
+        image_source_revision,
+        signal_from_image_json,
+    )
     from fatty_trader.analyzer.market_price import public_last_price
     from fatty_trader.kaka.parser import KakaEvent, KakaEventType
     from fatty_trader.kaka.worker import process_paper_batch
@@ -1259,14 +1362,42 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
 
     def image_analyzer(path: str, *, message_id: int) -> Any:
         """Chart-only messages: reuse the analyzer's vision path, then map to a paper event."""
-        from fatty_trader.analyzer.codex_runner import CodexRunner
-
-        runner = CodexRunner()
+        # The worker's legacy callback carries only the path and message id. Read the
+        # exact intake identity rather than inventing a revision from a message number.
+        connection = psycopg.connect(row_factory=dict_row)
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT raw_text, revision_hash, media_sha256 FROM telegram_messages "
+                "WHERE channel_id = %s AND message_id = %s AND media_path = %s",
+                (channel_id, message_id, path),
+            )
+            source = cursor.fetchone()
+        finally:
+            connection.close()
+        if source is None:
+            return None
+        text = str(source.get("raw_text") or "")
+        revision = image_source_revision(
+            image_path=path,
+            channel_id=channel_id,
+            message_id=message_id,
+            text=text,
+            canonical_revision=source.get("revision_hash"),
+            media_sha256=source.get("media_sha256"),
+        )
+        runner = build_codex_runner(environ)
         data = analyze_image_json(
-            text="", message_id=message_id, image_path=path, runner=runner.run
+            text=text,
+            message_id=message_id,
+            image_path=path,
+            runner=runner,
         )
         signal = signal_from_image_json(
-            data, message_id=message_id, source_revision=f"image:{message_id}"
+            data,
+            message_id=message_id,
+            source_revision=revision,
+            original_text=text,
         )
         if signal is None:
             return None
@@ -1278,7 +1409,14 @@ async def run_paper_kaka(environ: Mapping[str, str]) -> None:
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profits[0] if signal.take_profits else None,
             message_id=message_id,
-            raw="image",
+            raw=json.dumps(
+                {
+                    "kind": "image",
+                    "source_revision": revision,
+                    "media_sha256": source.get("media_sha256"),
+                },
+                separators=(",", ":"),
+            ),
         )
 
     poll_seconds = float(environ.get("PAPER_KAKA_POLL_SECONDS", "20"))
@@ -1321,7 +1459,7 @@ async def _maybe_enqueue_digest(digest_hour_utc: int) -> None:
     if now.hour < digest_hour_utc:
         return
     day = now.date().isoformat()
-    day_start = datetime(now.year, now.month, now.day, tzinfo=UTC) - timedelta(days=1)
+    day_start = now - timedelta(hours=24)
     try:
         connection = psycopg.connect(row_factory=dict_row)
         try:
@@ -1380,6 +1518,10 @@ def main() -> int:
     if args.service == "web":
         return 0
     if args.check:
+        if args.service in {"intake", "analyzer", "operator-bot"}:
+            from fatty_trader.worker_health import check_worker_health
+
+            return check_worker_health(args.service, os.environ)
         service_config(args.service, os.environ)
         if args.heartbeat_path is not None:
             return check_monitor_heartbeat(args.heartbeat_path, args.heartbeat_max_age)

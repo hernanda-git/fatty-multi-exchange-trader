@@ -50,8 +50,25 @@ def test_invalid_margin_cap_values_are_rejected(raw: str) -> None:
         _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw})
 
 
+@pytest.mark.parametrize("raw", ["1.0001", "2", "2.5", "50", "1e999999"])
+def test_margin_cap_other_than_the_exact_pin_is_rejected(raw: str) -> None:
+    """LIVE margin is pinned exactly; any wider or narrower value is rejected."""
+    with pytest.raises(ValueError, match="fixed at 1 USDT"):
+        _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw})
+
+
 def test_valid_margin_cap_builds_preflight() -> None:
     assert _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}) is not None
+
+
+def test_unsupported_floor_escape_configuration_fails_closed() -> None:
+    with pytest.raises(ValueError, match="floor-escape margin is not supported"):
+        _preflight(
+            {
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_FLOOR_ESCAPE_USDT": "2.5",
+            }
+        )
 
 
 # --------------------------------------------------------------------------

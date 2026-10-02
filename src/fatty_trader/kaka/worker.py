@@ -269,6 +269,16 @@ def handle_event(cursor: Any, event: KakaEvent, price_of: Any) -> None:
         )
         return
 
+    # One lane lock serializes target resolution, read/modify/write and dedup together.
+    # The caller must commit/rollback this transaction; event and mutation are atomic.
+    cursor.execute("SELECT pg_advisory_xact_lock(%s)", (store.KAKA_CHANNEL_ID,))
+    cursor.execute(
+        "SELECT source_message_id FROM paper_kaka_events WHERE source_message_id = %s LIMIT 1",
+        (event.message_id,),
+    )
+    if cursor.fetchall():
+        return
+
     if event.type is KakaEventType.OPEN:
         existing = store.load_open_trade(cursor, event.symbol or "")
         if existing is not None:

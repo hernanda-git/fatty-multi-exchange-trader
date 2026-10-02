@@ -98,11 +98,14 @@ async def classify_missing_detail(
     flat = _flat_position(position, intent.symbol) is True
     no_pending = _no_pending_orders(pending, intent.symbol) is True
     safe = complete and flat and no_pending
+    # Entry execution evidence is independent of the resulting open position
+    # and any still-pending residual. Close terminality keeps its flatness fence.
+    fill_evidence_safe = complete and (intent.role == "ENTRY" or (flat and no_pending))
     status = (
         LiveOrderStatus.FILLED
-        if safe and filled_qty >= intent.requested_qty
+        if fill_evidence_safe and filled_qty >= intent.requested_qty
         else LiveOrderStatus.PARTIAL
-        if safe and filled_qty > 0
+        if fill_evidence_safe and filled_qty > 0
         else LiveOrderStatus.REJECTED
         if safe and missing_order_confirmed
         else LiveOrderStatus.UNKNOWN

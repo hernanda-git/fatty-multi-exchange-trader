@@ -117,4 +117,5 @@ class BitgetLiveRiskConfig(BaseModel):
             raise ValueError(
                 f"Bitget LIVE leverage floor must be at least 5x (got {self.min_leverage})"
             )
+
         return self

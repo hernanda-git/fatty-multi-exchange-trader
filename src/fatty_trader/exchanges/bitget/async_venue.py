@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
@@ -45,31 +47,55 @@ class BitgetPreflightSnapshot:
         return self.account.available
 
 
+@dataclass(frozen=True)
+class BitgetActivePositionSnapshot:
+    # One symbol per non-flat row: hedge-side duplicates consume separate slots.
+    symbols: tuple[str, ...]
+    observed_at: datetime
+
+
 class AsyncBitgetVenue:
     """Async, read-only Bitget venue boundary for production worker preflight."""
 
     def __init__(self, client: AsyncBitgetClient) -> None:
         self._client = client
 
-    async def active_position_count(self) -> int:
-        """Count non-flat provider positions across symbols for sizing admission."""
+    async def active_position_snapshot(self) -> BitgetActivePositionSnapshot:
+        """Strict all-symbol provider evidence from exactly one fresh REST read."""
         get_all_positions = getattr(self._client, "get_all_positions", None)
         if not callable(get_all_positions):
             raise ValueError("Bitget client cannot read all positions for admission")
+        # Timestamp request start conservatively: a slow response cannot appear fresh.
+        observed_at = datetime.now(UTC)
         payload = await get_all_positions()
-        rows = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if isinstance(payload, dict) and payload.get("code", "00000") != "00000":
+            raise ValueError("Bitget all-positions response reports provider failure")
+        rows = payload.get("data") if isinstance(payload, dict) else payload
         if not isinstance(rows, list):
             raise ValueError("Bitget all-positions response must be a list")
-        count = 0
+        symbols = []
         for row in rows:
             if not isinstance(row, dict):
                 raise ValueError("Bitget all-positions response contains invalid row")
+            symbol = row.get("symbol")
+            if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9]{2,20}", symbol):
+                raise ValueError("Bitget all-positions response has invalid symbol")
+            raw_total = row.get("total")
+            if isinstance(raw_total, bool) or not isinstance(raw_total, (str, int, float, Decimal)):
+                raise ValueError("Bitget all-positions response has invalid total")
             try:
-                if abs(Decimal(str(row.get("total", "0")))) > 0:
-                    count += 1
+                total = Decimal(str(raw_total))
             except (InvalidOperation, TypeError, ValueError) as exc:
                 raise ValueError("Bitget all-positions response has invalid total") from exc
-        return count
+            if not total.is_finite() or total < 0:
+                raise ValueError("Bitget all-positions response has invalid total")
+            if total > 0:
+                symbols.append(symbol)
+        return BitgetActivePositionSnapshot(tuple(symbols), observed_at)
+
+    async def active_position_count(self) -> int:
+        """Compatibility reader; production admission uses the symbol snapshot."""
+        return len((await self.active_position_snapshot()).symbols)
 
     async def ensure_leverage(
         self, symbol: str, planned_leverage: int, *, propagation_delay_seconds: float = 2.0

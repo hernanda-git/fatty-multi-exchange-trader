@@ -230,8 +230,9 @@ async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
     repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
     fallback_calls: list[str] = []
 
-    async def run_fallback(client: object) -> list[dict[str, str]]:
+    async def run_fallback(client: object, *, environment=None) -> list[dict[str, str]]:
         del client
+        assert environment is None
         fallback_calls.append("called")
         return []
 

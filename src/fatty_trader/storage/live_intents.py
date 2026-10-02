@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from fatty_trader.storage.verified_closes import PostgresVerifiedCloseLifecycle
 from uuid import NAMESPACE_URL, uuid5
 
 from fatty_trader.exchanges.bitget.live import (
@@ -90,7 +93,13 @@ def insert_provider_fills(
         try:
             quantity_value = Decimal(str(quantity))
             price_value = Decimal(str(price))
-            if quantity_value <= 0 or price_value <= 0:
+            if (
+                not quantity_value.is_finite()
+                or not price_value.is_finite()
+                or quantity_value <= 0
+                or price_value <= 0
+                or str(provider_fill_id).startswith("status-derived:")
+            ):
                 continue
             fee = abs(Decimal(str(fill.get("fee", "0") or "0")))
             realized_pnl = Decimal(
@@ -125,6 +134,16 @@ def insert_provider_fills(
                 timestamp_ms,
             ),
         )
+        # Provider evidence supersedes the provisional aggregate in this same
+        # transaction. Durable intent retains status quantity/price/fee evidence.
+        cursor.execute(
+            """DELETE FROM fills WHERE exchange = %s AND client_order_id = %s
+                 AND provider_fill_id LIKE 'status-derived:%%'
+                 AND EXISTS (SELECT 1 FROM fills WHERE exchange = %s
+                     AND client_order_id = %s
+                     AND provider_fill_id NOT LIKE 'status-derived:%%')""",
+            (record.exchange, record.client_oid, record.exchange, record.client_oid),
+        )
 
 
 def build_emergency_close_intent(entry: LiveIntentRecord, quantity: Decimal) -> LiveIntentRecord:
@@ -150,6 +169,13 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
 
     def __init__(self, connection_factory: Callable[[], Connection]) -> None:
         self._connection_factory = connection_factory
+
+    @property
+    def verified_close_lifecycle(self) -> PostgresVerifiedCloseLifecycle:
+        """Evidence-only lifecycle shared by operator POST and monitor reconciliation."""
+        from fatty_trader.storage.verified_closes import PostgresVerifiedCloseLifecycle
+
+        return PostgresVerifiedCloseLifecycle(self._connection_factory, self)
 
     def claim(self, record: LiveIntentRecord) -> bool:
         """Atomically insert an intent and report whether this caller won."""
@@ -243,7 +269,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                      role, state, requested_qty, filled_qty, leverage, margin_mode,
                      planned_margin_usdt, planned_notional_usdt, balance_snapshot_id,
                      margin_reservation_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (exchange, client_order_id) DO NOTHING
                 """,
                 (
@@ -354,7 +380,13 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None:
         connection = self._connection_factory()
         try:
-            insert_provider_fills(connection.cursor(), record, fills)
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT id FROM live_order_intents "
+                "WHERE exchange = %s AND client_order_id = %s FOR UPDATE",
+                (record.exchange, record.client_oid),
+            )
+            insert_provider_fills(cursor, record, fills)
             connection.commit()
         except Exception:
             connection.rollback()

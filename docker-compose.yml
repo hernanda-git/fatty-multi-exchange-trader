@@ -44,12 +44,22 @@ services:
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: web
-      SERVICE_COMPONENTS: postgres=ready,migrate=ready
+      # Progress is worker-owned; each socket validates identity in its own PID namespace.
+      WEB_INTAKE_HEALTH_PATH: /run/fatty-health/intake/progress.json
+      WEB_INTAKE_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
+      WEB_ANALYZER_HEALTH_PATH: /run/fatty-health/analyzer/progress.json
+      WEB_ANALYZER_HEALTH_SOCKET_PATH: /run/fatty-health/analyzer/owner.sock
+      WEB_NOTIFICATION_HEALTH_PATH: /run/fatty-health/notification/progress.json
+      WEB_NOTIFICATION_HEALTH_SOCKET_PATH: /run/fatty-health/notification/owner.sock
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
       PGUSER: fatty_app
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+    volumes:
+      - health-intake:/run/fatty-health/intake:ro
+      - health-analyzer:/run/fatty-health/analyzer:ro
+      - health-notification:/run/fatty-health/notification:ro
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
     depends_on:
@@ -68,6 +78,8 @@ services:
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: intake
+      WORKER_HEALTH_PATH: /run/fatty-health/intake/progress.json
+      WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
@@ -87,6 +99,7 @@ services:
       TELEGRAM_CATCHUP_SECONDS: ${TELEGRAM_CATCHUP_SECONDS:-60}
       TELEGRAM_CATCHUP_LIMIT: ${TELEGRAM_CATCHUP_LIMIT:-50}
     volumes:
+      - health-intake:/run/fatty-health/intake
       - ./data/media:/app/runtime/media
     depends_on:
       init:
@@ -98,10 +111,18 @@ services:
   analyzer:
     build: .
     user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"
+    # Image-only dedicated tree: intake UID/GID 10001 owns RW; analyzer only
+    # receives group read/traverse (0640 files / 0750 directories) plus an RO mount.
+    # Provision ./data/media as 10001:10001 mode 0750; never store credentials here.
+    # Existing private media needs an explicitly approved permission migration;
+    # application code intentionally does not chmod existing files/directories.
+    group_add: ["10001"]
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer"]
     environment:
       TRADER_MODE: DEMO
       SERVICE_NAME: analyzer
+      WORKER_HEALTH_PATH: /run/fatty-health/analyzer/progress.json
+      WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/analyzer/owner.sock
       DISPATCH_EXCHANGES: bitget
       PGHOST: postgres
       PGPORT: "5432"
@@ -114,6 +135,7 @@ services:
       CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-unset}
       BITGET_IMAGE_ANALYSIS_ENABLED: ${BITGET_IMAGE_ANALYSIS_ENABLED:-1}
     volumes:
+      - health-analyzer:/run/fatty-health/analyzer
       - ./runtime/codex-home:/app/runtime/codex-home
       - ${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json:/app/runtime/codex-home/auth.json:ro
       - ./data/media:/app/runtime/media:ro
@@ -309,6 +331,8 @@ services:
 
   notification-sender:
     build: .
+    volumes:
+      - health-notification:/run/fatty-health/notification
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.notification_service"]
     environment:
       PGHOST: postgres
@@ -318,6 +342,8 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
+      WORKER_HEALTH_PATH: /run/fatty-health/notification/progress.json
+      WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/notification/owner.sock
       NOTIFICATION_POLL_SECONDS: ${NOTIFICATION_POLL_SECONDS:-5}
       NOTIFICATION_LEASE_SECONDS: ${NOTIFICATION_LEASE_SECONDS:-30}
       NOTIFICATION_RETRY_SECONDS: ${NOTIFICATION_RETRY_SECONDS:-30}
@@ -350,3 +376,25 @@ services:
       init:
         condition: service_completed_successfully
     restart: unless-stopped
+
+# Linux-only, ephemeral metadata volumes. Sticky directories permit analyzer's
+# non-root UID; only its owner has RW access, web has RO, no other service mounts it.
+volumes:
+  health-intake:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=1777
+  health-analyzer:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=1777
+  health-notification:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1m,mode=1777

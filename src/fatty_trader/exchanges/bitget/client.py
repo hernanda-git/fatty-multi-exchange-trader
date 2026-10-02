@@ -123,6 +123,11 @@ class BitgetRestClient:
     def timeout(self) -> float:
         return self._timeout
 
+    @property
+    def environment(self) -> str:
+        """Environment used by this authenticated client's signed requests."""
+        return self._mode
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
@@ -181,12 +186,23 @@ class BitgetRestClient:
             if response.status_code >= 500 and retryable and attempt < attempts - 1:
                 last_error = None
                 continue
+            if response.status_code >= 500 and not retryable:
+                raise BitgetUnknownResultError(
+                    f"Bitget POST {path} result unknown: HTTP {response.status_code}"
+                )
             if response.status_code >= 400:
                 try:
                     error_payload = response.json()
                 except ValueError:
                     error_payload = None
                 if isinstance(error_payload, dict):
+                    raw_code = error_payload.get("code")
+                    if not retryable and (
+                        not isinstance(raw_code, str) or not raw_code or raw_code == "00000"
+                    ):
+                        raise BitgetUnknownResultError(
+                            f"Bitget POST {path} result unknown: untrustworthy error envelope"
+                        )
                     code = str(error_payload.get("code", ""))
                     msg = str(error_payload.get("msg", ""))
                     if code or msg:
@@ -196,11 +212,27 @@ class BitgetRestClient:
                             code=code,
                             provider_msg=msg,
                         )
+                if not retryable:
+                    raise BitgetUnknownResultError(
+                        f"Bitget POST {path} result unknown: invalid error acknowledgement"
+                    )
                 raise BitgetApiError(f"Bitget {method.upper()} {path} HTTP {response.status_code}")
             try:
                 envelope = response.json()
             except ValueError as exc:
+                if not retryable:
+                    raise BitgetUnknownResultError(
+                        f"Bitget POST {path} result unknown: invalid JSON acknowledgement"
+                    ) from None
                 raise BitgetApiError(f"Bitget {path} invalid JSON") from exc
+            if not retryable and (
+                not isinstance(envelope, dict)
+                or not isinstance(envelope.get("code"), str)
+                or not envelope["code"]
+            ):
+                raise BitgetUnknownResultError(
+                    f"Bitget POST {path} result unknown: malformed acknowledgement"
+                )
             return _envelope_data(envelope)
         raise BitgetApiError(f"Bitget GET {path} transport failure") from last_error
 
@@ -533,8 +565,16 @@ class BitgetRestClient:
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
         include_delegate_type: bool = False,
+        omit_market_execute_prices: bool = False,
     ) -> list[dict[str, Any]]:
-        """Place venue-native mark-price SL/TP for the confirmed position size."""
+        """Place venue-native mark-price SL/TP for the confirmed position size.
+
+        ``omit_market_execute_prices=True`` opts into documented market execution
+        by omission instead of the default explicit ``0`` fields. Execute-price
+        validation still rejects limit prices before POST; this flag does not
+        enable any automatic retry or change trigger types or client OIDs.
+        See ``build_position_tpsl_payload`` for the official contract reference.
+        """
         payload = build_position_tpsl_payload(
             symbol=symbol,
             hold_side=hold_side,
@@ -550,6 +590,7 @@ class BitgetRestClient:
             product_type=product_type,
             margin_coin=margin_coin,
             include_delegate_type=include_delegate_type,
+            omit_market_execute_prices=omit_market_execute_prices,
         )
         data = await self._post("/api/v2/mix/order/place-pos-tpsl", payload)
         return normalize_position_tpsl_response(data)

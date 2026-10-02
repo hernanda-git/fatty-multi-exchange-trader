@@ -41,6 +41,30 @@ V2_PRIVATE_URL = "wss://ws.bitget.com/v2/ws/private"
 
 from ws_v2_fakes import FakeClock, FakeTransport  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def provider_epoch_matches_injected_clock(monkeypatch):
+    original = BitgetV2WebSocket.__init__
+
+    def init(self, **kwargs):
+        clock = kwargs.get("clock", lambda: 0.0)
+        origin = clock()
+        kwargs.setdefault("wall_clock", lambda: 1700000000 + clock() - origin)
+        original(self, **kwargs)
+
+    monkeypatch.setattr(BitgetV2WebSocket, "__init__", init)
+
+
+async def _settle(socket, transport):
+    # Finite fresh frame, not infinite replay, when testing transport liveness.
+    frame = json.loads(_ticker_frame())
+    frame["ts"] = str(int(socket._wall_clock() * 1000))
+    transport.add_public(json.dumps(frame))
+    for _ in range(12):
+        await asyncio.sleep(0)
+    return socket._drain_ready()
+
+
 _LOGIN_OK = json.dumps({"event": "login", "code": "0", "msg": "success"})
 _PRIVATE_SUB_OK = json.dumps(
     {"event": "subscribe", "arg": {"instType": "USDT-FUTURES", "channel": "positions"}}
@@ -242,7 +266,7 @@ async def test_silent_private_leg_is_not_healthy_even_while_public_ticks():
     for _ in range(6):
         transport.add_public(_TICKER, repeat=True)
     for _ in range(6):
-        await socket.receive_once()
+        await _settle(socket, transport)
         clock.advance(4.0)
         transport.add_public(_TICKER, repeat=True)
     assert socket.check_freshness() is False, "silent private leg must fail closed"
@@ -254,9 +278,15 @@ async def test_private_leg_pong_proves_liveness():
     transport = _two_leg_transport()
     clock = FakeClock()
     socket = BitgetV2WebSocket(
-        api_key="k", api_secret="s", passphrase="p", symbols=["BTCUSDT"],
-        transport=transport, clock=clock, stale_after=5.0,
-        heartbeat_interval=10.0, private_silent_after=15.0,
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        symbols=["BTCUSDT"],
+        transport=transport,
+        clock=clock,
+        stale_after=5.0,
+        heartbeat_interval=10.0,
+        private_silent_after=15.0,
     )
     await socket.connect()
     await socket.receive_once()
@@ -267,13 +297,13 @@ async def test_private_leg_pong_proves_liveness():
     transport.public._loop = True
     transport.add_public(_TICKER, repeat=True)
     clock.advance(20.0)  # beyond private_silent_after with no private frame
-    await socket.receive_once()
+    await _settle(socket, transport)
     assert socket.stale_reason() == "private-silent", socket.stale_reason()
     assert socket.check_freshness() is False
     # A pong on the private leg resets the silence clock.
     transport.add_private("pong", repeat=True)
     for _ in range(6):
-        await socket.receive_once()
+        await _settle(socket, transport)
     assert socket.check_freshness() is True, "private pong must refresh liveness"
     assert socket.stale_reason() == "fresh"
     await socket.close()
@@ -285,8 +315,12 @@ async def test_unauthenticated_private_leg_is_not_healthy():
     transport.add_private(_LOGIN_OK)
     transport.add_private(_PRIVATE_SUB_OK)
     socket = BitgetV2WebSocket(
-        api_key="k", api_secret="s", passphrase="p", symbols=["BTCUSDT"],
-        transport=transport, private_silent_after=999.0,
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        symbols=["BTCUSDT"],
+        transport=transport,
+        private_silent_after=999.0,
     )
     await socket.connect()
     socket._private_authenticated = False  # simulate expiry/never-acked
@@ -317,7 +351,7 @@ async def test_state_alone_must_not_be_read_as_fresh_by_a_caller():
     transport.add_public(_TICKER, repeat=True)
     clock.advance(60.0)
     for _ in range(4):
-        await socket.receive_once()
+        await _settle(socket, transport)
     assert socket.state is V2ConnectionState.CONNECTED, (
         "this test documents current behaviour: the state follows the last frame"
     )
@@ -333,7 +367,6 @@ async def test_state_alone_must_not_be_read_as_fresh_by_a_caller():
 # (it asserts before teardown) and the duplicate only added a false signal.
 
 
-
 async def test_heartbeat_send_failure_propagates():
     """defect #3: ping errors were suppressed, then stamped as sent."""
     transport = FakeTransport()
@@ -342,8 +375,13 @@ async def test_heartbeat_send_failure_propagates():
     transport.add_private(_PRIVATE_SUB_OK)
     clock = FakeClock()
     socket = BitgetV2WebSocket(
-        api_key="k", api_secret="s", passphrase="p", symbols=["BTCUSDT"],
-        transport=transport, clock=clock, heartbeat_interval=10.0,
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        symbols=["BTCUSDT"],
+        transport=transport,
+        clock=clock,
+        heartbeat_interval=10.0,
     )
     await socket.connect()
     clock.advance(11.0)  # heartbeat is now due
@@ -364,7 +402,10 @@ async def test_private_event_arriving_concurrently_is_not_lost():
     transport.add_private(_PRIVATE_SUB_OK)
     transport.add_private(_PRIVATE_POS, repeat=True)
     socket = BitgetV2WebSocket(
-        api_key="k", api_secret="s", passphrase="p", symbols=["BTCUSDT"],
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        symbols=["BTCUSDT"],
         transport=transport,
     )
     await socket.connect()
@@ -383,7 +424,10 @@ async def test_leg_reader_failure_surfaces_as_exception():
     transport.add_private(_LOGIN_OK)
     transport.add_private(_PRIVATE_SUB_OK)
     socket = BitgetV2WebSocket(
-        api_key="k", api_secret="s", passphrase="p", symbols=["BTCUSDT"],
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        symbols=["BTCUSDT"],
         transport=transport,
     )
     await socket.connect()
@@ -525,9 +569,14 @@ async def test_subscribe_without_credentials_is_rejected() -> None:
 
 def _make(transport, **kw):
     opts = {
-        "api_key": "k", "api_secret": "s", "passphrase": "p",
-        "symbols": ["BTCUSDT"], "transport": transport, "clock": FakeClock(),
-        "stale_after": 5.0, "heartbeat_interval": 10.0,
+        "api_key": "k",
+        "api_secret": "s",
+        "passphrase": "p",
+        "symbols": ["BTCUSDT"],
+        "transport": transport,
+        "clock": FakeClock(),
+        "stale_after": 5.0,
+        "heartbeat_interval": 10.0,
         "private_silent_after": 15.0,
     }
     opts.update(kw)
@@ -567,7 +616,7 @@ async def test_private_leg_silence_beyond_bound_is_unhealthy():
     transport.public._loop = True
     transport.add_public(_TICKER, repeat=True)
     clock.advance(16.0)  # > private_silent_after (15)
-    await socket.receive_once()
+    await _settle(socket, transport)
     assert socket._private_silent_age() == 16.0
     assert socket.stale_reason() == "private-silent"
     assert socket.check_freshness() is False
@@ -587,6 +636,9 @@ async def test_stale_verdict_drives_reconnect_in_run_loop():
     transport.public._loop = True
     transport.add_public(_TICKER, repeat=True)
     clock.advance(20.0)
+    frame = json.loads(_ticker_frame())
+    frame["ts"] = str(int(socket._wall_clock() * 1000))
+    transport.add_public(json.dumps(frame))
     stop = asyncio.Event()
     seen: list[object] = []
 
@@ -618,9 +670,7 @@ async def test_stale_verdict_drives_reconnect_in_run_loop():
 async def test_error_frame_raises_instead_of_being_dropped():
     """M5: an error frame must never be silently ignored."""
     with pytest.raises(WebSocketProtocolError):
-        normalize_v2_frame(
-            json.dumps({"event": "error", "code": "30016", "msg": "Param error"})
-        )
+        normalize_v2_frame(json.dumps({"event": "error", "code": "30016", "msg": "Param error"}))
 
 
 async def test_login_acknowledgement_is_required():
@@ -647,14 +697,14 @@ async def test_stale_state_recovers_to_connected():
     transport.public._loop = True
     transport.add_public(_TICKER, repeat=True)
     clock.advance(20.0)
-    await socket.receive_once()
+    await _settle(socket, transport)
     # The verdict is computed on observation; the state records it.
     assert socket.check_freshness() is False
     assert socket.state is V2ConnectionState.STALE
     # A private pong must restore liveness AND clear the STALE state.
     transport.add_private("pong", repeat=True)
     for _ in range(6):
-        await socket.receive_once()
+        await _settle(socket, transport)
     # The verdict is recomputed per observation, so the state must follow.
     assert socket.check_freshness() is True, "private pong must restore liveness"
     # Assert the state BEFORE close(): close() is not part of this property and
@@ -663,4 +713,3 @@ async def test_stale_state_recovers_to_connected():
         "a stale verdict must not be a one-way latch"
     )
     await socket.close()
-

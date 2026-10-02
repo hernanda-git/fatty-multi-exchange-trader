@@ -163,3 +163,56 @@ async def test_preflight_fails_closed_when_client_cannot_read_position_lever() -
 async def test_preflight_rejects_unsafe_account_state(client: Client, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         await AsyncBitgetVenue(client).preflight("BTCUSDT")
+
+
+@pytest.mark.asyncio
+async def test_all_active_symbols_preserve_hedge_rows_from_one_response():
+    class PositionsClient:
+        calls = 0
+
+        async def get_all_positions(self):
+            self.calls += 1
+            return {
+                "code": "00000",
+                "data": [
+                    {"symbol": "BTCUSDT", "total": "1", "holdSide": "long"},
+                    {"symbol": "BTCUSDT", "total": "2", "holdSide": "short"},
+                    {"symbol": "ETHUSDT", "total": "0"},
+                ],
+            }
+
+    client = PositionsClient()
+    snapshot = await AsyncBitgetVenue(client).active_position_snapshot()
+    assert snapshot.symbols == ("BTCUSDT", "BTCUSDT")
+    assert snapshot.observed_at.tzinfo is not None
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [{"symbol": "BTCUSDT"}],
+        [{"symbol": "BTCUSDT", "total": "NaN"}],
+        [{"symbol": "BTCUSDT", "total": "Infinity"}],
+        [{"symbol": "BTCUSDT", "total": "-1"}],
+        [{"symbol": "BTCUSDT", "total": True}],
+        [{"total": "1"}],
+        [{"symbol": "btcUSDT", "total": "1"}],
+        [{"symbol": " BTCUSDT", "total": "1"}],
+        [{"symbol": "BTCUSDT", "total": None}],
+        [{"symbol": "BTCUSDT", "total": ""}],
+        [{"symbol": "BTCUSDT", "total": "junk"}],
+        [None],
+        {"data": None},
+        {"code": "40099", "data": []},
+        {"data": {}},
+    ],
+)
+async def test_all_positions_invalid_evidence_refuses(payload):
+    class PositionsClient:
+        async def get_all_positions(self):
+            return payload
+
+    with pytest.raises(ValueError):
+        await AsyncBitgetVenue(PositionsClient()).active_position_snapshot()

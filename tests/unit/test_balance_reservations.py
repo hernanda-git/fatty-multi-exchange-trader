@@ -20,11 +20,18 @@ class Cursor:
     def fetchone(self) -> tuple[object, ...]:
         # Active reservation sum query returns zero; INSERT ... RETURNING returns IDs.
         statement = self.calls[-1][0]
+        if "SELECT d.state, COALESCE((" in statement:
+            return ("QUEUED", True)
+        if "SELECT clock_timestamp()" in statement:
+            return (datetime.now(UTC),)
         if "SUM(planned_margin_usdt)" in statement:
             return (Decimal("0"),)
         if "INSERT INTO balance_snapshots" in statement:
             return (UUID("12345678-1234-5678-1234-567812345678"),)
         return (UUID("87654321-4321-8765-4321-876543218765"),)
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return []
 
 
 class Connection:
@@ -61,6 +68,10 @@ def test_reserve_serializes_fresh_balance_and_keeps_unknown_commitments() -> Non
         # Test cap, deliberately above the planned margin: this case exercises
         # serialization, not the LIVE 1 USDT ceiling.
         max_margin_per_trade_usdt=Decimal("100"),
+        symbol="BTCUSDT",
+        environment="LIVE",
+        max_positions=3,
+        provider_active_symbols=(),
     )
 
     assert result.accepted is True
@@ -69,7 +80,7 @@ def test_reserve_serializes_fresh_balance_and_keeps_unknown_commitments() -> Non
     sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
     assert "pg_advisory_xact_lock(hashtext(%s))" in sql
     assert "state = 'unknown'" in sql
-    assert "state IN ('reserved', 'unknown')" in sql
+    assert "state IN ('reserved', 'unknown', 'consumed')" in sql
     assert "INSERT INTO balance_snapshots" in sql
     assert "INSERT INTO bitget_margin_reservations" in sql
     assert connection.committed is True
@@ -144,6 +155,10 @@ def test_reserve_returns_rejection_without_creating_margin_reservation() -> None
         headroom=Decimal("0.5"),
         ttl=timedelta(seconds=30),
         max_margin_per_trade_usdt=Decimal("100"),
+        symbol="BTCUSDT",
+        environment="LIVE",
+        max_positions=3,
+        provider_active_symbols=(),
     )
 
     assert result == BalanceAdmission.rejected("insufficient-reserved-headroom")

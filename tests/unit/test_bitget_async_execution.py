@@ -7,10 +7,12 @@ from typing import Any
 
 import pytest
 
+from fatty_trader.domain.enums import Direction, Exchange
 from fatty_trader.exchanges.bitget.async_execution import AsyncBitgetExecution
 from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
 from fatty_trader.exchanges.bitget.client import BitgetApiError, BitgetUnknownResultError
 from fatty_trader.exchanges.bitget.live import LiveIntentRecord, LiveOrderStatus
+from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
 
 class FakeAsyncClient:
@@ -457,3 +459,100 @@ async def test_post_fill_mismatch_is_recorded_without_durable_dispatch_latch() -
     await adapter.submit_entry(_admitted_intent())
 
     assert reconciliations.observations[0].status == "mismatch"
+
+
+class _NativeUnsupportedClient(FakeAsyncClient):
+    """Fake whose native TP/SL placement fails with Bitget 43011."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.fallback_registrations: list[dict[str, Any]] = []
+
+    async def place_position_tpsl(self, **kwargs: str) -> list[dict[str, str]]:
+        raise BitgetApiError("code 43011: symbol does not support stop loss")
+
+
+def _filled_entry_intent() -> LiveIntentRecord:
+    intent = _admitted_intent()
+    return LiveIntentRecord(
+        exchange=intent.exchange,
+        client_oid=intent.client_oid,
+        symbol=intent.symbol,
+        side=intent.side,
+        requested_qty=intent.requested_qty,
+        planned_leverage=intent.planned_leverage,
+        planned_margin_usdt=intent.planned_margin_usdt,
+        planned_notional_usdt=intent.planned_notional_usdt,
+        margin_mode=intent.margin_mode,
+        balance_snapshot_id=intent.balance_snapshot_id,
+        margin_reservation_id=intent.margin_reservation_id,
+        filled_qty=Decimal("0.001"),
+        avg_price=Decimal("50000"),
+    )
+
+
+def _protection_plan() -> ProtectionPlan:
+    return ProtectionPlan(
+        exchange=Exchange.BITGET,
+        symbol="BTCUSDT",
+        direction=Direction.LONG,
+        stop_loss=Decimal("48000"),
+        take_profits=(Decimal("54000"),),
+        quantity=Decimal("0.001"),
+    )
+
+
+class _RecordingStore:
+    def __init__(self) -> None:
+        self.claimed: list[LiveIntentRecord] = []
+
+    def claim(self, intent: LiveIntentRecord) -> bool:
+        self.claimed.append(intent)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_native_unsupported_fallback_is_refused_when_monitor_cannot_mutate() -> None:
+    client = _NativeUnsupportedClient()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        fallback_protection_enabled=False,
+    )
+
+    result = await adapter.protect_filled_position(
+        _filled_entry_intent(), _protection_plan(), _RecordingStore()
+    )
+
+    assert result.state is ProtectionState.DEGRADED
+    assert result.reason == "fallback-monitor-mutations-disabled"
+    assert adapter.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_native_unsupported_fallback_registers_when_monitor_can_mutate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fatty_trader.execution.bitget_fallback_protection as fallback_protection
+
+    registrations: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        fallback_protection,
+        "register_fallback",
+        lambda **kwargs: registrations.append(kwargs),
+    )
+    client = _NativeUnsupportedClient()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        fallback_protection_enabled=True,
+    )
+
+    result = await adapter.protect_filled_position(
+        _filled_entry_intent(), _protection_plan(), _RecordingStore()
+    )
+
+    assert result.state is ProtectionState.DEGRADED
+    assert result.reason == "fallback-registration-failed"
+    assert adapter.degraded is True
+    assert registrations == []

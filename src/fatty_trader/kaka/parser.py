@@ -130,12 +130,17 @@ def _reported_pnl(text: str) -> Decimal | None:
 
 def parse_kaka_event(text: str, *, message_id: int) -> KakaEvent:
     """Classify one channel message. Unrecognised text is NOISE, never a trade."""
-    return replace(_classify(text or ""), message_id=message_id)
+    raw = text or ""
+    return replace(_classify(raw), message_id=message_id, symbol=_symbol(raw))
 
 
 def _classify(text: str) -> KakaEvent:
     raw = text
     lowered = raw.lower()
+
+    # Target cancellation is not position cancellation.
+    if re.search(r"\b(?:remove|cancel)\s+tp\b", lowered):
+        return KakaEvent(KakaEventType.TP_REMOVED, raw=raw)
 
     # Cancels come first: an instruction to stand down must never open a trade.
     if re.search(r"cancel|forget it|don'?t take|do not take|wait and watch", lowered):

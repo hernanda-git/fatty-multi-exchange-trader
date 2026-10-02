@@ -59,7 +59,33 @@ def test_shared_module_has_no_io_helpers():
         assert not hasattr(shared, banned), f"shared formatter must not carry I/O helper {banned}"
 
 
-def test_slash_command_uses_cron_formatter():
-    """live_commands._on_health must delegate to the shared cron formatter."""
-    src = (ROOT / "src" / "fatty_trader" / "operator" / "live_commands.py").read_text("utf-8")
-    assert "health_report_format" in src, "/health must render through the shared cron formatter"
+def test_slash_command_uses_cron_formatter(monkeypatch):
+    """Exercise the injected reader, not source-string name containment."""
+    from fatty_trader.operator.health import create_shared_health_reader
+    from fatty_trader.operator.live_commands import OperatorCommandService
+
+    shared = _shared()
+    snapshot = dict(
+        positions=None,
+        pending_orders=None,
+        sltp={},
+        pnl={},
+        messages=[],
+        metrics={"open_positions": 0},
+        account={},
+        modes={},
+        codex={},
+        services={},
+    )
+    seen = []
+
+    def renderer(**data):
+        seen.append(data)
+        return "shared snapshot rendered"
+
+    monkeypatch.setattr(shared, "format_report", renderer)
+    service = OperatorCommandService(
+        object(), operator_id=42, health_reader=create_shared_health_reader(lambda: snapshot)
+    )
+    assert service._on_health() == "shared snapshot rendered"
+    assert seen == [snapshot]

@@ -27,7 +27,7 @@ Pipeline (fail-closed, deterministic):
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,6 +57,86 @@ _GUARD_FAILURE = "sl-guard"
 
 # One accepted plan: (leverage, quantity, margin, notional, liquidation price).
 _Plan = tuple[int, Decimal, Decimal, Decimal, Decimal]
+
+
+def _safe_divide(numerator: Decimal, denominator: Decimal | int) -> Decimal | None:
+    """Divide for diagnostic purposes only, returning ``None`` instead of raising.
+
+    A near-zero (or otherwise extreme) configured cap makes the quotient exceed
+    the decimal context, which raises ``decimal.Overflow``. That happens while
+    *computing the argument*, so formatting it defensively is not enough: the
+    division itself must be guarded. ``None`` means "not representable", and the
+    caller simply omits that clause from the message.
+    """
+    try:
+        if denominator == 0:
+            return None
+        return numerator / denominator
+    except (ArithmeticError, ValueError):
+        return None
+
+
+def _safe_number(value: Decimal, exp: str) -> str:
+    """Format a diagnostic number without ever raising.
+
+    This runs on a rejection path, so it must not turn a clean "trade skipped"
+    into an unhandled ``InvalidOperation``. An absurd cap (a near-zero value, or
+    one whose quotient overflows the context precision) degrades to the raw
+    value, which is still accurate even if long.
+    """
+    try:
+        return str(value.quantize(Decimal(exp)))
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return str(value)
+
+
+def _notional_floor_diagnosis(
+    *,
+    meta: SymbolMetadata,
+    rounded_entry: Decimal,
+    required: Decimal,
+    cap: Decimal | None,
+    low: int,
+    high: int,
+) -> str:
+    """Explain a margin-cap rejection in numbers, not a generic label.
+
+    A skip happens when the cap cannot buy a single exchange-legal lot. The
+    operator needs the two quantities that decide it: the per-lot notional the
+    symbol demands, and what the cap can buy at the leverage ceiling. Reporting
+    both, plus the smallest cap (or leverage) that would have worked, keeps every
+    high-price symbol distinguishable instead of logging one opaque line.
+    """
+    per_qty = rounded_entry * meta.contract_value
+    min_lot_notional = meta.min_order_qty * per_qty
+    parts = [
+        f"margin-cap: min order for {meta.symbol} is {required} USDT notional "
+        f"(min_qty={meta.min_order_qty} x {per_qty}"
+        + (
+            f" > venue minTradeUSDT={meta.min_notional}"
+            if min_lot_notional > meta.min_notional
+            else ""
+        )
+        + ")"
+    ]
+    if cap is None:
+        parts.append("no per-trade margin cap configured")
+    else:
+        affordable = cap * high
+        parts.append(
+            f"cap {cap} USDT buys only {affordable} USDT notional at {high}x "
+            f"(lev range {low}-{high})"
+        )
+        if high > 0:
+            min_cap = _safe_divide(required, high)
+            if min_cap is not None:
+                shown = _safe_number(min_cap, "0.0001")
+                parts.append(f"needs margin >= {shown} at {high}x to clear the floor")
+    if cap is not None and cap > 0:
+        min_lev = _safe_divide(required, cap)
+        if min_lev is not None:
+            parts.append(f"or leverage >= {_safe_number(min_lev, '0.01')} at cap {cap}")
+    return "; ".join(parts)
 
 
 class LiveSizingInput(BaseModel):
@@ -322,7 +402,16 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
             # not fit the configured leverage floor.
             return _skip("sl-guard: stop-loss not safely before liquidation")
         if _CAP_FAILURE in tags and _MIN_NOTIONAL_FAILURE not in tags:
-            return _skip("margin-cap: no exchange-legal size fits the margin cap")
+            return _skip(
+                _notional_floor_diagnosis(
+                    meta=data.meta,
+                    rounded_entry=rounded_entry,
+                    required=required,
+                    cap=cap,
+                    low=low,
+                    high=high,
+                )
+            )
         if data.active_positions != 0:
             return _skip("min-notional unmeetable at allocation margin; no all-in fallback")
         fallback_used = True
@@ -335,7 +424,23 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
                     "sl-guard: stop-loss not safely before liquidation",
                     fallback_used=True,
                 )
-            return _skip("min-notional unmeetable even all-in", fallback_used=True)
+            return _skip(
+                "min-notional unmeetable even all-in"
+                + (
+                    ": "
+                    + _notional_floor_diagnosis(
+                        meta=data.meta,
+                        rounded_entry=rounded_entry,
+                        required=required,
+                        cap=cap,
+                        low=low,
+                        high=high,
+                    )
+                    if cap is not None
+                    else ""
+                ),
+                fallback_used=True,
+            )
 
     leverage, qty, margin, notional, liq = plan
     return LiveSizingDecision(

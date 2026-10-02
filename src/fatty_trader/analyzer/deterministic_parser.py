@@ -3,6 +3,7 @@ import re
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 
+from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
 
@@ -51,6 +52,8 @@ def parse_explicit_signal(
     entry price. It must return the current market price for the pair token, or None; a
     missing price means no signal, never a guess.
     """
+    if entry_stands_down(text):
+        return None
     match = _CHANNEL.match(text) or _NATURAL_STOP_ONLY.match(text) or _RIGID.match(text)
     if match is None:
         return _scalp_market_signal(

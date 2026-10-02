@@ -49,6 +49,46 @@ def test_position_level_payload_uses_classic_v2_fields_and_market_execution() ->
     assert "delegateType" not in payload
 
 
+@pytest.mark.parametrize("legs", ["sl", "tp", "both"])
+@pytest.mark.parametrize("explicit_oids", [False, True])
+@pytest.mark.parametrize("partial_sizes", [False, True])
+@pytest.mark.parametrize("delegate_type", [False, True])
+@pytest.mark.parametrize("execute_price", [None, "0", Decimal("0.00"), "0E-8", ""])
+def test_omission_changes_only_market_execute_fields(
+    legs: str,
+    explicit_oids: bool,
+    partial_sizes: bool,
+    delegate_type: bool,
+    execute_price: Decimal | str | None,
+) -> None:
+    kwargs = {
+        "symbol": "PUMPUSDT",
+        "hold_side": "long",
+        "quantity": "1880",
+        "stop_loss": "0.005428" if legs != "tp" else None,
+        "take_profit": "0.00712" if legs != "sl" else None,
+        "stop_loss_execute_price": execute_price,
+        "take_profit_execute_price": execute_price,
+        "stop_loss_client_oid": "entry-pump-sl" if explicit_oids else None,
+        "take_profit_client_oid": "entry-pump-tp" if explicit_oids else None,
+        "stop_loss_size": "940" if partial_sizes and legs != "tp" else None,
+        "take_profit_size": "940" if partial_sizes and legs != "sl" else None,
+        "include_delegate_type": delegate_type,
+        "product_type": "USDT-FUTURES",
+        "margin_coin": "USDT",
+    }
+    default = build_position_tpsl_payload(**kwargs)
+    omitted = build_position_tpsl_payload(**kwargs, omit_market_execute_prices=True)
+    expected = {
+        key: value
+        for key, value in default.items()
+        if key not in {"stopLossExecutePrice", "stopSurplusExecutePrice"}
+    }
+    assert omitted == expected
+    assert omitted == build_position_tpsl_payload(**kwargs, omit_market_execute_prices=True)
+    assert default == build_position_tpsl_payload(**kwargs, omit_market_execute_prices=False)
+
+
 def test_short_payload_maps_hold_side_to_sell() -> None:
     payload = build_position_tpsl_payload(
         symbol="BTCUSDT",

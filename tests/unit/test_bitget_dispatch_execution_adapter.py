@@ -222,10 +222,10 @@ async def test_existing_durable_intent_uses_get_readback_without_a_second_post()
         _dispatch(), _submission()
     )
 
-    assert status == "FILLED"
+    assert status == "FILLED_UNPROTECTED"
     assert execution.submit_calls == []
     assert execution.reconcile_calls == [oid]
-    assert execution.protect_calls == [oid]
+    assert execution.protect_calls == []
 
 
 @pytest.mark.asyncio
@@ -252,14 +252,16 @@ async def test_replayed_fill_runs_post_fill_observation_before_reporting_success
         _dispatch(), _submission()
     )
 
-    assert status == "FILLED"
+    assert status == "FILLED_UNPROTECTED"
+    assert store.get(oid).state == "filled"
     assert execution.submit_calls == []
+    assert execution.protect_calls == []
     assert execution.reconcile_calls == [oid]
     assert execution.post_fill_calls == [oid]
 
 
 @pytest.mark.asyncio
-async def test_unconfirmed_native_protection_returns_unknown_after_containment() -> None:
+async def test_unconfirmed_native_protection_preserves_fill_truth_after_containment() -> None:
     store = InMemoryLiveIntentStore()
     execution = Execution(
         result=_result(),
@@ -275,7 +277,10 @@ async def test_unconfirmed_native_protection_returns_unknown_after_containment()
         _dispatch(), _submission()
     )
 
-    assert status == "UNKNOWN"
+    assert status == "FILLED_UNPROTECTED"
+    stored = store.get("live-bitget-BTCUSDT-1234567812345678")
+    assert stored is not None and stored.state == "filled"
+    assert stored.provider_order_id == "provider-order-1"
     assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
     assert execution.protect_calls == ["live-bitget-BTCUSDT-1234567812345678"]
 
@@ -296,7 +301,8 @@ async def test_fallback_registered_fill_is_not_reported_as_provider_unknown() ->
         _dispatch(), _submission()
     )
 
-    assert status == "FILLED_FALLBACK"
+    assert status == "FILLED_UNPROTECTED"
+    assert store.get("live-bitget-BTCUSDT-1234567812345678").state == "filled"
     assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
 
 

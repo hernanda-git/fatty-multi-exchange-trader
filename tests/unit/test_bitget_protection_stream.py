@@ -52,7 +52,12 @@ async def test_mark_price_sl_event_creates_one_close_request(
         requests.append(request)
         return StreamCloseResult(request.fallback_id, True, "submitted")
 
-    engine = BitgetFallbackStreamEngine(lambda: [active_entry], close)
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=lambda: datetime.fromtimestamp(0.021, UTC),
+        transport_fresh=lambda _symbol: True,
+    )
     results = await engine.handle_event(mark("BTCUSDT", "94", 10))
 
     assert results == [StreamCloseResult("fallback-1", True, "submitted")]
@@ -72,7 +77,12 @@ async def test_duplicate_or_newer_threshold_events_never_post_twice(
         calls.append(request)
         return StreamCloseResult(request.fallback_id, False, "close-result-unknown")
 
-    engine = BitgetFallbackStreamEngine(lambda: [active_entry], close)
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=lambda: datetime.fromtimestamp(0.021, UTC),
+        transport_fresh=lambda _symbol: True,
+    )
     first = await engine.handle_event(mark("BTCUSDT", "94", 10))
     duplicate = await engine.handle_event(mark("BTCUSDT", "93", 10))
     newer = await engine.handle_event(mark("BTCUSDT", "92", 11))
@@ -94,7 +104,12 @@ async def test_out_of_order_event_cannot_trigger_after_newer_event(
         calls.append(request)
         return StreamCloseResult(request.fallback_id, True, "submitted")
 
-    engine = BitgetFallbackStreamEngine(lambda: [active_entry], close)
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=lambda: datetime.fromtimestamp(0.021, UTC),
+        transport_fresh=lambda _symbol: True,
+    )
     assert await engine.handle_event(mark("BTCUSDT", "100", 20)) == []
     assert await engine.handle_event(mark("BTCUSDT", "94", 19)) == []
     assert calls == []
@@ -112,7 +127,12 @@ async def test_non_mark_event_and_other_symbol_do_not_trigger(
         calls.append(request)
         return StreamCloseResult(request.fallback_id, True, "submitted")
 
-    engine = BitgetFallbackStreamEngine(lambda: [active_entry], close)
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=lambda: datetime.fromtimestamp(0.021, UTC),
+        transport_fresh=lambda _symbol: True,
+    )
     position_event = BitgetWebSocketEvent(
         kind="position",
         symbol="BTCUSDT",
@@ -128,9 +148,18 @@ async def test_non_mark_event_and_other_symbol_do_not_trigger(
 @pytest.mark.asyncio
 async def test_stream_runtime_marks_capability_healthy_on_mark_event() -> None:
     class FakeSocket:
+        def check_freshness(self, symbol: str) -> bool:
+            return True
+
         async def run(self, on_event: object, stop_event: asyncio.Event) -> None:
             del stop_event
-            await on_event(mark("BTCUSDT", "100", 20))  # type: ignore[misc]
+            await on_event(
+                mark(
+                    "BTCUSDT",
+                    "100",
+                    int(datetime(2026, 9, 14, 3, 0, tzinfo=UTC).timestamp() * 1000),
+                )
+            )  # type: ignore[misc]
 
     class FakeRepository:
         def __init__(self) -> None:
@@ -169,9 +198,18 @@ async def test_stream_runtime_marks_capability_healthy_on_mark_event() -> None:
 @pytest.mark.asyncio
 async def test_stream_runtime_creates_unknown_capability_before_marking_stream_healthy() -> None:
     class FakeSocket:
+        def check_freshness(self, symbol: str) -> bool:
+            return True
+
         async def run(self, on_event: object, stop_event: asyncio.Event) -> None:
             del stop_event
-            await on_event(mark("BTCUSDT", "100", 20))  # type: ignore[misc]
+            await on_event(
+                mark(
+                    "BTCUSDT",
+                    "100",
+                    int(datetime(2026, 9, 14, 3, 0, tzinfo=UTC).timestamp() * 1000),
+                )
+            )  # type: ignore[misc]
 
     repository = InMemoryProtectionCapabilityRepository()
     now = datetime(2026, 9, 14, 3, 0, tzinfo=UTC)

@@ -177,9 +177,7 @@ async def test_persistent_kill_switch_blocks_before_provider_post() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dead_protection_stream_scope_blocks_entries_without_touching_venue_scope() -> (
-    None
-):
+async def test_dead_protection_stream_scope_blocks_entries_without_touching_venue_scope() -> None:
     """A dead protection stream halts entries on its own scope only.
 
     The venue-wide `bitget` scope also gates the fallback TP/SL monitor, so
@@ -441,3 +439,35 @@ async def test_context_aware_near_limit_route_is_passed_to_routed_execution() ->
     assert execution.route.mode is EntryMode.NEAR_LIMIT_SPLIT_MARKET_LIMIT
     assert execution.route.market_quantity == Decimal("0.001")
     assert execution.route.limit_quantity == Decimal("0.003")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome,target,result",
+    [
+        ("FILLED_UNPROTECTED", "FILLED", "filled"),
+        ("PARTIAL_UNPROTECTED", "PARTIALLY_FILLED", "partial"),
+    ],
+)
+async def test_missing_protection_keeps_valid_fill_state_with_durable_escalation(
+    outcome, target, result
+):
+    from fatty_trader.domain.enums import DispatchState
+
+    class UnsafeFillExecution(Execution):
+        async def submit_entry(self, dispatch, quantity):
+            self.post_count += 1
+            return outcome
+
+    repository = Repository(_dispatch())
+    execution = UnsafeFillExecution()
+    dispatcher = BitgetDispatcher(
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=lambda _: (_spec(), _risk()),
+    )
+    assert await dispatcher.run_once("worker", 30) == result
+    assert repository.transitions[-1] == ("SUBMITTING", target, "missing-protection-escalated")
+    assert target in set(DispatchState)
+    assert execution.post_count == 1

@@ -290,6 +290,9 @@ class BitgetOperatorGateway:
             requested_qty=position["size"],
         )
         self._intent_store.save(intent)
+        lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.bind_requested_close(self._client, client_oid)
         try:
             submitted = self._run(
                 self._client.place_market_close(
@@ -338,6 +341,9 @@ class BitgetOperatorGateway:
             "bitget", client_oid, symbol, side, "CLOSE", "requested", quantity
         )
         self._intent_store.save(intent)
+        lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.bind_requested_close(self._client, client_oid)
         try:
             submitted = self._run(
                 self._client.place_market_close(

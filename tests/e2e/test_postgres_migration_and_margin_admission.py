@@ -91,6 +91,9 @@ def test_postgres_same_exchange_concurrent_admission_allows_one_then_release_all
                 VALUES (%s, 'e2e', %s, %s, 'bitget', 'QUEUED')""",
                 (dispatch_id, uuid4(), "a" * 64),
             )
+            from source_freshness_fixtures import eligible_dispatch_source
+
+            eligible_dispatch_source(connection, dispatch_id)
         connection.commit()
 
     def reserve(index: int):
@@ -110,6 +113,10 @@ def test_postgres_same_exchange_concurrent_admission_allows_one_then_release_all
             # Test cap above the planned margin: this proof is about serialized
             # admission, not the LIVE 1 USDT ceiling.
             max_margin_per_trade_usdt=Decimal("100"),
+            symbol=("BTCUSDT", "ETHUSDT", "SOLUSDT")[index],
+            environment="DEMO",
+            max_positions=3,
+            provider_active_symbols=(),
         )
 
     start = Barrier(2)

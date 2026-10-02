@@ -201,7 +201,7 @@ async def test_transport_logs_in_subscribes_and_normalizes_without_mutations() -
         {
             "action": "update",
             "arg": {"instType": "mc", "channel": "ticker", "instId": "WLDUSDT"},
-            "data": [{"instId": "WLDUSDT", "markPrice": "0.3919", "systemTime": 10}],
+            "data": [{"instId": "WLDUSDT", "markPrice": "0.3919", "systemTime": 1700000000000}],
         }
     )
     connection = FakeConnection([json.dumps({"event": "login", "code": "0"}), ticker])
@@ -213,6 +213,7 @@ async def test_transport_logs_in_subscribes_and_normalizes_without_mutations() -
         symbols=["WLDUSDT"],
         transport=transport,
         clock=lambda: 100.0,
+        wall_clock=lambda: 1700000000.0,
     )
 
     await client.connect()
@@ -265,6 +266,7 @@ async def test_transport_reconnects_and_resubscribes_after_disconnect() -> None:
         symbols=["BTCUSDT"],
         transport=transport,
         clock=lambda: 100.0,
+        wall_clock=lambda: 1700000000.0,
     )
 
     await client.connect()
@@ -358,7 +360,7 @@ async def test_mark_freshness_is_symbol_local_and_requires_a_received_mark_event
         {
             "action": "update",
             "arg": {"instType": "mc", "channel": "ticker", "instId": "BTCUSDT"},
-            "data": [{"instId": "BTCUSDT", "markPrice": "100", "systemTime": 10}],
+            "data": [{"instId": "BTCUSDT", "markPrice": "100", "systemTime": 1700000000000}],
         }
     )
     connection = FakeConnection([json.dumps({"event": "login", "code": "0"}), ticker])
@@ -369,6 +371,7 @@ async def test_mark_freshness_is_symbol_local_and_requires_a_received_mark_event
         symbols=["BTCUSDT", "ETHUSDT"],
         transport=FakeTransport([connection]),
         clock=lambda: 100.0,
+        wall_clock=lambda: 1700000000.0,
         stale_after=5.0,
     )
 

@@ -46,9 +46,7 @@ class FakeConnection:
         else:
             self._data.clear()
 
-    def add(
-        self, frame: str, *, marks: int = 1, repeat: bool = False
-    ) -> "FakeConnection":
+    def add(self, frame: str, *, marks: int = 1, repeat: bool = False) -> "FakeConnection":
         """Append frames; ``repeat`` replays the whole script when exhausted."""
         self._script.extend([frame] * marks)
         self._orig.extend([frame] * marks)
@@ -94,15 +92,11 @@ class FakeTransport:
         self.public = FakeConnection(public_script)
         self.private = FakeConnection(private_script)
 
-    def add_public(
-        self, frame: str, *, marks: int = 1, repeat: bool = False
-    ) -> "FakeTransport":
+    def add_public(self, frame: str, *, marks: int = 1, repeat: bool = False) -> "FakeTransport":
         self.public.add(frame, marks=marks, repeat=repeat)
         return self
 
-    def add_private(
-        self, frame: str, *, marks: int = 1, repeat: bool = False
-    ) -> "FakeTransport":
+    def add_private(self, frame: str, *, marks: int = 1, repeat: bool = False) -> "FakeTransport":
         self.private.add(frame, marks=marks, repeat=repeat)
         return self
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from html.parser import HTMLParser
 from typing import Any, Protocol
 
 import httpx
@@ -16,6 +17,52 @@ class CommandService(Protocol):
 
 FetchUpdates = Callable[[int | None], Sequence[dict[str, Any]]]
 SendReply = Callable[[int, str], None]
+_TELEGRAM_TEXT_LIMIT = 4000  # UTF-16 code units; leave margin below Telegram's 4096 limit.
+
+
+class _PlainReplyParser(HTMLParser):
+    """Render trusted legacy HTML cards as plain text for Bot API replies."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "br":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"pre", "p"}:
+            self.parts.append("\n")
+
+
+def _plain_reply(text: str) -> str:
+    parser = _PlainReplyParser()
+    parser.feed(text)
+    parser.close()
+    return "".join(parser.parts)
+
+
+def _split_telegram_text(text: str) -> list[str]:
+    """Split by Telegram's UTF-16 message limit without dropping characters."""
+    chunks: list[str] = []
+    current: list[str] = []
+    units = 0
+    for character in text:
+        width = 2 if ord(character) > 0xFFFF else 1
+        if units + width > _TELEGRAM_TEXT_LIMIT:
+            chunks.append("".join(current))
+            current = []
+            units = 0
+        current.append(character)
+        units += width
+    if current:
+        chunks.append("".join(current))
+    return chunks
 
 
 class UpdateReceiptStore(Protocol):
@@ -49,10 +96,12 @@ class TelegramBotApi:
         return result
 
     def send_reply(self, chat_id: int, text: str) -> None:
-        self._post("sendMessage", {"chat_id": chat_id, "text": text[:4000]})
+        for chunk in _split_telegram_text(_plain_reply(text)):
+            self._post("sendMessage", {"chat_id": chat_id, "text": chunk})
 
     def set_my_commands(self) -> None:
         commands = [
+            {"command": "start", "description": "show operator commands"},
             {"command": "help", "description": "show operator commands"},
             {"command": "health", "description": "full read-only health"},
             {"command": "status", "description": "concise provider status"},

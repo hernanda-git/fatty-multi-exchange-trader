@@ -124,6 +124,65 @@ def test_open_is_blocked_when_operator_mutations_are_disabled() -> None:
     assert gateway.last_open is None
 
 
+def test_open_requires_a_bound_confirmation_before_gateway_call() -> None:
+    service, gateway = make_service()
+    text = "/open BTCUSDT LONG margin=10 leverage=10 entry=market sl=59000 tp=62000"
+
+    challenge = service.handle(text, sender_id=1, is_private=True, is_forwarded=False)
+
+    assert challenge.startswith("CONFIRM open BTCUSDT")
+    token = challenge.rsplit("confirm=", 1)[1]
+    assert gateway.last_open is None
+    result = service.handle(
+        f"{text} confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+
+    assert result.startswith("OPEN BTCUSDT LONG")
+    assert gateway.last_open is not None
+
+
+def test_open_confirmation_cannot_be_reused_for_changed_parameters() -> None:
+    service, gateway = make_service()
+    text = "/open BTCUSDT LONG margin=10 leverage=10 entry=market sl=59000 tp=62000"
+    challenge = service.handle(text, sender_id=1, is_private=True, is_forwarded=False)
+    token = challenge.rsplit("confirm=", 1)[1]
+
+    with pytest.raises(CommandError, match="does not match"):
+        service.handle(
+            f"""/open BTCUSDT LONG margin=100 leverage=10 entry=market sl=59000 tp=62000 confirm={
+                (token)
+            }""",
+            sender_id=1,
+            is_private=True,
+            is_forwarded=False,
+        )
+
+    assert gateway.last_open is None
+
+
+def test_trade_requires_a_bound_confirmation_before_gateway_call() -> None:
+    service, gateway = make_service()
+    text = "/trade bitget LONG BTCUSDT margin=1 leverage=20 entry=market sl=59000 tp=62000"
+
+    challenge = service.handle(text, sender_id=1, is_private=True, is_forwarded=False)
+
+    assert challenge.startswith("CONFIRM trade ")
+    token = challenge.rsplit("confirm=", 1)[1]
+    assert gateway.last_open is None
+    result = service.handle(
+        f"{text} confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+
+    assert result.startswith("OPEN BTCUSDT LONG")
+    assert gateway.last_open is not None
+
+
 def test_help_lists_read_only_and_mutating_commands() -> None:
     service, _ = make_service()
     result = service.handle("/help", sender_id=1, is_private=True, is_forwarded=False)
@@ -149,8 +208,18 @@ def test_diagnostic_command_uses_read_only_reader() -> None:
 
 def test_trade_command_is_wired_to_bitget_open_path() -> None:
     service, gateway = make_service()
-    result = service.handle(
+    challenge = service.handle(
         "/trade bitget LONG BTCUSDT margin=10 leverage=20 entry=market sl=59000 tp=62000",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+    assert challenge.startswith("CONFIRM trade ")
+    token = challenge.rsplit("confirm=", 1)[1]
+    assert gateway.last_open is None
+    result = service.handle(
+        "/trade bitget LONG BTCUSDT margin=10 leverage=20 entry=market sl=59000 tp=62000 "
+        f"confirm={token}",
         sender_id=1,
         is_private=True,
         is_forwarded=False,
@@ -261,12 +330,21 @@ def test_settp_requires_confirmation_and_updates_only_tp() -> None:
 
 def test_open_market_alert_contains_required_fields() -> None:
     svc, gw = make_service()
-    alert = svc.handle(
-        "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto",
+    command = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
+    challenge = svc.handle(
+        command,
         sender_id=1,
         is_private=True,
         is_forwarded=False,
     )
+    token = challenge.rsplit("confirm=", 1)[1]
+    alert = svc.handle(
+        f"{command} confirm={token}",
+        sender_id=1,
+        is_private=True,
+        is_forwarded=False,
+    )
+    assert gw.last_open is not None
     assert "BTCUSDT" in alert
     assert "LONG" in alert
     # Never leak secrets

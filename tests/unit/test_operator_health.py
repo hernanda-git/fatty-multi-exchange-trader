@@ -95,8 +95,31 @@ class GatedCursor(Cursor):
         return [("WLDUSDT", "SHORT", "0.3874", "0.3938", "[]", "80", "active")]
 
 
-def _report(fallback_mutations_enabled: str) -> str:
+def _report(fallback_mutations_enabled: str, *, kill_active: bool = True) -> str:
     calls = iter([Connection(), Connection()])
+    if not kill_active:
+
+        class InactiveCursor(Cursor):
+            def fetchone(self):
+                return (
+                    42,
+                    15,
+                    0,
+                    0,
+                    0,
+                    1,
+                    False,
+                    None,
+                    16134,
+                    "2026-09-15 01:12:14+00",
+                    "$WLD invalid",
+                )
+
+        class InactiveConnection(Connection):
+            def cursor(self):
+                return InactiveCursor()
+
+        calls = iter([InactiveConnection(), Connection()])
     return build_operator_health_report(
         Gateway(),
         lambda: next(calls),
@@ -128,10 +151,17 @@ def test_fallback_row_with_mutation_gate_off_must_not_read_as_protected() -> Non
 
 def test_fallback_row_with_mutation_gate_on_reports_fallback() -> None:
     """With the gate on, the registered fallback genuinely owns the levels."""
-    report = _report("1")
+    report = _report("1", kill_active=False)
 
     assert "🟡 FALLBACK" in report
     assert "Fallback   active" in report
+
+
+def test_active_kill_switch_blocks_fallback_mutation_even_when_gate_on() -> None:
+    report = _report("1")
+    assert "🔴 GATED OFF" in report
+    assert "CANNOT CLOSE" in report.upper()
+    assert "🟡 FALLBACK" not in report
 
 
 def test_unprotected_position_is_distinguishable_from_gated_fallback() -> None:

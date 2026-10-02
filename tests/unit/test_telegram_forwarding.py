@@ -45,7 +45,17 @@ async def test_forwarder_persists_once_without_duplicate_raw_notifications() -> 
         async def send_message(self, target: int, text: str, **kwargs: object) -> None:
             sent.append(("message", text, {"target": target, **kwargs}))
 
-    message = SimpleNamespace(id=7, message="BTCUSDT LONG", media=object(), reply_to=None)
+    async def download_media(*, file: str) -> None:
+        del file
+        return None
+
+    message = SimpleNamespace(
+        id=7,
+        message="BTCUSDT LONG",
+        media=object(),
+        reply_to=None,
+        download_media=download_media,
+    )
     repository = InMemoryRawMessageRepository()
     settings = TelegramSettings(1, "hash", "session", ("@example_source_channel",), 123456789)
 
@@ -54,4 +64,5 @@ async def test_forwarder_persists_once_without_duplicate_raw_notifications() -> 
     await TelegramForwarder(FakeClient(), settings, repository).handle_message(-1001, message)
 
     assert sent == []
+    assert repository.count == 1
     assert repository.forward_count == 0

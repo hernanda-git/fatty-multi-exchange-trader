@@ -96,6 +96,7 @@ def build_position_tpsl_payload(
     product_type: str = "USDT-FUTURES",
     margin_coin: str = "USDT",
     include_delegate_type: bool = False,
+    omit_market_execute_prices: bool = False,
 ) -> dict[str, str]:
     """Build a documented Classic V2 ``place-pos-tpsl`` payload.
 
@@ -106,7 +107,13 @@ def build_position_tpsl_payload(
     documented ``stopLossSize`` and/or ``stopSurplusSize``.
 
     Positive execute prices are rejected: Bitget interprets them as limit execution,
-    while this safety path requires market execution (the documented ``0`` sentinel).
+    while this safety path requires market execution. By default, execute-price
+    fields use the documented ``0`` sentinel. ``omit_market_execute_prices=True``
+    omits those fields only after validating their values as market execution;
+    it never converts a positive limit price into an accepted market request.
+    The official Classic Contract Trigger API documents omitted or ``0`` execute
+    prices as market execution for ``place-pos-tpsl``:
+    https://www.bitget.com/docs/catalog/classic-contract-plan/classic-contract-plan
     ``delegateType`` is opt-in because it is not part of the current official request
     schema; account-specific compatibility must be proven by a separate canary.
     """
@@ -179,6 +186,9 @@ def build_position_tpsl_payload(
                 raise ProtectionContractError("take profit size cannot exceed protection quantity")
             payload["stopSurplusSize"] = format(partial_size, "f")
 
+    if omit_market_execute_prices:
+        payload.pop("stopLossExecutePrice", None)
+        payload.pop("stopSurplusExecutePrice", None)
     return payload
 
 
