@@ -41,6 +41,27 @@ a persisted fallback row alone is not working protection. Native exchange plans
 remain independent of the local dispatcher process. Do not clear a venue latch,
 replay a historical signal, or activate a new entry as a test.
 
+## Candidate integration contracts
+
+- The production async Bitget adapter accepts a final winning-claim veto after
+  awaited leverage setup and immediately before the ENTRY request. An unsent
+  stale/blocked request is EXPIRED/REJECTED, not ambiguous provider UNKNOWN.
+  Already-submitted uncertainty stays consumed and GET-only; source age does not
+  free its financial commitment.
+- Startup protection recovery is GET-only. Canonical owned exposure requires
+  exact actual fill, position epoch, environment and existing plan evidence.
+  Missing protection and manual/orphan/provider-only inventory retain a durable
+  admission veto even if an optional readiness callback is bypassed.
+- Web readiness reads worker-owned progress from per-service tmpfs mounts (web
+  read-only) and proves owner identity with fresh Unix-socket challenges. It does
+  not require host PID access; an attestor cannot refresh stale work progress.
+  Real isolated containers proved cross-UID permission, stop/death/restart and
+  generation rejection on this host. Enforcing SELinux/AppArmor compatibility is
+  not established by a host with those policies disabled.
+- Verified close release must join exact durable close-fill ownership and fresh
+  authenticated flat account evidence, with admission-lock serialization. A
+  repository API alone is not evidence that monitor/operator lifecycle is wired.
+
 ## Local evidence (not included in Git)
 
 Detailed findings, original baselines, RED/GREEN logs, test snapshots and provider
