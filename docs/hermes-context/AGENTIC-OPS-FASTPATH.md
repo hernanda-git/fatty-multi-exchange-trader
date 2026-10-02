@@ -1,5 +1,9 @@
 # Agentic Ops Fast Path — Fatty Bitget
 
+> Read [current remediation gates](../remediation-verification.md) first.
+> This handoff's dated deployment facts remain historical, not current readiness
+> or mutation authorization. Verify current source/image/schema/provider lineage.
+
 **Purpose:** first-read handoff for any new Hermes/agent session operating
 `fatty-multi-exchange-trader`. It replaces repeated broad reading, grep, and
 search with a source map and one-pass evidence commands. It contains no

@@ -1,4 +1,8 @@
-# Operations status
+# Operations Status
+
+> HISTORICAL MIRROR: use [current operations](../OPERATIONS.md) and
+> [remediation gates](../remediation-verification.md). Preserve this older
+> capture for context; it is not current gate/account/readiness evidence.
 
 ## Local development
 

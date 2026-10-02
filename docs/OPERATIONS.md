@@ -1,5 +1,10 @@
 # Operations Status
 
+Current release acceptance: [remediation gates](remediation-verification.md).
+Historical LIVE mode and configuration claims below are not current gate,
+progress, account-state or protection evidence. During remediation, entry and
+fallback/stream mutation remain closed; read back effective per-service gates.
+
 ## Local Development
 
 ```bash
@@ -19,7 +24,9 @@ POSTGRES_PASSWORD='use-a-local-secret-manager-value' docker compose up -d --buil
 curl http://127.0.0.1:18081/health/telemetry
 ```
 
-The health payload is sanitized and reports LIVE mode plus configured component states. It never returns environment values or credentials.
+The health payload is sanitized. Static mode/configuration, HTTP liveness and
+actual worker/dependency readiness are separate fields. Unknown, missing or
+stale worker evidence is not READY. It never returns environment credentials.
 
 ## PostgreSQL Backup and Restore
 
@@ -41,11 +48,18 @@ Deployment to the production host, Telegram listener authorization, Codex OAuth 
 
 Some Bitget symbols reject native SL/TP placement:
 
-- `43011` — `place-pos-tpsl` rejected → bot falls back to mark-price monitoring
-- `400172` — `orders-plan-pending` rejected → bot falls back to position-field verification
-- `40109` — `order-detail` rejected for filled market orders → bot catches and classifies as FILLED
+- `43011` — parameter validation is FAILED/DEGRADED, not native-unsupported
+  capability. Omitted market execute-price fields are a documented compatibility
+  option only after strict validation; never use blind retry or positive limits.
+- `400172` — pending-plan reads may be unavailable; only independently sufficient,
+  exact provider evidence may establish protection. Otherwise report UNKNOWN.
+- `40109` — a missing order detail requires matching order/fill reconciliation.
+  It is not by itself proof of FILLED and must not cause an entry replay.
 
-For these symbols, the bot holds positions and manages TP/SL via market close when thresholds are hit. The operator is alerted via monitor report.
+Fallback registration alone is not enforcing loss protection. Require explicit
+mutation gate, verified owned position epoch/environment, fresh mark evidence,
+atomic close identity and provider fill/readback. Malformed/failed reads cannot
+prove flatness; submission alone cannot prove a filled close.
 
 ## Hourly Health Report
 

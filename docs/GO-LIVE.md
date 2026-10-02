@@ -1,5 +1,10 @@
 # Go-live gate
 
+> HISTORICAL / STALE: the dated state below is preserved, not current proof or
+> authorization. See [current remediation gates](remediation-verification.md).
+> Generic 43011 is not unsupported-native capability, registration is not
+> enforcing protection, and close submission is not proof of a close fill.
+
 Bitget is **LIVE** with a bounded canary (2026-09-08). This document is now a historical reference for the gate sequence that was completed.
 
 ## Current state (2026-09-11)
