@@ -23,7 +23,7 @@ jobs:
         volumes:
           - /tmp/fattycisocket:/var/run/postgresql
         options: >-
-          --health-cmd 'pg_isready -U fatty_test -d fatty_test'
+          --health-cmd "pg_isready -U fatty_test -d fatty_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
