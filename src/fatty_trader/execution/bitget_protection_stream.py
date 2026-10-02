@@ -13,6 +13,7 @@ from typing import Any
 
 from fatty_trader.exchanges.bitget.protection_capability import StreamState
 from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket, fresh_mark
+from fatty_trader.exchanges.bitget.websocket_v2 import BitgetV2WebSocket
 from fatty_trader.exchanges.bitget.ws_models import BitgetWebSocketEvent
 from fatty_trader.execution.bitget_fallback_protection import check_thresholds
 
@@ -120,7 +121,7 @@ class BitgetProtectionStreamRuntime:
 
     def __init__(
         self,
-        socket: BitgetClassicWebSocket,
+        socket: BitgetClassicWebSocket | BitgetV2WebSocket,
         repository: Any,
         *,
         environment: str,
@@ -141,7 +142,7 @@ class BitgetProtectionStreamRuntime:
         self._last_event_ms: dict[str, int] = {}
 
     @property
-    def socket(self) -> BitgetClassicWebSocket:
+    def socket(self) -> BitgetClassicWebSocket | BitgetV2WebSocket:
         """Expose the transport state to the paired REST watchdog."""
         return self._socket
 
