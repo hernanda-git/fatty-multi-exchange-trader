@@ -3,8 +3,24 @@
 import httpx
 import pytest
 
-from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
-from tests.unit.test_bitget_client import make_client
+from fatty_trader.exchanges.bitget.client import BitgetRestClient, BitgetUnknownResultError
+
+
+def make_client(handler, **kwargs):
+    """Keep the offline transport self-contained in a clean checkout."""
+    seen = []
+
+    def wrapped(request):
+        seen.append(request)
+        return handler(request)
+
+    return BitgetRestClient(
+        api_key="my-key",
+        api_secret="my-secret",
+        passphrase="my-pass",
+        transport=httpx.MockTransport(wrapped),
+        **kwargs,
+    ), seen
 
 
 @pytest.mark.asyncio
