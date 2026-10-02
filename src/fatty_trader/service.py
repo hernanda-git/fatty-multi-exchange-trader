@@ -234,7 +234,7 @@ def build_bitget_protection_stream(
     wall_clock: Callable[[], float] | None = None,
     active_symbol_source: Callable[[], Iterable[str]] | None = None,
 ) -> Any | None:
-    """Build the disabled-by-default, observe-only Bitget Classic stream."""
+    """Build the disabled-by-default, observe-only stream (V2 for LIVE)."""
     raw_enabled = environ.get("BITGET_PROTECTION_STREAM_ENABLED", "0").lower()
     if raw_enabled not in {"0", "1"}:
         raise ValueError("BITGET_PROTECTION_STREAM_ENABLED must be 0 or 1")
@@ -273,9 +273,12 @@ def build_bitget_protection_stream(
 
         repository = PostgresProtectionCapabilityRepository(psycopg.connect)
     from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket
+    from fatty_trader.exchanges.bitget.websocket_v2 import BitgetV2WebSocket
     from fatty_trader.execution.bitget_protection_stream import BitgetProtectionStreamRuntime
 
-    socket = BitgetClassicWebSocket(
+    # LIVE uses the supported public/private V2 split, never a Classic fallback.
+    socket_type = BitgetV2WebSocket if environment == "LIVE" else BitgetClassicWebSocket
+    socket = socket_type(
         api_key=environ.get("BITGET_API_KEY", ""),
         api_secret=environ.get("BITGET_API_SECRET", ""),
         passphrase=environ.get("BITGET_API_PASSPHRASE", ""),
@@ -1279,9 +1282,13 @@ async def run_intake(
     peer_id_of: Any = None,
 ) -> None:
     """Run the real Telethon intake, or remain inert when config is absent."""
+    config = service_config("intake", environ)
     settings = intake_settings(environ)
     if settings is None:
-        print("service=intake mode=DEMO state=disabled reason=missing-telegram-config", flush=True)
+        print(
+            f"service=intake mode={config.mode} state=disabled reason=missing-telegram-config",
+            flush=True,
+        )
         while True:
             await asyncio.sleep(float(environ.get("WORKER_HEARTBEAT_SECONDS", "30")))
     client = client_factory(settings)
@@ -1293,7 +1300,7 @@ async def run_intake(
     forwarder = TelegramForwarder(client, settings, repository)
     await forwarder.attach()
     await client.start()
-    print("service=intake mode=DEMO state=ready", flush=True)
+    print(f"service=intake mode={config.mode} state=ready", flush=True)
     # Safety net for the realtime-only listen path: a dropped update stream used to lose
     # every message in the blind window permanently (2026-09-27: the source's ENA signal).
     catchup_seconds = float(environ.get("TELEGRAM_CATCHUP_SECONDS", "60"))
