@@ -34,12 +34,14 @@ not readiness to trade.
 
 ## Latest full snapshot
 
-Intermediate snapshot: 1,576 tests, zero failures/errors/skips; Ruff lint/format,
-strict mypy and compilation all passed. The freeze check correctly rejected this
-as final evidence because three intake edit-revocation files changed while the
-suite ran. A same-tree rerun is required after review remediation freezes.
-Independent review additionally withheld approval for the final kill-latch race,
-cross-UID source-image handoff and parent-process credential isolation.
+The frozen LIVE-only topology snapshot passed 1,623 tests with zero failures,
+errors or skips; Ruff lint/format, strict mypy and compilation passed with no
+source drift. GitHub Actions independently passed all 1,623 tests on Python 3.11
+and 3.12 at `505782828c3a1b0145ebbeea86c7dd746043bc88`.
+The independent review identified an additional blocking-query window in the
+final kill check; release stays blocked until that fix is tested and re-approved.
+Compose has no paper service and all operational trader/environment modes default
+to LIVE. Historical compatibility code and financial rows are not deleted.
 
 The actual container proof ran on this host with SELinux disabled and no AppArmor
 profile. It does not establish enforcing-LSM compatibility or production deployment.

@@ -32,7 +32,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "init"]
     environment:
-      TRADER_MODE: DEMO
+      TRADER_MODE: LIVE
       SERVICE_NAME: init
     depends_on:
       migrate:
@@ -42,7 +42,7 @@ services:
   web:
     build: .
     environment:
-      TRADER_MODE: DEMO
+      TRADER_MODE: LIVE
       SERVICE_NAME: web
       # Progress is worker-owned; each socket validates identity in its own PID namespace.
       WEB_INTAKE_HEALTH_PATH: /run/fatty-health/intake/progress.json
@@ -76,7 +76,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "intake"]
     environment:
-      TRADER_MODE: DEMO
+      TRADER_MODE: LIVE
       SERVICE_NAME: intake
       WORKER_HEALTH_PATH: /run/fatty-health/intake/progress.json
       WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
@@ -88,9 +88,7 @@ services:
       TG_API_ID: ${TG_API_ID:-}
       TG_API_HASH: ${TG_API_HASH:-}
       TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
-      # @Kakatrades is paper-only: the analyzer is scoped to ANALYZER_CHANNEL_IDS, so
-      # this source can never create live dispatches.
-      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-@fattyfatclub,@Kakatrades}
+      TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-@fattyfatclub}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
       TELEGRAM_MEDIA_ROOT: /app/runtime/media
       # Catch-up safety net: the listen path is realtime-only, so a dropped/stolen MTProto
@@ -119,7 +117,7 @@ services:
     group_add: ["10001"]
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "analyzer"]
     environment:
-      TRADER_MODE: DEMO
+      TRADER_MODE: LIVE
       SERVICE_NAME: analyzer
       WORKER_HEALTH_PATH: /run/fatty-health/analyzer/progress.json
       WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/analyzer/owner.sock
@@ -137,7 +135,10 @@ services:
     volumes:
       - health-analyzer:/run/fatty-health/analyzer
       - ./runtime/codex-home:/app/runtime/codex-home
-      - ${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json:/app/runtime/codex-home/auth.json:ro
+      - type: bind
+        source: ${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json
+        target: /app/runtime/codex-home/auth.json
+        read_only: true
       - ./data/media:/app/runtime/media:ro
     depends_on:
       init:
@@ -151,7 +152,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
     environment:
-      TRADER_MODE: DEMO
+      TRADER_MODE: LIVE
       SERVICE_NAME: dispatcher-binance
       PGHOST: postgres
       PGPORT: "5432"
@@ -171,7 +172,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
     environment:
-      TRADER_MODE: ${TRADER_MODE:-DEMO}
+      TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: dispatcher-bitget
       PGHOST: postgres
       PGPORT: "5432"
@@ -181,7 +182,7 @@ services:
       BITGET_API_KEY: ${BITGET_API_KEY:-}
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
-      BITGET_MODE: ${BITGET_MODE:-DEMO}
+      BITGET_MODE: ${BITGET_MODE:-LIVE}
       # Closed by default; human approval is required before any cutover.
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}
       # Capability admission is separately gated and remains disabled by default.
@@ -275,32 +276,11 @@ services:
       retries: 3
       start_period: 60s
 
-  # Paper-only lane for the `Kaka trades` channel. No provider credentials are present in
-  # this block on purpose: the lane cannot reach the venue even if it wanted to.
-  paper-kaka:
-    build: .
-    command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "paper-kaka"]
-    environment:
-      SERVICE_NAME: paper-kaka
-      TRADER_MODE: ${TRADER_MODE:-DEMO}
-      PGHOST: postgres
-      PGPORT: 5432
-      PGDATABASE: ${POSTGRES_DB:-fatty_trader}
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
-      PAPER_KAKA_POLL_SECONDS: ${PAPER_KAKA_POLL_SECONDS:-20}
-      PAPER_KAKA_CHANNEL_ID: ${PAPER_KAKA_CHANNEL_ID:--1003763643270}
-      PAPER_KAKA_BATCH_SIZE: ${PAPER_KAKA_BATCH_SIZE:-25}
-    depends_on:
-      init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
   operator-bot:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
-      TRADER_MODE: ${TRADER_MODE:-DEMO}
+      TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: operator-bot
       PGHOST: postgres
       PGPORT: "5432"
@@ -310,7 +290,7 @@ services:
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TG_OPERATOR_ID: ${TG_OPERATOR_ID:-}
       TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
-      BITGET_MODE: ${BITGET_MODE:-DEMO}
+      BITGET_MODE: ${BITGET_MODE:-LIVE}
       BITGET_API_KEY: ${BITGET_API_KEY:-}
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
@@ -359,7 +339,7 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "source-management"]
     environment:
-      TRADER_MODE: ${TRADER_MODE:-DEMO}
+      TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: source-management
       PGHOST: postgres
       PGPORT: "5432"
@@ -369,7 +349,7 @@ services:
       BITGET_API_KEY: ${BITGET_API_KEY:-}
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
-      BITGET_MODE: ${BITGET_MODE:-DEMO}
+      BITGET_MODE: ${BITGET_MODE:-LIVE}
       BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
     depends_on:

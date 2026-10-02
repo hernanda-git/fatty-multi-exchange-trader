@@ -255,14 +255,12 @@ def test_paper_lane_never_references_the_live_paths() -> None:
         assert forbidden not in source, forbidden
 
 
-def test_paper_service_block_has_no_provider_credentials() -> None:
+def test_paper_service_is_absent_from_live_deployment() -> None:
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    block = compose.split("paper-kaka:", 1)[1].split("\n  operator-bot:", 1)[0]
-
-    assert "BITGET_API_KEY" not in block
-    assert "BITGET_API_SECRET" not in block
-    assert "BITGET_API_PASSPHRASE" not in block
-    assert "PAPER_KAKA_CHANNEL_ID" in block
+    assert "paper-kaka:" not in compose
+    assert "PAPER_KAKA_CHANNEL_ID" not in compose
+    assert "TRADER_MODE: DEMO" not in compose
+    assert "TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-@fattyfatclub}" in compose
 
 
 def test_analyzer_claim_is_scoped_to_the_live_channel() -> None:

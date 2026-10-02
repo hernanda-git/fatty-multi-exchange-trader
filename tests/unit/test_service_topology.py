@@ -167,7 +167,7 @@ def test_intake_config_allows_missing_telegram_values_without_starting() -> None
 
 
 def test_compose_contains_migration_init_and_isolated_workers() -> None:
-    for service in ("migrate", "init", *SUPPORTED_SERVICES):
+    for service in ("migrate", "init", *(s for s in SUPPORTED_SERVICES if s != "paper-kaka")):
         assert f"  {service}:" in COMPOSE
     for service in ("dispatcher-binance", "dispatcher-bitget"):
         command = (
@@ -176,16 +176,18 @@ def test_compose_contains_migration_init_and_isolated_workers() -> None:
         )
         assert command in COMPOSE
     assert "service_completed_successfully" in COMPOSE
-    assert "TRADER_MODE: DEMO" in COMPOSE
+    assert "TRADER_MODE: LIVE" in COMPOSE
+    assert "DEMO" not in COMPOSE
+    assert "paper-kaka:" not in COMPOSE
     assert "CODEX_ACCOUNT_LABEL: ${CODEX_ACCOUNT_LABEL:-unset}" in COMPOSE
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts ./scripts" in dockerfile
     assert "npm install --global @openai/codex@0.153.0" in dockerfile
     assert 'user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"' in COMPOSE
     assert "./runtime/codex-home:/app/runtime/codex-home" in COMPOSE
-    assert (
-        "${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json:/app/runtime/codex-home/auth.json:ro"
-    ) in COMPOSE
+    assert "source: ${CODEX_HOST_HOME:-/home/valarion/.codex}/auth.json" in COMPOSE
+    assert "target: /app/runtime/codex-home/auth.json" in COMPOSE
+    assert "read_only: true" in COMPOSE
 
 
 def test_health_report_is_sanitized_and_exposes_component_states() -> None:
