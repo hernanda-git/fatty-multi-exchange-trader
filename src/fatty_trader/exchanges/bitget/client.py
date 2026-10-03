@@ -37,8 +37,11 @@ RETRYABLE_GET_STATUSES = frozenset({429, 500, 502, 503, 504})
 #: Bitget business codes that mean "you are being rate limited", not "you asked
 #: for something impossible". 30006 is the documented request-too-many code for
 #: the mix endpoints (10 req/s/UID), which is exactly the limit the monitor and its
-#: protection watchdog hit together in one process.
-RETRYABLE_GET_CODES = frozenset({"30006", "30007"})
+#: protection watchdog hit together in one process. Only documented codes belong
+#: here: retrying an unverified code could mask a permanent failure behind extra
+#: attempts. Official docs state frequency limiting returns HTTP 429, which
+#: RETRYABLE_GET_STATUSES covers.
+RETRYABLE_GET_CODES = frozenset({"30006"})
 
 #: Never retried for GET either: these are permanent and a retry would only hide
 #: the real cause behind a kill-switch latch (40309 symbol delisted, 40008
@@ -552,10 +555,10 @@ class BitgetRestClient:
         seen: set[str] = set()
         cursor: str | None = None
         for _ in range(max_pages):
-            try:
-                page = await self._get("/api/v2/mix/order/fills", params)
-            except BitgetApiError:
-                break
+            # A GET failure mid-walk leaves the result unproven, never "no fills".
+            # Permanent provider errors (40309 delisted, 40008 expired signature)
+            # must keep propagating instead of degrading into an empty fill list.
+            page = await self._get("/api/v2/mix/order/fills", params)
             pages.append(page)
             if not isinstance(page, dict) or not isinstance(page.get("fillList"), list):
                 break

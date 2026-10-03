@@ -233,6 +233,15 @@ async def test_unproven_terminal_page_preserves_rows_but_never_claims_complete(t
         "offline", "offline", "offline", transport=httpx.MockTransport(respond)
     )
     try:
+        if terminal == "failure":
+            # A provider error mid-walk must propagate. Returning a partial row
+            # set would silently downgrade "unknown" to "these are all the
+            # fills", which is the fail-open this contract exists to prevent.
+            with pytest.raises(BitgetApiError) as excinfo:
+                await client.get_fills("WLDUSDT", max_pages=3)
+            assert excinfo.value.code == "400172"
+            assert len(requests) == 2
+            return
         data = await client.get_fills("WLDUSDT", max_pages=3)
         assert data["endId"]
         assert data["fillList"] == page["fillList"]

@@ -26,7 +26,13 @@ from fatty_trader.exchanges.bitget.client import (
 
 
 def ok_envelope(data: object = None) -> dict[str, object]:
+    """Successful envelope. An explicit empty fill page carries endId="",
+    which is the only provider shape that proves pagination exhaustion."""
     return {"code": "00000", "msg": "success", "requestTime": 1, "data": data or {}}
+
+
+def empty_fill_page() -> dict[str, object]:
+    return {"fillList": [], "endId": ""}
 
 
 def make_client(
@@ -65,7 +71,7 @@ class _RecordingSleep:
 async def test_http_429_is_retried_and_then_succeeds() -> None:
     responses = [
         httpx.Response(429, json={"code": "30006", "msg": "too many requests"}),
-        httpx.Response(200, json=ok_envelope({"fillList": []})),
+        httpx.Response(200, json=ok_envelope(empty_fill_page())),
     ]
     sleeps: list[float] = []
 
@@ -74,7 +80,13 @@ async def test_http_429_is_retried_and_then_succeeds() -> None:
 
     client, seen = make_client(handler, sleeps=sleeps, max_get_retries=3)
 
-    assert await client.get_fills() == {"fillList": []}
+    # get_fills walks bounded pagination; an empty page with endId="" is the
+    # only shape that proves exhaustion.
+    assert await client.get_fills() == {
+        "fillList": [],
+        "endId": "",
+        "pages": [{"fillList": [], "endId": ""}],
+    }
     assert len(seen) == 2
     assert len(sleeps) == 1
 
@@ -83,7 +95,7 @@ async def test_bitget_rate_limit_business_code_is_retried_and_then_succeeds() ->
     """HTTP 200 with code 30006 is Bitget's rate limit for the mix endpoints."""
     responses = [
         httpx.Response(200, json={"code": "30006", "msg": "request too many"}),
-        httpx.Response(200, json=ok_envelope({"fillList": []})),
+        httpx.Response(200, json=ok_envelope(empty_fill_page())),
     ]
     sleeps: list[float] = []
 
@@ -92,7 +104,7 @@ async def test_bitget_rate_limit_business_code_is_retried_and_then_succeeds() ->
 
     client, seen = make_client(handler, sleeps=sleeps, max_get_retries=3)
 
-    assert await client.get_fills() == {"fillList": []}
+    assert (await client.get_fills())["fillList"] == []
     assert len(seen) == 2
 
 
@@ -227,11 +239,11 @@ async def test_successful_first_get_never_sleeps() -> None:
     sleeps: list[float] = []
 
     def handler(_: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=ok_envelope({"fillList": []}))
+        return httpx.Response(200, json=ok_envelope(empty_fill_page()))
 
     client, seen = make_client(handler, sleeps=sleeps)
 
-    assert await client.get_fills() == {"fillList": []}
+    assert (await client.get_fills())["fillList"] == []
     assert len(seen) == 1
     assert sleeps == []
 
@@ -259,10 +271,10 @@ async def test_rate_limit_retry_re_issues_the_same_signed_request() -> None:
         bodies.append(request.headers.get("ACCESS-SIGN"))
         if len(bodies) == 1:
             return httpx.Response(429, json={"code": "30006", "msg": "too many requests"})
-        return httpx.Response(200, json=ok_envelope({"fillList": []}))
+        return httpx.Response(200, json=ok_envelope(empty_fill_page()))
 
     client, seen = make_client(handler, sleeps=[], max_get_retries=2)
-    assert await client.get_fills() == {"fillList": []}
+    assert (await client.get_fills())["fillList"] == []
     assert len(bodies) == 2
     assert all(signature for signature in bodies), bodies
     assert all(json.loads(request.content.decode()) == {} for request in seen if request.content)

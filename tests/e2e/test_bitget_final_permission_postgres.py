@@ -49,7 +49,8 @@ def test_kill_latched_while_final_source_read_waits_prevents_post(scope):
             c.execute("CREATE TABLE dispatches (id uuid PRIMARY KEY, source_id uuid, state text)")
             c.execute(
                 "CREATE TABLE venue_kill_switches (scope text PRIMARY KEY, active bool, "
-                "reason text, latched_at timestamptz, updated_at timestamptz)"
+                "reason text, latched_at timestamptz, last_latched_at timestamptz, "
+                "updated_at timestamptz)"
             )
             c.execute(
                 "CREATE TABLE notifications_outbox (id uuid, dedup_key text UNIQUE, payload jsonb)"
