@@ -22,9 +22,9 @@ from fatty_trader import service
         "empty",
         "callback-disabled",
         "dispatcher-unprotected",
-        "replacement-position",
-        "old-plan",
-        "missing-fill-epoch",
+        "missing-position-epoch",
+        "replacement-position-epoch",
+        "stale-plan-epoch",
     ],
 )
 async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case):
@@ -45,6 +45,9 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
         lambda *a, **kw: real_connect(dsn, **dict(kw, options=f"-c search_path={schema}")),
     )
     calls = []
+    # One-way opening fill, position birth and later protection plans belong
+    # to the same owned position epoch; matching quantity alone is insufficient.
+    entry_epoch = "1700000000000"
     position = dict(
         symbol="BTCUSDT",
         total="2",
@@ -55,7 +58,7 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
         takeProfitId="tp-id",
         leverage="1",
         marginSize="1",
-        cTime="1700000000000",
+        cTime=entry_epoch,
     )
     plans = [
         dict(
@@ -69,7 +72,7 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
             executePrice="0",
             size="0",
             planStatus="live",
-            cTime="1700000000100",
+            cTime="1700000000001",
         )
         for kind, pid, leg, level in [
             ("pos_loss", "sl-id", "sl", "90"),
@@ -78,9 +81,11 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
     ]
     if case == "wrong-level":
         plans[0]["triggerPrice"] = "89"
-    if case == "replacement-position":
-        position["cTime"] = "1700000000200"
-    if case == "old-plan":
+    elif case == "missing-position-epoch":
+        position.pop("cTime")
+    elif case == "replacement-position-epoch":
+        position["cTime"] = "1700000000002"
+    elif case == "stale-plan-epoch":
         plans[0]["cTime"] = "1699999999999"
 
     class Provider:
@@ -96,15 +101,15 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
                     orderId="entry-id",
                     clientOid=intent.client_oid,
                     tradeId="fill-id",
-                    size="2",
-                    price="100",
-                    fee="0.2",
                     symbol="BTCUSDT",
                     side="buy",
                     tradeSide="buy_single",
                     posMode="one_way_mode",
                     profit="0",
-                    cTime=None if case == "missing-fill-epoch" else "1700000000000",
+                    size="2",
+                    price="100",
+                    fee="0.2",
+                    cTime=entry_epoch,
                 )
             ]
 
@@ -166,7 +171,14 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
             elif case == "callback-disabled":
                 assert reason == "recovery-missing-protection:recovery-reader-unwired"
             else:
-                assert reason.startswith("recovery-missing-protection:")
+                expected_reason = {
+                    "flat": "owned-flat-close-fill-unproven",
+                    "wrong-level": "stop-loss-trigger-mismatch",
+                    "missing-position-epoch": "position-epoch-mismatch",
+                    "replacement-position-epoch": "position-epoch-mismatch",
+                    "stale-plan-epoch": "stop-loss-epoch-mismatch",
+                }[case]
+                assert reason == "recovery-missing-protection:" + expected_reason
             assert conn.execute("SELECT count(*) FROM notifications_outbox").fetchone()[0] > 0
     if case == "dispatcher-unprotected":
         with _connect(dsn, schema) as conn:
