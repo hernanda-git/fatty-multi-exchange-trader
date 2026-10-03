@@ -155,7 +155,8 @@ async def test_provider_read_failure_blocks_symbol_without_latching_global_switc
 
     assert report.status is WatchdogStatus.FAILED
     assert report.allow_new_entries == {"BTCUSDT": False}
-    assert report.reasons == ("provider-position-read-failed",)
+    # The cause is part of the reason: a collapsed string hid which failure it was.
+    assert report.reasons == ("provider-position-read-failed:TimeoutError",)
     assert not hasattr(repository, "latch_kill_switch")
 
 

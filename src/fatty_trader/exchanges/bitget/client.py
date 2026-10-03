@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlencode
 
@@ -21,8 +23,49 @@ from fatty_trader.exchanges.bitget.protection_contract import (
 BASE_URL = "https://api.bitget.com"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_GET_RETRIES = 2
+#: First retry delay for a retried GET, in seconds.
+DEFAULT_GET_BACKOFF_BASE = 0.25
+#: Upper bound for a single retry delay. Doubling stops here so a rate-limited
+#: endpoint can never stretch one monitor cycle past the provider's own limits.
+DEFAULT_GET_BACKOFF_CAP = 2.0
+
+#: HTTP statuses that are retried for GET only. 429 is Bitget's documented
+#: frequency-limit response ("requests are too frequent and are limited by the
+#: system"); the rest were already retried as 5xx.
+RETRYABLE_GET_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+#: Bitget business codes that mean "you are being rate limited", not "you asked
+#: for something impossible". 30006 is the documented request-too-many code for
+#: the mix endpoints (10 req/s/UID), which is exactly the limit the monitor and its
+#: protection watchdog hit together in one process.
+RETRYABLE_GET_CODES = frozenset({"30006", "30007"})
+
+#: Never retried for GET either: these are permanent and a retry would only hide
+#: the real cause behind a kill-switch latch (40309 symbol delisted, 40008
+#: timestamp expired).
+PERMANENT_GET_CODES = frozenset({"40008", "40309"})
 
 _SENSITIVE_TOKENS = ("ACCESS-KEY", "ACCESS-SIGN", "ACCESS-PASSPHRASE", "ACCESS-TIMESTAMP")
+
+
+def get_backoff_delay(attempt: int, *, base: float, cap: float) -> float:
+    """Return the deterministic, jitter-free delay before retry ``attempt`` (0-based).
+
+    Jitter is deliberately excluded: the whole point of the retry is to make the
+    monitor's polling cadence gentler on a shared per-UID limit, and a test must
+    be able to assert the exact schedule. Doubling saturates at ``cap``.
+    """
+    if attempt < 0:
+        raise ValueError("attempt must be non-negative")
+    delay: float = base * (2**attempt)
+    return min(delay, cap)
+
+
+def is_retryable_business_code(code: str) -> bool:
+    """Return True only for codes a retry can actually clear."""
+    if code in PERMANENT_GET_CODES:
+        return False
+    return code in RETRYABLE_GET_CODES
 
 
 class BitgetApiError(Exception):
@@ -92,6 +135,9 @@ class BitgetRestClient:
         max_get_retries: int = DEFAULT_MAX_GET_RETRIES,
         transport: httpx.AsyncBaseTransport | None = None,
         client: httpx.AsyncClient | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        get_backoff_base: float = DEFAULT_GET_BACKOFF_BASE,
+        get_backoff_cap: float = DEFAULT_GET_BACKOFF_CAP,
     ) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
@@ -102,6 +148,9 @@ class BitgetRestClient:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_get_retries = max_get_retries
+        self._sleep = sleep or asyncio.sleep
+        self._get_backoff_base = get_backoff_base
+        self._get_backoff_cap = get_backoff_cap
         if client is not None:
             self._client = client
             self._owns_client = False
@@ -156,13 +205,6 @@ class BitgetRestClient:
     ) -> Any:
         query = canonical_query_string(params)
         body = compact_body(payload) if method.upper() != "GET" else ""
-        timestamp = str(int(time.time() * 1000))
-        signature = build_signature(self._api_secret, timestamp, method, path, query, body)
-        headers = self._signed_headers(
-            timestamp,
-            signature,
-            include_demo_header=not path.startswith("/api/v2/public/"),
-        )
         url = path if not query else f"{path}?{query}"
         content = body.encode("utf-8") if body else None
         retryable = method.upper() == "GET"
@@ -170,21 +212,36 @@ class BitgetRestClient:
         attempts = 1 + (self._max_get_retries if retryable else 0)
         last_error: Exception | None = None
         for attempt in range(attempts):
+            last_attempt = attempt >= attempts - 1
+            # Re-sign per attempt: a retry that replays the original timestamp can
+            # be rejected as an expired signature (40008), which would turn a
+            # recoverable rate limit into a permanent failure.
+            timestamp = str(int(time.time() * 1000))
+            signature = build_signature(self._api_secret, timestamp, method, path, query, body)
+            headers = self._signed_headers(
+                timestamp,
+                signature,
+                include_demo_header=not path.startswith("/api/v2/public/"),
+            )
             try:
                 response = await self._client.request(
                     method.upper(), url, headers=headers, content=content
                 )
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
-                if retryable and attempt < attempts - 1:
+                if retryable and not last_attempt:
+                    await self._backoff(attempt)
                     continue
                 if retryable:
                     raise BitgetApiError(f"Bitget GET {path} transport failure") from None
                 raise BitgetUnknownResultError(
                     f"Bitget POST {path} result unknown: transport failure"
                 ) from None
-            if response.status_code >= 500 and retryable and attempt < attempts - 1:
+            if retryable and response.status_code in RETRYABLE_GET_STATUSES and not last_attempt:
+                # 429 is Bitget's documented frequency limit; 5xx is the
+                # pre-existing retry set. Both are retried with a bounded delay.
                 last_error = None
+                await self._backoff(attempt)
                 continue
             if response.status_code >= 500 and not retryable:
                 raise BitgetUnknownResultError(
@@ -206,6 +263,10 @@ class BitgetRestClient:
                     code = str(error_payload.get("code", ""))
                     msg = str(error_payload.get("msg", ""))
                     if code or msg:
+                        if retryable and not last_attempt and is_retryable_business_code(code):
+                            last_error = None
+                            await self._backoff(attempt)
+                            continue
                         raise BitgetApiError(
                             f"Bitget {method.upper()} {path} HTTP {response.status_code}: "
                             f"{code} {msg}".strip(),
@@ -225,6 +286,18 @@ class BitgetRestClient:
                         f"Bitget POST {path} result unknown: invalid JSON acknowledgement"
                     ) from None
                 raise BitgetApiError(f"Bitget {path} invalid JSON") from exc
+            if (
+                retryable
+                and not last_attempt
+                and isinstance(envelope, dict)
+                and is_retryable_business_code(str(envelope.get("code", "")))
+            ):
+                # HTTP 200 with a rate-limit business code: Bitget accepted the
+                # request and refused to serve it. Retriable; a permanent code is
+                # not, and must keep raising.
+                last_error = None
+                await self._backoff(attempt)
+                continue
             if not retryable and (
                 not isinstance(envelope, dict)
                 or not isinstance(envelope.get("code"), str)
@@ -235,6 +308,15 @@ class BitgetRestClient:
                 )
             return _envelope_data(envelope)
         raise BitgetApiError(f"Bitget GET {path} transport failure") from last_error
+
+    async def _backoff(self, attempt: int) -> None:
+        """Sleep the deterministic delay before the next GET attempt.
+
+        Injected in tests so a retry schedule can be asserted without wall time.
+        """
+        await self._sleep(
+            get_backoff_delay(attempt, base=self._get_backoff_base, cap=self._get_backoff_cap)
+        )
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         return await self._request("GET", path, params=params)

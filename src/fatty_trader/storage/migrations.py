@@ -344,6 +344,23 @@ MIGRATIONS: Final = [
     (21, INTAKE_COVERAGE_SCHEMA_SQL),
     (22, FALLBACK_OWNERSHIP_SCHEMA_SQL),
     (23, VERIFIED_CLOSE_SCHEMA_SQL),
+    # A re-latch used to overwrite ``updated_at`` and never recorded a first-seen
+    # time, so an outage that spanned several latch cycles had no recoverable
+    # start and its duration was uncomputable. ``last_latched_at`` records the most
+    # recent latch; the backfill fills both columns from ``updated_at`` for rows
+    # that were already active, which is a real observed lower bound rather than a
+    # fabricated "now".
+    (
+        24,
+        """
+        ALTER TABLE venue_kill_switches
+        ADD COLUMN last_latched_at TIMESTAMPTZ;
+        UPDATE venue_kill_switches
+        SET latched_at = COALESCE(latched_at, updated_at),
+            last_latched_at = COALESCE(last_latched_at, updated_at)
+        WHERE active = TRUE;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

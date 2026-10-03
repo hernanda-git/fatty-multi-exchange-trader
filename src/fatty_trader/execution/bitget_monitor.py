@@ -7,6 +7,7 @@ is treated as a latchable anomaly so it blocks new entries across restarts.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -23,6 +24,33 @@ from fatty_trader.execution.protection import ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
 
 _ALERT_ONLY_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
+
+logger = logging.getLogger(__name__)
+
+
+def provider_read_failure_reason(prefix: str, exc: Exception) -> str:
+    """Return a machine-parseable reason that names the real cause of a read failure.
+
+    A single collapsed string for every provider read failure made a transient
+    transport blip indistinguishable from a changed response contract, so no
+    retained log could prove which one happened. The exception class and the
+    provider business code (when present) are part of the reason and of the
+    ``<prefix>-`` segment boundary, so alerting on ``<prefix>-read-failed:``
+    still groups by cause class.
+
+    Shared with the protection watchdog so the two workers cannot drift into two
+    spellings of the same failure.
+    """
+    reason = f"{prefix}-read-failed:{type(exc).__name__}"
+    code = getattr(exc, "code", None)
+    if code:
+        return f"{reason}:{code}"
+    return reason
+
+
+def provider_shape_invalid_reason(prefix: str) -> str:
+    """Return the reason for a well-formed response that violates the shape contract."""
+    return f"{prefix}-shape-invalid"
 
 
 class BitgetMonitorClient(Protocol):
@@ -71,11 +99,9 @@ class BitgetMonitor:
         await self._reconcile_unresolved_intents(reasons)
         provider_exits_reconciled = await self._reconcile_provider_exits(reasons)
         positions = await self._read_rows(
-            self._client.get_all_positions, "provider-positions-invalid", reasons
+            self._client.get_all_positions, "provider-positions", reasons
         )
-        orders = await self._read_rows(
-            self._client.get_pending_orders, "provider-orders-invalid", reasons
-        )
+        orders = await self._read_rows(self._client.get_pending_orders, "provider-orders", reasons)
         await self._check_positions(positions, reasons)
         self._check_orders(orders, reasons)
         # A post-fill margin/leverage mismatch is durable evidence that a position is
@@ -165,13 +191,23 @@ class BitgetMonitor:
             return 0
         try:
             raw_fills = await self._client.get_fills(None)
-        except Exception:
-            reasons.append("provider-fills-invalid")
+        except Exception as exc:
+            reason = provider_read_failure_reason("provider-fills", exc)
+            logger.exception(
+                "component=bitget-monitor state=provider-read-failed reason=%s", reason
+            )
+            reasons.append(reason)
             return 0
         if isinstance(raw_fills, dict):
             raw_fills = raw_fills.get("fillList", [])
         if not isinstance(raw_fills, list) or not all(isinstance(fill, dict) for fill in raw_fills):
-            reasons.append("provider-fills-invalid")
+            reason = provider_shape_invalid_reason("provider-fills")
+            logger.error(
+                "component=bitget-monitor state=provider-shape-invalid reason=%s observed_type=%s",
+                reason,
+                type(raw_fills).__name__,
+            )
+            reasons.append(reason)
             return 0
         reconciled = 0
         for fill in raw_fills:
@@ -189,18 +225,28 @@ class BitgetMonitor:
     async def _read_rows(
         self,
         reader: Callable[[], Awaitable[Any]],
-        invalid_reason: str,
+        prefix: str,
         reasons: list[str],
     ) -> list[dict[str, Any]]:
         try:
             result = await reader()
-        except Exception:
-            reasons.append(invalid_reason)
+        except Exception as exc:
+            reason = provider_read_failure_reason(prefix, exc)
+            logger.exception(
+                "component=bitget-monitor state=provider-read-failed reason=%s", reason
+            )
+            reasons.append(reason)
             return []
         if isinstance(result, dict) and set(result) <= {"entrustedList", "endId"}:
             result = result.get("entrustedList") or []
         if not isinstance(result, list) or not all(isinstance(row, dict) for row in result):
-            reasons.append(invalid_reason)
+            reason = provider_shape_invalid_reason(prefix)
+            logger.error(
+                "component=bitget-monitor state=provider-shape-invalid reason=%s observed_type=%s",
+                reason,
+                type(result).__name__,
+            )
+            reasons.append(reason)
             return []
         return result
 

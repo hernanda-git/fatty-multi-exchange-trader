@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import uuid4
@@ -32,6 +33,7 @@ class ReconciliationRepository(Protocol):
     def kill_switch_active(self, scope: str) -> bool: ...
     def latch_kill_switch(self, scope: str, reason: str) -> None: ...
     def release_kill_switch(self, scope: str, approval_reference: str) -> None: ...
+    def kill_switch_latch_times(self, scope: str) -> tuple[Any, Any] | None: ...
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool: ...
 
 
@@ -47,10 +49,14 @@ class InMemoryReconciliationRepository:
         *,
         intents: list[LiveIntentRecord] | None = None,
         expected_symbols: set[str] | None = None,
+        clock: Callable[[], Any] | None = None,
     ) -> None:
         self.intents = [replace(intent) for intent in intents or []]
         self._expected_symbols = set(expected_symbols or set())
         self._kill_switches: set[str] = set()
+        self._latched_at: dict[str, Any] = {}
+        self._last_latched_at: dict[str, Any] = {}
+        self._clock = clock
         self._alert_keys: set[tuple[str, str]] = set()
         self._unhandled_mismatches: set[str] = set()
         self.alerts: list[str] = []
@@ -81,7 +87,15 @@ class InMemoryReconciliationRepository:
         return scope in self._kill_switches
 
     def latch_kill_switch(self, scope: str, reason: str) -> None:
-        self._kill_switches.add(scope)
+        # A re-latch must not move the first-seen time: the outage start is the
+        # only thing that makes the duration computable after several cycles.
+        if scope not in self._kill_switches:
+            stamp = self._now()
+            self._latched_at[scope] = stamp
+            self._last_latched_at[scope] = stamp
+            self._kill_switches.add(scope)
+        else:
+            self._last_latched_at[scope] = self._now()
         key = (scope, reason)
         if key not in self._alert_keys:
             self._alert_keys.add(key)
@@ -91,8 +105,21 @@ class InMemoryReconciliationRepository:
         if not approval_reference.strip():
             raise ValueError("approval reference is required")
         self._kill_switches.discard(scope)
+        self._latched_at.pop(scope, None)
+        self._last_latched_at.pop(scope, None)
         # A release also handles any mismatch recorded before it.
         self._unhandled_mismatches.discard(scope)
+
+    def kill_switch_latch_times(self, scope: str) -> tuple[Any, Any] | None:
+        """Return ``(first_latched_at, last_latched_at)``, or None when not latched."""
+        if scope not in self._kill_switches:
+            return None
+        return (self._latched_at.get(scope), self._last_latched_at.get(scope))
+
+    def _now(self) -> Any:
+        if self._clock is not None:
+            return self._clock()
+        return datetime.now(UTC)
 
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
         return scope in self._unhandled_mismatches
@@ -184,6 +211,9 @@ class PostgresReconciliationRepository:
                 """INSERT INTO venue_kill_switches (scope, active, reason, latched_at, updated_at)
                    VALUES (%s, TRUE, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                    ON CONFLICT (scope) DO UPDATE SET active = TRUE, reason = EXCLUDED.reason,
+                       latched_at = COALESCE(venue_kill_switches.latched_at,
+                                              EXCLUDED.latched_at),
+                       last_latched_at = CURRENT_TIMESTAMP,
                        updated_at = CURRENT_TIMESTAMP""",
                 (scope, reason),
             )
@@ -206,6 +236,36 @@ class PostgresReconciliationRepository:
         except Exception:
             connection.rollback()
             raise
+
+    def kill_switch_latch_times(self, scope: str) -> tuple[Any, Any] | None:
+        """Return ``(first_latched_at, last_latched_at)``, or None when not latched.
+
+        ``latched_at`` is the outage start and survives every re-latch;
+        ``last_latched_at`` is the most recent latch cycle. An inactive or unknown
+        scope returns None so a released switch can never be read as a
+        zero-duration outage.
+        """
+        connection = self._connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            """SELECT active, latched_at, last_latched_at FROM venue_kill_switches
+               WHERE scope = %s""",
+            (scope,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            active, latched_at, last_latched_at = (
+                row["active"],
+                row["latched_at"],
+                row["last_latched_at"],
+            )
+        else:
+            active, latched_at, last_latched_at = row[0], row[1], row[2]
+        if not bool(active):
+            return None
+        return (latched_at, last_latched_at)
 
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
         """Return whether a post-fill mismatch was recorded since the last release.
@@ -241,7 +301,8 @@ class PostgresReconciliationRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """UPDATE venue_kill_switches
-                   SET active = FALSE, reason = %s, updated_at = CURRENT_TIMESTAMP
+                   SET active = FALSE, reason = %s, latched_at = NULL, last_latched_at = NULL,
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE scope = %s""",
                 (f"released:{approval_reference.strip()}", scope),
             )

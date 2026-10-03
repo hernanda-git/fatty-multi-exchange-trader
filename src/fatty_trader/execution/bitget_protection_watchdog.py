@@ -20,6 +20,7 @@ positions that need it. See ``PROTECTION_STREAM_SCOPE``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -30,7 +31,10 @@ from fatty_trader.exchanges.bitget.protection_capability import (
     NativeProtectionState,
     StreamState,
 )
+from fatty_trader.execution.bitget_monitor import provider_read_failure_reason
 from fatty_trader.storage.protection_capabilities import ProtectionCapabilityRepository
+
+logger = logging.getLogger(__name__)
 
 #: Dedicated kill-switch scope for protection-stream failure.
 #:
@@ -41,6 +45,19 @@ PROTECTION_STREAM_SCOPE = "bitget-protection-stream"
 #: Socket states that mean there is no usable authenticated session. RECONNECTING
 #: and STALE are excluded: they can describe a live connection in a bad moment.
 _DEAD_SOCKET_STATES = frozenset({"FAILED", "DISCONNECTED"})
+
+#: Prefix shared by every provider position read failure reason, whatever the cause.
+_POSITION_READ_FAILURE_PREFIX = "provider-position-read-failed"
+
+
+def _read_failure_reason(reasons: tuple[str, ...] | list[str]) -> str | None:
+    """Return the first provider position read failure reason, with its cause intact."""
+    for reason in reasons:
+        if reason.startswith(f"{_POSITION_READ_FAILURE_PREFIX}:"):
+            return reason
+        if reason == _POSITION_READ_FAILURE_PREFIX:
+            return reason
+    return None
 
 
 class WatchdogStatus(StrEnum):
@@ -139,11 +156,21 @@ class BitgetProtectionWatchdog:
             read_ok = True
             try:
                 positions = await self._read_position(symbol)
-            except Exception:
+            except Exception as exc:
                 read_ok = False
                 provider_failure = True
-                if "provider-position-read-failed" not in reasons:
-                    reasons.append("provider-position-read-failed")
+                # Name the cause: a transport blip and a permissions rejection are
+                # not the same incident and the retained log must say which it was.
+                reason = provider_read_failure_reason("provider-position", exc)
+                logger.error(
+                    "component=bitget-protection-watchdog state=provider-read-failed "
+                    "scope=%s symbol=%s reason=%s",
+                    self._environment,
+                    symbol,
+                    reason,
+                    exc_info=True,
+                )
+                reasons.append(reason)
             else:
                 if not isinstance(positions, list) or not all(
                     isinstance(position, dict) for position in positions
@@ -184,7 +211,7 @@ class BitgetProtectionWatchdog:
                     if stream_fresh and read_ok
                     else "protection-stream-stale"
                     if not stream_fresh
-                    else "provider-position-read-failed"
+                    else _read_failure_reason(reasons) or "provider-position-read-failed"
                 ),
             )
 
@@ -231,13 +258,17 @@ class BitgetProtectionWatchdog:
         # A provider read failure is the more severe signal: we cannot even
         # confirm what is open, so report that rather than the stream symptom.
         for candidate in (
-            "provider-position-read-failed",
             "provider-position-invalid",
             "socket-not-connected",
         ):
             if candidate in reasons:
                 reason = candidate
                 break
+        # The provider read failure carries the cause, so match it by prefix: the
+        # concrete reason string ("...:BitgetApiError:00000") is what gets latched.
+        read_failure = _read_failure_reason(reasons)
+        if read_failure is not None:
+            reason = read_failure
         self._latch(reason)
 
     def _is_latched(self) -> bool:
