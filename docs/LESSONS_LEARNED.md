@@ -4,6 +4,26 @@ This is an evolving remediation candidate. Runtime gates, tests, code review,
 CI, merge and deployment are separate acceptance states. See
 [verification gates](remediation-verification.md).
 
+## Atomic final ENTRY permission
+
+- Alternating unlocked kill and source reads cannot prove final permission:
+  either read may block while the other veto changes. Lock the source ownership
+  first, fence all kill-table writes (including insertion of absent scopes), then
+  recompute database-clock SOURCE eligibility. Hold that transaction only through
+  the single ENTRY POST; release it before GET reconciliation or post-fill latches.
+- The PostgreSQL regression in `tests/e2e/test_bitget_final_permission_postgres.py`
+  first reproduced both global/Bitget late latches crossing the offline POST, then
+  verified rejection with zero POSTs. It also observes a later INSERT waiting on
+  the held fence via `pg_stat_activity`; no provider network calls are used.
+- A kill latch requested after permission wins must wait until the in-flight POST
+  exits. This establishes ordering, not cancellation of an already-authorized
+  HTTP request. The table SHARE lock also delays unrelated kill scopes, and source
+  row locks delay source updates during that POST. Production latency/permissions
+  and deployment have not been verified; this is a local remediation candidate.
+- A port stated by delegation may not match a surviving disposable PostgreSQL
+  instance. The requested port 55442 was unavailable; the disposable socket's
+  default port worked. Use a separate test database, never a production DSN.
+
 ## Provider contracts
 
 - Position TPSL market execution permits omitted execute-price fields. Validate

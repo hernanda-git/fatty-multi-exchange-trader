@@ -106,6 +106,38 @@ def _admitted_intent() -> LiveIntentRecord:
 
 
 @pytest.mark.asyncio
+async def test_permission_fence_covers_post_but_not_readback() -> None:
+    from contextlib import contextmanager
+
+    held = False
+
+    @contextmanager
+    def permission():
+        nonlocal held
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    class Client(FakeAsyncClient):
+        async def place_entry_order(self, **kwargs):
+            assert held, "ENTRY POST must hold the permission fence"
+            return await super().place_entry_order(**kwargs)
+
+        async def get_order_detail(self, symbol, *, client_oid):
+            assert not held, "GET reconciliation must not hold the kill fence"
+            return await super().get_order_detail(symbol, client_oid=client_oid)
+
+    client = Client()
+    await AsyncBitgetExecution(client, AsyncBitgetVenue(client)).submit_entry_guarded(
+        _admitted_intent(), permission
+    )
+    assert len(client.entry_calls) == 1
+    assert not held
+
+
+@pytest.mark.asyncio
 async def test_adapter_closes_the_owned_rest_client() -> None:
     client = FakeAsyncClient()
     client.closed = False

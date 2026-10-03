@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -213,13 +214,18 @@ class AsyncBitgetExecution:
         return await self._submit_entry(intent)
 
     async def submit_entry_guarded(
-        self, intent: LiveIntentRecord, final_entry_check: Callable[[], None]
+        self,
+        intent: LiveIntentRecord,
+        final_entry_check: Callable[[], AbstractContextManager[None] | None],
     ) -> AsyncExecutionResult:
         """Revalidate source and durable admission after awaited provider setup."""
         return await self._submit_entry(intent, final_entry_check=final_entry_check)
 
     async def _submit_entry(
-        self, intent: LiveIntentRecord, *, final_entry_check: Callable[[], None] | None = None
+        self,
+        intent: LiveIntentRecord,
+        *,
+        final_entry_check: Callable[[], AbstractContextManager[None] | None] | None = None,
     ) -> AsyncExecutionResult:
         if self._degraded:
             raise RuntimeError("Bitget execution is degraded; additional dispatches are blocked")
@@ -238,16 +244,16 @@ class AsyncBitgetExecution:
             planned_leverage = intent.planned_leverage
             assert planned_leverage is not None
             await self._venue.ensure_leverage(intent.symbol, planned_leverage)
-        if final_entry_check is not None:
-            # No await may intervene between this winning-claim check and POST.
-            final_entry_check()
+        permission = final_entry_check() if final_entry_check is not None else None
         try:
-            submitted = await self._client.place_entry_order(
-                symbol=intent.symbol,
-                side=intent.side,
-                quantity=str(intent.requested_qty),
-                client_oid=intent.client_oid,
-            )
+            # Release the source/kill fence before any GET or post-fill latch.
+            with permission or nullcontext():
+                submitted = await self._client.place_entry_order(
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    quantity=str(intent.requested_qty),
+                    client_oid=intent.client_oid,
+                )
         except (BitgetUnknownResultError, TimeoutError):
             result = await self.reconcile_intent(intent)
         else:
