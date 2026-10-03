@@ -233,15 +233,29 @@ def main() -> int:
         "-lc",
         env_command,
     )
-    source_check = (
-        "from pathlib import Path; import json; "
-        "text=Path('src/fatty_trader/execution/bitget_dispatch_repository.py').read_text(); "
-        "start=text.index('_RESERVE_CANARY_ENTRY_SQL'); "
-        "snippet=text[start:start+1500]; "
-        "print(json.dumps({'joins_dispatches': "
-        "'JOIN dispatches reserved_dispatch' in snippet, "
-        "'filters_terminal_states': 'reserved_dispatch.state NOT IN' in snippet}))"
-    )
+    # Inspect the whole literal without importing/executing the deployed repository.
+    # SQL aliases are not a safety contract, and a fixed window can truncate guards.
+    source_check = """
+import ast
+import json
+import re
+from pathlib import Path
+
+tree = ast.parse(Path('src/fatty_trader/execution/bitget_dispatch_repository.py').read_text())
+sql = next(ast.literal_eval(node.value) for node in tree.body
+           if isinstance(node, ast.Assign)
+           and any(isinstance(target, ast.Name) and target.id == '_RESERVE_CANARY_ENTRY_SQL'
+                   for target in node.targets))
+join = re.search(r'\\bJOIN\\s+dispatches\\s+(?:AS\\s+)?(\\w+)', sql, re.I)
+states = None if join is None else re.search(
+    rf'\\b{re.escape(join[1])}\\.state\\s+NOT\\s+IN\\s*\\(([^)]*)\\)', sql, re.I)
+terminal = {'FILLED', 'REJECTED', 'CANCELLED', 'RECONCILED'}
+print(json.dumps({
+    'joins_dispatches': join is not None,
+    'filters_terminal_states': states is not None and terminal.issubset(
+        set(re.findall(r"'([^']*)'", states[1]))),
+}))
+"""
     deployed_source = compose_exec(
         "dispatcher-bitget",
         "/app/.venv/bin/python",
