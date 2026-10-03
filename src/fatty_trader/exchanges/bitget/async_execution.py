@@ -386,6 +386,7 @@ class AsyncBitgetExecution:
                 provider_fills=outcome.provider_fills,
             )
         fills = await self._client.get_fills(intent.symbol)
+        fills_complete = not isinstance(fills, dict) or not fills.get("endId")
         if isinstance(fills, dict):
             fills = fills.get("fillList", [])
         if not isinstance(detail, dict):
@@ -417,6 +418,8 @@ class AsyncBitgetExecution:
                     if submitted is not None
                     else LiveOrderStatus.UNKNOWN
                 )
+            if not fills_complete:
+                status = LiveOrderStatus.UNKNOWN
             return AsyncExecutionResult(
                 client_oid=intent.client_oid,
                 status=status,
@@ -428,13 +431,31 @@ class AsyncBitgetExecution:
                 provider_fills=tuple(typed_fills),
             )
         detail_filled_qty = _detail_decimal(detail, "filledQty", "filledSize", "baseVolume")
-        if filled_qty <= 0 and detail_filled_qty is not None:
-            filled_qty = detail_filled_qty
-            avg_price = _detail_decimal(detail, "avgPrice", "priceAvg", "averagePrice")
+        known_quantity = max(filled_qty, detail_filled_qty or Decimal("0"), intent.filled_qty)
         status = classify_live_order(detail, typed_fills)
-        if status is LiveOrderStatus.ACCEPTED and typed_fills:
-            status = LiveOrderStatus.FILLED
-            filled_qty = intent.requested_qty
+        if known_quantity > filled_qty:
+            # A fill page is not a complete ledger when detail/durable evidence
+            # proves more exposure. Preserve the quantity floor and real fills,
+            # but never treat that smaller page as protection-ready execution.
+            status = LiveOrderStatus.UNKNOWN
+            filled_qty = known_quantity
+            avg_price = (
+                _detail_decimal(detail, "avgPrice", "priceAvg", "averagePrice")
+                if detail_filled_qty == known_quantity
+                else intent.avg_price
+            )
+            # GET pages can age out previously recorded trades. Retain that
+            # real evidence without counting the same provider trade twice.
+            for previous in intent.provider_fills:
+                previous_id = previous.get("fillId", previous.get("tradeId", previous.get("id")))
+                if previous_id is not None and str(previous_id) not in fill_ids:
+                    typed_fills.append(normalize_fill(previous))
+                    fill_ids = (*fill_ids, str(previous_id))
+            evidence_qty, _, fee, _ = summarize_fills(typed_fills)
+            filled_qty = max(filled_qty, evidence_qty)
+            fill_ids = tuple(dict.fromkeys((*intent.provider_fill_ids, *fill_ids)))
+        if not fills_complete:
+            status = LiveOrderStatus.UNKNOWN
         return AsyncExecutionResult(
             client_oid=intent.client_oid,
             status=status,
