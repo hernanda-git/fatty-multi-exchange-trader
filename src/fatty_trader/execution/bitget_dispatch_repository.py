@@ -163,7 +163,9 @@ class PostgresBitgetDispatchRepository:
     def recovery_candidates(self) -> list[tuple[BitgetDispatch, str]]:
         """Load canonical expectations for durable owned ENTRYs, not just active margin.
 
-        Consumed reservations and FILLED dispatches deliberately remain eligible.
+        Consumed reservations and FILLED dispatches deliberately remain eligible
+        unless an exact verified-close binding and release receipt retire their
+        canonical ownership. Generic released/flat/reconciled labels are not proof.
         A lost canonical source raises rather than silently declaring recovery ready.
         Legacy entries without reservation ownership require a separate migration/
         operator reconciliation; this API never adopts a manual provider position.
@@ -184,6 +186,26 @@ class PostgresBitgetDispatchRepository:
                    WHERE i.exchange = 'bitget' AND i.role = 'ENTRY'
                      AND (i.filled_qty > 0 OR i.state NOT IN
                           ('rejected', 'cancelled', 'reconciled'))
+                     AND NOT EXISTS (
+                         SELECT 1 FROM bitget_verified_close_bindings b
+                         JOIN live_order_intents x ON x.exchange = b.exchange
+                             AND x.client_order_id = b.close_client_order_id
+                         WHERE b.exchange = i.exchange AND b.reservation_id = m.id
+                           AND m.state = 'released' AND m.resolved_at IS NOT NULL
+                           AND m.environment IN ('DEMO', 'LIVE')
+                           AND m.resolution_reason = 'verified-close:' || b.close_client_order_id
+                           AND d.source_type = 'canonical_signal'
+                           AND i.margin_reservation_id = m.id AND i.symbol = m.symbol
+                           AND i.state IN ('filled', 'reconciled') AND i.filled_qty > 0
+                           AND x.symbol = m.symbol
+                           AND x.side = CASE i.side WHEN 'BUY' THEN 'SELL' ELSE 'BUY' END
+                           AND x.role IN ('CLOSE', 'EMERGENCY_CLOSE', 'SL', 'TP')
+                           AND x.state IN ('filled', 'reconciled')
+                           AND x.provider_order_id IS NOT NULL AND x.provider_order_id <> ''
+                           AND x.requested_qty = x.filled_qty AND x.filled_qty = i.filled_qty
+                           AND x.created_at >= i.created_at AND x.created_at >= m.created_at
+                           AND x.created_at <= m.resolved_at
+                     )
                    ORDER BY d.created_at, d.id"""
             )
             rows = []

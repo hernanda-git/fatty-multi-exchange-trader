@@ -311,6 +311,13 @@ class BitgetDispatchExecution:
             self._store.update(intent)
             self._resolve_reservation(intent, "REJECTED")
             return "REJECTED"
+        # Kill-switch reads can block too. The final permission-granting read
+        # must use fresh SOURCE time after BOTH reads, with no await before POST.
+        if repository is not None and not repository.entry_source_eligible(dispatch.id):
+            intent.state = "rejected"
+            self._store.update(intent)
+            repository.entry_source_eligible(dispatch.id)
+            return "EXPIRED"
         return None
 
     async def reconcile_active_reservations(self) -> int:

@@ -318,3 +318,42 @@ async def test_acknowledged_entry_returns_without_a_protection_post() -> None:
     assert status == "ACKNOWLEDGED"
     assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
     assert execution.protect_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expiring_scope", ["global", "bitget"])
+async def test_source_expiring_during_final_kill_reads_never_posts(expiring_scope):
+    events = []
+
+    class Repository:
+        eligible = True
+
+        def entry_source_eligible(self, dispatch_id):
+            events.append("source")
+            return self.eligible
+
+    repository = Repository()
+
+    class KillSwitch:
+        reads = 0
+
+        def is_active(self, scope):
+            self.reads += 1
+            events.append(scope)
+            # Expire during the last veto, not the earlier post-claim veto.
+            if self.reads > 2 and scope == expiring_scope:
+                repository.eligible = False
+            return False
+
+    store = InMemoryLiveIntentStore()
+    execution = Execution(result=_result(LiveOrderStatus.ACCEPTED))
+    adapter = BitgetDispatchExecution(
+        execution, store, dispatch_repository=repository, kill_switch=KillSwitch()
+    )
+    outcome = await adapter.submit_entry(_dispatch(), _submission())
+
+    assert outcome == "EXPIRED"
+    assert execution.submit_calls == []
+    assert events[-3:] == ["bitget", "source", "source"]
+    stored = store.get(adapter.client_oid(_dispatch()))
+    assert stored is not None and stored.state == "rejected"
