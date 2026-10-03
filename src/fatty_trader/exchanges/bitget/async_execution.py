@@ -24,10 +24,15 @@ from fatty_trader.exchanges.bitget.protection_capability import (
     StreamState,
 )
 from fatty_trader.exchanges.bitget.read_model import read_position_state
-from fatty_trader.exchanges.bitget.reconciliation import classify_missing_detail
+from fatty_trader.exchanges.bitget.reconciliation import (
+    _complete_fills,
+    _preserve_confirmed_trades,
+    classify_missing_detail,
+)
 from fatty_trader.exchanges.bitget.reconciliation_live import (
     NativeProtectionExpectation,
     confirm_native_protection,
+    owned_opening_fill_side,
 )
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionReport, ProtectionState
 from fatty_trader.storage.live_intents import build_emergency_close_intent
@@ -359,7 +364,7 @@ class AsyncBitgetExecution:
                 detail_not_found = True
             else:
                 raise
-        if detail_not_found:
+        if detail_not_found or detail == {}:
             provider_order_id = (
                 (submitted or {}).get("orderId")
                 or (submitted or {}).get("providerOrderId")
@@ -385,10 +390,7 @@ class AsyncBitgetExecution:
                 provider_fill_ids=outcome.provider_fill_ids,
                 provider_fills=outcome.provider_fills,
             )
-        fills = await self._client.get_fills(intent.symbol)
-        fills_complete = not isinstance(fills, dict) or not fills.get("endId")
-        if isinstance(fills, dict):
-            fills = fills.get("fillList", [])
+        fills, fills_complete = _complete_fills(await self._client.get_fills(intent.symbol))
         if not isinstance(detail, dict):
             raise ValueError("Bitget order detail response must be an object")
         if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
@@ -404,36 +406,13 @@ class AsyncBitgetExecution:
             provider_order_id=str(provider_order_id) if provider_order_id is not None else None,
         )
         typed_fills = [normalize_fill(fill) for fill in matching_fills]
+        typed_fills, consistent = _preserve_confirmed_trades(intent, typed_fills)
+        fills_complete = fills_complete and consistent
         filled_qty, avg_price, fee, fill_ids = summarize_fills(typed_fills)
-        if not detail:
-            if filled_qty >= intent.requested_qty:
-                status = LiveOrderStatus.FILLED
-            elif filled_qty > 0:
-                status = LiveOrderStatus.PARTIAL
-            else:
-                status = (
-                    LiveOrderStatus.REJECTED
-                    if detail_not_found
-                    else LiveOrderStatus.ACCEPTED
-                    if submitted is not None
-                    else LiveOrderStatus.UNKNOWN
-                )
-            if not fills_complete:
-                status = LiveOrderStatus.UNKNOWN
-            return AsyncExecutionResult(
-                client_oid=intent.client_oid,
-                status=status,
-                filled_qty=filled_qty,
-                avg_price=avg_price,
-                fee=fee,
-                provider_order_id=str(provider_order_id) if provider_order_id else None,
-                provider_fill_ids=fill_ids,
-                provider_fills=tuple(typed_fills),
-            )
         detail_filled_qty = _detail_decimal(detail, "filledQty", "filledSize", "baseVolume")
         known_quantity = max(filled_qty, detail_filled_qty or Decimal("0"), intent.filled_qty)
         status = classify_live_order(detail, typed_fills)
-        if known_quantity > filled_qty:
+        if known_quantity > filled_qty or not set(intent.provider_fill_ids).issubset(fill_ids):
             # A fill page is not a complete ledger when detail/durable evidence
             # proves more exposure. Preserve the quantity floor and real fills,
             # but never treat that smaller page as protection-ready execution.
@@ -682,17 +661,14 @@ class AsyncBitgetExecution:
             or Decimal(str(position["total"])) != intent.filled_qty
         ):
             raise ValueError("fallback-position-identity-unproven")
-        fills = await self._client.get_fills(intent.symbol)
-        if isinstance(fills, dict):
-            fills = fills.get("fillList")
-        if not isinstance(fills, list):
+        fills, complete = _complete_fills(await self._client.get_fills(intent.symbol))
+        if not complete:
             raise ValueError("fallback-fill-evidence-unavailable")
         owned = [f for f in fills if f.get("orderId") == intent.provider_order_id]
         if not owned or any(
             f.get("symbol") != intent.symbol
             or f.get("clientOid") not in {None, intent.client_oid}
-            or f.get("side") != intent.side.lower()
-            or f.get("tradeSide") != "open"
+            or not owned_opening_fill_side(f, intent.side.lower())
             or not f.get("tradeId")
             or not isinstance(f.get("cTime"), str)
             or re.fullmatch(r"[1-9][0-9]*", f["cTime"]) is None

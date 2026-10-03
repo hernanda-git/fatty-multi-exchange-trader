@@ -22,6 +22,9 @@ from fatty_trader import service
         "empty",
         "callback-disabled",
         "dispatcher-unprotected",
+        "replacement-position",
+        "old-plan",
+        "missing-fill-epoch",
     ],
 )
 async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case):
@@ -52,6 +55,7 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
         takeProfitId="tp-id",
         leverage="1",
         marginSize="1",
+        cTime="1700000000000",
     )
     plans = [
         dict(
@@ -65,6 +69,7 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
             executePrice="0",
             size="0",
             planStatus="live",
+            cTime="1700000000100",
         )
         for kind, pid, leg, level in [
             ("pos_loss", "sl-id", "sl", "90"),
@@ -73,6 +78,10 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
     ]
     if case == "wrong-level":
         plans[0]["triggerPrice"] = "89"
+    if case == "replacement-position":
+        position["cTime"] = "1700000000200"
+    if case == "old-plan":
+        plans[0]["cTime"] = "1699999999999"
 
     class Provider:
         async def get_order_detail(self, symbol, *, client_oid):
@@ -90,6 +99,12 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
                     size="2",
                     price="100",
                     fee="0.2",
+                    symbol="BTCUSDT",
+                    side="buy",
+                    tradeSide="buy_single",
+                    posMode="one_way_mode",
+                    profit="0",
+                    cTime=None if case == "missing-fill-epoch" else "1700000000000",
                 )
             ]
 

@@ -16,6 +16,7 @@ from fatty_trader.exchanges.bitget.reconciliation_live import (
     NativeProtectionExpectation,
     canonical_provider_epoch,
     confirm_native_protection,
+    owned_opening_fill_side,
 )
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
@@ -42,6 +43,14 @@ class GetOnlyProtectionRecovery:
         ):
             return AsyncProtectionResult(
                 ProtectionState.DEGRADED, intent.filled_qty, "entry-fill-proof-missing"
+            )
+        if (
+            plan.symbol != intent.symbol
+            or plan.exchange.value != intent.exchange
+            or intent.side != ("BUY" if plan.direction.value == "LONG" else "SELL")
+        ):
+            return AsyncProtectionResult(
+                ProtectionState.DEGRADED, intent.filled_qty, "protection-entry-identity-mismatch"
             )
         if plan.quantity != intent.filled_qty:
             return AsyncProtectionResult(
@@ -117,7 +126,7 @@ class GetOnlyProtectionRecovery:
 def _entry_position_epoch(intent: LiveIntentRecord) -> str | None:
     """Require a complete owned opening-fill ledger, not just opaque fill IDs."""
     fills = intent.provider_fills
-    if not fills:
+    if not fills or intent.role != "ENTRY":
         return None
     epochs = []
     for fill in fills:
@@ -127,8 +136,7 @@ def _entry_position_epoch(intent: LiveIntentRecord) -> str | None:
             or fill.get("orderId") != intent.provider_order_id
             or fill.get("clientOid") not in {None, intent.client_oid}
             or fill.get("symbol") != intent.symbol
-            or fill.get("side") != intent.side.lower()
-            or fill.get("tradeSide") != "open"
+            or not owned_opening_fill_side(fill, intent.side.lower())
         ):
             return None
         epochs.append(epoch)

@@ -82,6 +82,33 @@ def canonical_provider_epoch(value: Any) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) else None
 
 
+def owned_opening_fill_side(fill: dict[str, Any], side: str) -> bool:
+    """Opening-compatible direction ONLY within an independently owned ENTRY.
+
+    *_single is buy/sell, not an opening assertion. Callers must additionally
+    prove order ownership, full quantity, and the exact provider position epoch.
+    """
+    if side not in {"buy", "sell"} or fill.get("side") != side:
+        return False
+    if fill.get("reduceOnly") not in {None, "NO", "no", False}:
+        return False
+    trade_side = fill.get("tradeSide")
+    if trade_side == "open":
+        return True
+    if fill.get("posMode") != "one_way_mode" or trade_side != side + "_single":
+        return False
+    if str(fill.get("enterPointSource", "")).lower() == "sys":
+        return False
+    if "profit" in fill:
+        try:
+            profit = Decimal(str(fill["profit"]))
+        except (InvalidOperation, ValueError, TypeError):
+            return False
+        if not profit.is_finite() or profit != 0:
+            return False
+    return True
+
+
 def _positive_decimal(payload: dict[str, Any], *fields: str) -> Decimal | None:
     for field in fields:
         raw = payload.get(field)

@@ -392,7 +392,7 @@ def classify_live_order(
     detail: Mapping[str, Any], fills: Sequence[Mapping[str, Any]]
 ) -> LiveOrderStatus:
     """Classify an entry from its read-back detail + fills."""
-    raw_status = str(detail.get("status", "")).strip().lower()
+    raw_status = str(detail.get("status", detail.get("state", ""))).strip().lower()
     if raw_status in _REJECTED_STATUSES:
         return LiveOrderStatus.REJECTED
     requested = _to_decimal(detail.get("requestedQty", detail.get("size", 0)))

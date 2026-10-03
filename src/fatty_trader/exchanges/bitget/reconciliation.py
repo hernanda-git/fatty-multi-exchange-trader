@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -31,13 +32,81 @@ class AmbiguousOrderResult:
 
 
 def _complete_fills(value: Any) -> tuple[list[dict[str, Any]], bool]:
-    if isinstance(value, list):
-        return value, all(isinstance(fill, dict) for fill in value)
-    if isinstance(value, dict):
-        rows = value.get("fillList")
-        if isinstance(rows, list) and all(isinstance(fill, dict) for fill in rows):
-            return rows, not value.get("endId")
-    return [], False
+    complete = isinstance(value, list) or (isinstance(value, dict) and value.get("endId") == "")
+    rows = (
+        value
+        if isinstance(value, list)
+        else value.get("fillList")
+        if isinstance(value, dict)
+        else None
+    )
+    if not isinstance(rows, list):
+        return [], False
+    valid: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            complete = False
+            continue
+        try:
+            raw_fee_detail = row.get("feeDetail")
+            if isinstance(raw_fee_detail, str):
+                raw_fee_detail = json.loads(raw_fee_detail)
+            if raw_fee_detail is not None:
+                fee_rows = [raw_fee_detail] if isinstance(raw_fee_detail, dict) else raw_fee_detail
+                if not isinstance(fee_rows, list) or not all(isinstance(f, dict) for f in fee_rows):
+                    raise ValueError("invalid-fee-detail")
+                for fee_row in fee_rows:
+                    raw_fee = next(
+                        (fee_row[k] for k in ("totalFee", "fee", "feeAmount") if k in fee_row), None
+                    )
+                    if raw_fee is None or not Decimal(str(raw_fee)).is_finite():
+                        raise ValueError("invalid-fee-amount")
+            for field in ("fee", "fillFee", "feeAmount"):
+                if field in row and not Decimal(str(row[field])).is_finite():
+                    raise ValueError("invalid-fee-amount")
+            qty, price, fee, ids = summarize_fills([row])
+            if (
+                not qty.is_finite()
+                or qty <= 0
+                or price is None
+                or not price.is_finite()
+                or not fee.is_finite()
+            ):
+                raise ValueError("invalid-fill-economics")
+            if any(fid in seen for fid in ids):
+                raise ValueError("duplicate-fill-id")
+        except (ArithmeticError, TypeError, ValueError):
+            complete = False
+            continue
+        valid.append(row)
+        seen.update(ids)
+    return valid, complete
+
+
+def _preserve_confirmed_trades(
+    intent: LiveIntentRecord, current: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Never erase or silently rewrite a durable provider trade's economics."""
+    rows = list(current)
+    consistent = True
+    for previous in intent.provider_fills:
+        _, _, _, previous_ids = summarize_fills([previous])
+        if len(previous_ids) != 1:
+            consistent = False
+            continue
+        fid = previous_ids[0]
+        index = next((i for i, row in enumerate(rows) if fid in summarize_fills([row])[3]), None)
+        if index is None:
+            rows.append(normalize_fill(previous))
+            consistent = False
+        elif summarize_fills([rows[index]]) != summarize_fills([previous]) or any(
+            field in previous and previous[field] != rows[index].get(field)
+            for field in ("orderId", "clientOid", "symbol", "side", "tradeSide", "posMode", "cTime")
+        ):
+            rows[index] = normalize_fill(previous)
+            consistent = False
+    return rows, consistent
 
 
 def _flat_position(value: Any, symbol: str) -> bool | None:
@@ -94,6 +163,8 @@ async def classify_missing_detail(
             and str(fill.get("orderId", fill.get("order_id"))) == provider_order_id
         )
     ]
+    matching, consistent = _preserve_confirmed_trades(intent, matching)
+    complete = complete and consistent
     filled_qty, avg_price, fee, fill_ids = summarize_fills(matching)
     flat = _flat_position(position, intent.symbol) is True
     no_pending = _no_pending_orders(pending, intent.symbol) is True
@@ -110,6 +181,18 @@ async def classify_missing_detail(
         if safe and missing_order_confirmed
         else LiveOrderStatus.UNKNOWN
     )
+    if filled_qty < intent.filled_qty or not set(intent.provider_fill_ids).issubset(fill_ids):
+        status = LiveOrderStatus.UNKNOWN
+        for previous in intent.provider_fills:
+            previous_id = previous.get("fillId", previous.get("tradeId", previous.get("id")))
+            if previous_id is not None and str(previous_id) not in fill_ids:
+                matching.append(normalize_fill(previous))
+                fill_ids = (*fill_ids, str(previous_id))
+        evidence_qty, _, evidence_fee, _ = summarize_fills(matching)
+        filled_qty = max(intent.filled_qty, evidence_qty)
+        avg_price = intent.avg_price
+        fee = evidence_fee if matching else intent.fee
+        fill_ids = tuple(dict.fromkeys((*intent.provider_fill_ids, *fill_ids)))
     return AmbiguousOrderResult(
         status,
         filled_qty,
@@ -168,11 +251,7 @@ async def reconcile_unknown_intent(
             LiveOrderStatus.UNKNOWN: "unknown",
         }[outcome.status]
         return intent
-    fills = await read_fills(intent.symbol)
-    if isinstance(fills, dict):
-        fills = fills.get("fillList", [])
-    if not isinstance(fills, list) or not all(isinstance(fill, dict) for fill in fills):
-        raise ValueError("provider-fills-invalid")
+    fills, complete = _complete_fills(await read_fills(intent.symbol))
     if provider_order_id is not None:
         intent.provider_order_id = str(provider_order_id)
     matching_fills = [
@@ -184,24 +263,40 @@ async def reconcile_unknown_intent(
             and str(fill.get("orderId", fill.get("order_id"))) == intent.provider_order_id
         )
     ]
+    matching_fills, consistent = _preserve_confirmed_trades(intent, matching_fills)
+    complete = complete and consistent
     filled_qty, avg_price, fee, fill_ids = summarize_fills(matching_fills)
+    status = classify_live_order(detail, matching_fills)
+    raw_detail_qty = next(
+        (detail[k] for k in ("filledQty", "filledSize", "baseVolume") if k in detail), "0"
+    )
+    try:
+        detail_qty = Decimal(str(raw_detail_qty))
+        if not detail_qty.is_finite() or detail_qty < 0:
+            raise ValueError("provider-detail-quantity-invalid")
+    except (ArithmeticError, TypeError, ValueError):
+        detail_qty = Decimal("0")
+        complete = False
+    known_qty = max(intent.filled_qty, detail_qty)
+    if filled_qty < known_qty or not set(intent.provider_fill_ids).issubset(fill_ids):
+        status = LiveOrderStatus.UNKNOWN
+        for previous in intent.provider_fills:
+            fid = previous.get("fillId", previous.get("tradeId", previous.get("id")))
+            if fid is not None and str(fid) not in fill_ids:
+                matching_fills.append(normalize_fill(previous))
+                fill_ids = (*fill_ids, str(fid))
+        evidence_qty, _, evidence_fee, _ = summarize_fills(matching_fills)
+        filled_qty = max(known_qty, evidence_qty)
+        avg_price = intent.avg_price
+        fee = evidence_fee if matching_fills else intent.fee
+        fill_ids = tuple(dict.fromkeys((*intent.provider_fill_ids, *fill_ids)))
+    if not complete or (status is LiveOrderStatus.FILLED and filled_qty <= 0):
+        status = LiveOrderStatus.UNKNOWN
     intent.filled_qty = filled_qty
     intent.avg_price = avg_price
     intent.fee = fee
     intent.provider_fill_ids = fill_ids
     intent.provider_fills = tuple(matching_fills)
-    if not detail:
-        status = (
-            LiveOrderStatus.FILLED
-            if filled_qty >= intent.requested_qty
-            else LiveOrderStatus.PARTIAL
-            if filled_qty > 0
-            else LiveOrderStatus.UNKNOWN
-        )
-    else:
-        status = classify_live_order(detail, matching_fills)
-        if status is LiveOrderStatus.FILLED and filled_qty <= 0:
-            status = LiveOrderStatus.UNKNOWN
     intent.state = {
         LiveOrderStatus.ACCEPTED: "acknowledged",
         LiveOrderStatus.PARTIAL: "partially_filled",

@@ -446,11 +446,67 @@ class BitgetRestClient:
         symbol: str | None = None,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
+        *,
+        max_pages: int = 20,
     ) -> Any:
-        params: dict[str, Any] = {"productType": product_type, "marginCoin": margin_coin}
+        """Bounded signed pagination; endId identifies the last trade, not has-more.
+
+        Only an explicit empty object page proves exhaustion. Null data is retained
+        as unknown: the official contract does not document null as an empty page.
+        Freeze the upper bound so new fills cannot shift the pagination window.
+        """
+        if not 1 <= max_pages <= 100:
+            raise ValueError("Bitget fill pagination bound must be between 1 and 100")
+        params: dict[str, Any] = {
+            "productType": product_type,
+            "marginCoin": margin_coin,
+            "limit": "100",
+            "endTime": str(int(time.time() * 1000)),
+        }
         if symbol is not None:
             params["symbol"] = symbol
-        return await self._get("/api/v2/mix/order/fills", params)
+        rows: list[dict[str, Any]] = []
+        pages: list[Any] = []
+        seen: set[str] = set()
+        cursor: str | None = None
+        for _ in range(max_pages):
+            try:
+                page = await self._get("/api/v2/mix/order/fills", params)
+            except BitgetApiError:
+                break
+            pages.append(page)
+            if not isinstance(page, dict) or not isinstance(page.get("fillList"), list):
+                break
+            batch = page["fillList"]
+            if not all(isinstance(row, dict) for row in batch) or len(batch) > 100:
+                break
+            end_id = page.get("endId")
+            if not batch:
+                if end_id == "":
+                    return {"fillList": rows, "endId": "", "pages": pages}
+                break
+            ids = [row.get("tradeId") for row in batch]
+            if any(
+                not isinstance(fid, str)
+                or not fid.isascii()
+                or not fid.isdigit()
+                or fid.startswith("0")
+                for fid in ids
+            ):
+                break
+            if len(set(ids)) != len(ids) or any(fid in seen for fid in ids):
+                break
+            if cursor is not None and any(int(fid) >= int(cursor) for fid in ids):
+                break
+            rows.extend(batch)
+            seen.update(ids)
+            if end_id != ids[-1] or any(
+                int(ids[i]) <= int(ids[i + 1]) for i in range(len(ids) - 1)
+            ):
+                break
+            cursor = end_id
+            params["idLessThan"] = cursor
+        return {"fillList": rows, "endId": cursor or "unproven", "pages": pages}
 
     async def get_single_position(
         self,

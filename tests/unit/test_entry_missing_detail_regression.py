@@ -41,7 +41,10 @@ async def classify(
             "price": "50000",
             "feeDetail": [{"totalFee": "-0.12", "feeCoin": "USDT"}],
         }
-        return {"fillList": [row], "endId": None if complete else "next-page"}
+        return {
+            "fillList": [row] if Decimal(quantity) > 0 else [],
+            "endId": "" if complete else "next-page",
+        }
 
     async def read_position(_: str) -> Any:
         return position
