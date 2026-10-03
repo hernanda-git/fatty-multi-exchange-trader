@@ -356,6 +356,11 @@ services:
       init:
         condition: service_completed_successfully
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "source-management", "--check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 # Linux-only, ephemeral metadata volumes. Sticky directories permit analyzer's
 # non-root UID; only its owner has RW access, web has RO, no other service mounts it.
