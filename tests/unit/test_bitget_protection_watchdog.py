@@ -137,7 +137,8 @@ async def test_stale_stream_blocks_symbol_and_marks_capability_stale(
 
 @pytest.mark.asyncio
 async def test_provider_read_failure_blocks_symbol_without_latching_global_switch(
-    repository: InMemoryProtectionCapabilityRepository, caplog,
+    repository: InMemoryProtectionCapabilityRepository,
+    caplog,
 ) -> None:
     async def read_position(_: str) -> list[dict[str, str]]:
         raise TimeoutError("provider unavailable")

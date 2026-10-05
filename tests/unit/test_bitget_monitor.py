@@ -127,7 +127,9 @@ async def test_clean_cycle_exposes_persisted_latch_separately_from_current_failu
 @pytest.mark.parametrize("endpoint", ["positions", "orders"])
 @pytest.mark.parametrize("failure", ["exception", "shape"])
 async def test_monitor_row_read_diagnostics_distinguish_exception_from_shape(
-    endpoint, failure, caplog,
+    endpoint,
+    failure,
+    caplog,
 ) -> None:
     venue = ReadOnlyVenue()
 
@@ -151,7 +153,9 @@ async def test_monitor_row_read_diagnostics_distinguish_exception_from_shape(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rate_limited_reads", [1, 3])
 async def test_real_rest_client_monitor_retries_transient_429_but_latches_exhaustion(
-    rate_limited_reads, monkeypatch, caplog,
+    rate_limited_reads,
+    monkeypatch,
+    caplog,
 ) -> None:
     import time
 

@@ -144,7 +144,9 @@ class BitgetProtectionWatchdog:
                 code = str(getattr(exc, "code", ""))
                 logging.getLogger(__name__).warning(
                     "reason=provider-position-read-failed exception=%s code=%s symbol=%s",
-                    type(exc).__name__, code if code.isdecimal() else "unavailable", symbol,
+                    type(exc).__name__,
+                    code if code.isdecimal() else "unavailable",
+                    symbol,
                 )
                 read_ok = False
                 provider_failure = True

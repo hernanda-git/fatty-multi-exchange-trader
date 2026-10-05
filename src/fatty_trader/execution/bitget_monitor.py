@@ -121,7 +121,8 @@ class BitgetMonitor:
             )
         if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
             return MonitorReport(
-                "kill-switch-latched", provider_exits_reconciled=provider_exits_reconciled,
+                "kill-switch-latched",
+                provider_exits_reconciled=provider_exits_reconciled,
                 latched_reason=self._repository.kill_switch_reason(self._scope),
             )
         return MonitorReport("ok", provider_exits_reconciled=provider_exits_reconciled)
@@ -174,7 +175,8 @@ class BitgetMonitor:
             http_status = getattr(exc, "http_status", None)
             logging.getLogger(__name__).warning(
                 "reason=provider-fills-read-failed exception=%s code=%s http_status=%s",
-                type(exc).__name__, code if code.isdecimal() else "unavailable",
+                type(exc).__name__,
+                code if code.isdecimal() else "unavailable",
                 http_status if isinstance(http_status, int) else "unavailable",
             )
             reasons.append("provider-fills-read-failed")
@@ -213,7 +215,9 @@ class BitgetMonitor:
             code = str(getattr(exc, "code", ""))
             logging.getLogger(__name__).warning(
                 "reason=%s exception=%s code=%s",
-                read_reason, type(exc).__name__, code if code.isdecimal() else "unavailable",
+                read_reason,
+                type(exc).__name__,
+                code if code.isdecimal() else "unavailable",
             )
             reasons.append(read_reason)
             return []

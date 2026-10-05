@@ -4,6 +4,7 @@ SQLite supports the CASE/COALESCE/ON CONFLICT subset used by this statement.
 Only parameter syntax and the test clock are translated. Outbox SQL is captured
 rather than executed (PostgreSQL JSONB); timestamp semantics run in a real engine.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -44,10 +45,12 @@ class MemorySQLConnection:
         self.db.rollback()
 
 
-@pytest.mark.parametrize("active,original", [(True, None), (True, "2026-10-04 09:00:00"),
-                                            (False, "2026-10-04 09:00:00")])
+@pytest.mark.parametrize(
+    "active,original", [(True, None), (True, "2026-10-04 09:00:00"), (False, "2026-10-04 09:00:00")]
+)
 def test_latch_sets_missing_timestamp_preserves_active_epoch_and_resets_released_epoch(
-    active, original,
+    active,
+    original,
 ):
     connection = MemorySQLConnection()
     connection.db.execute(

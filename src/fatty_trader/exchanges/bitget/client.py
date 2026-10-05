@@ -30,8 +30,12 @@ class BitgetApiError(Exception):
     """Provider-side or transport error with credentials redacted."""
 
     def __init__(
-        self, message: str, code: str = "", provider_msg: str = "",
-        *, http_status: int | None = None,
+        self,
+        message: str,
+        code: str = "",
+        provider_msg: str = "",
+        *,
+        http_status: int | None = None,
     ) -> None:
         super().__init__(redact(message))
         self.code = code
@@ -191,7 +195,7 @@ class BitgetRestClient:
             # Bitget documents HTTP 429 for REST rate limits. Only GETs may retry;
             # wait before re-signing rather than hammering the exhausted UID budget.
             if response.status_code == 429 and retryable and attempt < attempts - 1:
-                await asyncio.sleep(float(2 ** attempt))
+                await asyncio.sleep(float(2**attempt))
                 continue
             if response.status_code >= 500 and retryable and attempt < attempts - 1:
                 last_error = None
