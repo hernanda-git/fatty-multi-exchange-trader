@@ -243,6 +243,24 @@ def _two_leg_transport(marks: int = 1):
     return transport
 
 
+async def test_empty_fallback_registry_never_sends_empty_public_subscription():
+    transport = _two_leg_transport(marks=0)
+    socket = BitgetV2WebSocket(
+        api_key="k", api_secret="s", passphrase="p", symbols=[], transport=transport
+    )
+    try:
+        await socket.connect()
+        assert transport.public.sent == [], "Bitget rejects subscribe with args=[] (30002)"
+        assert socket.private_authenticated
+        assert "positions" in " ".join(transport.private.sent)
+        await socket.subscribe_symbols(["BTCUSDT"])
+        assert json.loads(transport.public.sent[0])["args"] == [
+            {"instType": "USDT-FUTURES", "channel": "ticker", "instId": "BTCUSDT"}
+        ]
+    finally:
+        await socket.close()
+
+
 async def test_silent_private_leg_is_not_healthy_even_while_public_ticks():
     transport = _two_leg_transport()
     clock = FakeClock()

@@ -204,7 +204,11 @@ class BitgetV2WebSocket:
             private = await self._transport.connect(self._private_url)
             self._private = private
 
-            await public.send(_json(build_v2_public_subscription(self._symbols, allow_empty=True)))
+            # A flat fallback registry needs private account updates but no tickers.
+            # Bitget rejects a public subscribe with args=[] (30002), causing a
+            # perpetual reconnect loop before the first protected entry arrives.
+            if self._symbols:
+                await public.send(_json(build_v2_public_subscription(self._symbols)))
             await private.send(
                 _json(
                     build_v2_login_message(
