@@ -311,15 +311,22 @@ class BitgetV2WebSocket:
         ready = self._drain_ready()
         if ready:
             return ready
-        if not ready:
-            try:
-                async with asyncio.timeout(self._heartbeat_interval * 2):
-                    await self._any_event.wait()
-            except TimeoutError as exc:
+        # Quiet accounts still need pings. Waiting for a frame for two heartbeat
+        # windows before sending the next ping starves both otherwise healthy legs.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._heartbeat_interval * 2
+        while not self._any_event.is_set():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
                 raise TimeoutError(
                     f"Bitget v2 websocket produced no frame for "
                     f"{self._heartbeat_interval * 2:.0f}s on either leg"
-                ) from exc
+                )
+            try:
+                async with asyncio.timeout(min(remaining, self._heartbeat_interval)):
+                    await self._any_event.wait()
+            except TimeoutError:
+                await self.send_heartbeat_if_due()
         return self._drain_ready()
 
     async def send_heartbeat_if_due(self) -> bool:
@@ -547,6 +554,9 @@ class BitgetV2WebSocket:
                     self._last_pong_at = now
                     if leg == "private":
                         self._last_private_activity_at = now
+                    # Wake the main receive loop even with no business events;
+                    # a pong is the account stream's idle liveness evidence.
+                    self._any_event.set()
                     continue
                 events = normalize_v2_frame(raw)
                 if leg == "private":

@@ -261,6 +261,41 @@ async def test_empty_fallback_registry_never_sends_empty_public_subscription():
         await socket.close()
 
 
+async def test_quiet_zero_symbol_session_keeps_heartbeat_without_reconnect():
+    transport = FakeTransport(private_script=[_LOGIN_OK])
+    for connection in (transport.public, transport.private):
+        original_send = connection.send
+
+        async def send(value, connection=connection, original_send=original_send):
+            await original_send(value)
+            if value == "ping":
+                connection.add("pong")
+
+        connection.send = send
+    socket = BitgetV2WebSocket(
+        api_key="k",
+        api_secret="s",
+        passphrase="p",
+        symbols=[],
+        transport=transport,
+        clock=asyncio.get_running_loop().time,
+        heartbeat_interval=0.02,
+        private_silent_after=0.06,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(socket.run(_noop, stop))
+    try:
+        await asyncio.sleep(0.15)
+        assert transport.public.sent.count("ping") >= 3
+        assert transport.private.sent.count("ping") >= 3
+        assert transport.urls == [V2_PUBLIC_URL, V2_PRIVATE_URL]
+        assert socket.private_authenticated and socket.check_freshness()
+    finally:
+        stop.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_silent_private_leg_is_not_healthy_even_while_public_ticks():
     transport = _two_leg_transport()
     clock = FakeClock()
