@@ -50,6 +50,12 @@ if printf '%s\n' "$kill_state" | grep -Eq '^(true|t):'; then
   exit 1
 fi
 
+# A flat provider account does not erase durable orphan/legacy ownership vetoes.
+if ! $compose_bin exec -T dispatcher-bitget /app/.venv/bin/python scripts/bitget_ledger_readiness.py; then
+  printf 'runtime_blocked=ledger_admission_unresolved action=preserve_evidence\n' >&2
+  exit 1
+fi
+
 # Compare copied Python source, not just the host Git SHA or an optional image label.
 source_probe='import hashlib, pathlib, sys
 root = pathlib.Path(sys.argv[1])

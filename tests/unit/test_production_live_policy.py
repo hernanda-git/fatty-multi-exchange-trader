@@ -131,6 +131,7 @@ def test_runtime_verifier_rejects_disabled_container_before_db_or_provider(tmp_p
         ("true:incident", "kill_switch_active"),
         ("true:stream-only", "kill_switch_active"),
         ("false:none", "source_lineage_mismatch"),
+        ("false:ledger", "ledger_admission_unresolved"),
     ],
 )
 def test_runtime_verifier_rejects_unsafe_runtime_without_provider_probe(
@@ -163,6 +164,8 @@ def test_runtime_verifier_rejects_unsafe_runtime_without_provider_probe(
         "elif args[0] == 'ps':\n"
         "    print('postgres dispatcher-bitget monitor-bitget')\n"
         "elif args[:2] == ['exec', '-T'] and args[2] != 'postgres':\n"
+        "    if 'bitget_ledger_readiness.py' in ' '.join(args):\n"
+        f"        sys.exit(2 if {kill_state!r} == 'false:ledger' else 0)\n"
         "    if 'bitget_api_probe.py' in ' '.join(args):\n"
         "        sys.exit('unexpected provider probe with active kill switch')\n"
         "    print('stale-source' if '-c' in args and 'sh' not in args else 'LIVE|LIVE|1')\n"
