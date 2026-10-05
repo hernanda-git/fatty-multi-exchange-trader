@@ -350,13 +350,20 @@ services:
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
       BITGET_MODE: ${BITGET_MODE:-LIVE}
-      BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
+      # Default CLOSED. This literal previously read "1", which overrode every
+      # .env/environment value and made a "mutation-closed" rollout untrue while
+      # this service could still POST close_reduce_only and replace_stop_loss.
+      # Enabling it now requires an explicit, reviewed .env value.
+      BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
     depends_on:
       init:
         condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
+      # Liveness only: this proves the worker cycles, NOT that it is safe to
+      # trade. A mutating worker with a healthcheck can carry a closed rollout to
+      # a false "healthy" reading, so read the effective mutation gate too.
       test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "source-management", "--check"]
       interval: 30s
       timeout: 10s

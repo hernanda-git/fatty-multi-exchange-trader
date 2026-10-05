@@ -66,6 +66,12 @@ def _complete_fills(value: Any) -> tuple[list[dict[str, Any]], bool]:
                 if field in row and not Decimal(str(row[field])).is_finite():
                     raise ValueError("invalid-fee-amount")
             qty, price, fee, ids = summarize_fills([row])
+            # A row without exactly one provider trade identity is not owned
+            # evidence. Accepting it lets an id-less row contribute quantity to a
+            # FILLED result whose provider_fill_ids is empty, which would leave a
+            # filled ENTRY with no owned fill ledger.
+            if len(ids) != 1:
+                raise ValueError("missing-fill-identity")
             if (
                 not qty.is_finite()
                 or qty <= 0

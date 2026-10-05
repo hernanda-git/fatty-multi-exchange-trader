@@ -93,9 +93,19 @@ def owned_opening_fill_side(fill: dict[str, Any], side: str) -> bool:
     if fill.get("reduceOnly") not in {None, "NO", "no", False}:
         return False
     trade_side = fill.get("tradeSide")
-    if trade_side == "open":
-        return True
-    if fill.get("posMode") != "one_way_mode" or trade_side != side + "_single":
+    # Every opening assertion must clear the SAME hostile-field guards. Returning
+    # early on the legacy literal "open" let a system-source fill, or one with
+    # non-zero PnL, supply opening-compatible proof that commit 55e6594 claimed
+    # to have closed.
+    #
+    # posMode is deliberately NOT required on the "open" branch: Bitget's
+    # hedge mode also reports tradeSide "open", and observed owned-opening
+    # fixtures omit posMode, so demanding it would refuse authentic evidence and
+    # fail closed into non-trading. On the *_single branch posMode IS required,
+    # because buy/sell is only a one-way-mode concept.
+    if trade_side not in {"open", side + "_single"}:
+        return False
+    if trade_side == side + "_single" and fill.get("posMode") != "one_way_mode":
         return False
     if str(fill.get("enterPointSource", "")).lower() == "sys":
         return False
