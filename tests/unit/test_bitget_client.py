@@ -423,6 +423,80 @@ async def test_get_retries_on_5xx_then_succeeds() -> None:
     await client.aclose()
 
 
+async def test_get_retries_http429_with_backoff_and_fresh_signatures(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from fatty_trader.exchanges.bitget import client as module
+
+    delays = []
+    times = iter([1000.0, 1001.0, 1002.0])
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: next(times)))
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", sleep)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if len(requests) < 3:
+            return httpx.Response(429, json={"code": "429", "msg": "rate limit"})
+        return httpx.Response(200, json=ok_envelope({"ok": True}))
+
+    client, _ = make_client(handler, max_get_retries=2)
+    try:
+        assert await client.get_ticker("BTCUSDT") == {"ok": True}
+    finally:
+        await client.aclose()
+    assert delays == [1.0, 2.0]
+    assert len({request.headers["ACCESS-TIMESTAMP"] for request in requests}) == 3
+    assert len({request.headers["ACCESS-SIGN"] for request in requests}) == 3
+
+
+async def test_http429_get_exhaustion_is_bounded_and_post_is_never_retried(monkeypatch) -> None:
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", sleep)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(429, json={"code": "429", "msg": "rate limit"})
+
+    client, _ = make_client(handler, max_get_retries=2)
+    try:
+        with pytest.raises(BitgetApiError) as exc_info:
+            await client.get_ticker("BTCUSDT")
+        assert exc_info.value.code == "429"
+        assert len(requests) == 3
+        assert delays == [1.0, 2.0]
+        with pytest.raises(BitgetApiError):
+            await client.set_leverage("BTCUSDT", leverage="10")
+        assert len(requests) == 4
+        assert requests[-1].method == "POST"
+        assert delays == [1.0, 2.0]
+    finally:
+        await client.aclose()
+
+
+async def test_http_error_exposes_safe_status_even_without_provider_code() -> None:
+    def handler(request):
+        return httpx.Response(429, text="untrusted-sensitive-body")
+
+    client, _ = make_client(handler, max_get_retries=0)
+    try:
+        with pytest.raises(BitgetApiError) as exc_info:
+            await client.get_ticker("BTCUSDT")
+        assert exc_info.value.http_status == 429
+        assert "untrusted-sensitive-body" not in str(exc_info.value)
+    finally:
+        await client.aclose()
+
+
 async def test_post_never_retried_on_transport_error() -> None:
     calls = {"n": 0}
 

@@ -100,6 +100,23 @@ async def test_monitor_loop_starts_stream_and_watchdog_and_stops_cleanly() -> No
 
 
 @pytest.mark.asyncio
+async def test_monitor_loop_logs_persisted_latch_not_as_current_failure(capsys) -> None:
+    from fatty_trader.execution.bitget_monitor import MonitorReport
+
+    stop = asyncio.Event()
+
+    class LatchedMonitor:
+        async def run_once(self):
+            stop.set()
+            return MonitorReport("kill-switch-latched", latched_reason="provider-fills-invalid")
+
+    await run_bitget_monitor_loop(LatchedMonitor(), interval=1, stop_event=stop)
+    output = capsys.readouterr().out
+    assert "reasons=none" in output
+    assert "latched_reason=provider-fills-invalid" in output
+
+
+@pytest.mark.asyncio
 async def test_monitor_loop_rejects_non_positive_intervals() -> None:
     with pytest.raises(ValueError, match="interval"):
         await run_bitget_monitor_loop(FakeMonitor(), interval=0)

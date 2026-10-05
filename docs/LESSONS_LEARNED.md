@@ -59,6 +59,19 @@ CI, merge and deployment are separate acceptance states. See
 - Publish durable checkpoints to the candidate branch; neither a green subset
   nor a successful image build authorizes a LIVE cutover.
 
+## Monitor provider-read diagnosis
+
+- Keep current anomaly reasons separate from persisted latch reasons. Clean later
+  GETs do not release an existing switch or explain its original failure.
+- Preserve exception class, safe numeric provider code and HTTP status separately
+  from shape validation. Do not log arbitrary provider bodies or exception text.
+- Rate-limit retries belong only to bounded GET reads; never replay a POST.
+  Re-sign every retry after waiting so an old signature does not create a new fault.
+- Preserve the first non-NULL timestamp of an active latch. New activation after
+  release starts a new epoch; a historical NULL cannot prove its original time.
+- See [monitor repair evidence](bitget-monitor-provider-read-repair.md) for
+  reproduced source faults, RED/GREEN receipts and the undeployed verdict.
+
 ## Verified operational recovery, not release readiness
 
 The original PUMP native market SL/TP installation was accepted and read back

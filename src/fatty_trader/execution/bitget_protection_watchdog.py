@@ -20,6 +20,7 @@ positions that need it. See ``PROTECTION_STREAM_SCOPE``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -139,7 +140,12 @@ class BitgetProtectionWatchdog:
             read_ok = True
             try:
                 positions = await self._read_position(symbol)
-            except Exception:
+            except Exception as exc:
+                code = str(getattr(exc, "code", ""))
+                logging.getLogger(__name__).warning(
+                    "reason=provider-position-read-failed exception=%s code=%s symbol=%s",
+                    type(exc).__name__, code if code.isdecimal() else "unavailable", symbol,
+                )
                 read_ok = False
                 provider_failure = True
                 if "provider-position-read-failed" not in reasons:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -28,10 +29,14 @@ _SENSITIVE_TOKENS = ("ACCESS-KEY", "ACCESS-SIGN", "ACCESS-PASSPHRASE", "ACCESS-T
 class BitgetApiError(Exception):
     """Provider-side or transport error with credentials redacted."""
 
-    def __init__(self, message: str, code: str = "", provider_msg: str = "") -> None:
+    def __init__(
+        self, message: str, code: str = "", provider_msg: str = "",
+        *, http_status: int | None = None,
+    ) -> None:
         super().__init__(redact(message))
         self.code = code
         self.provider_msg = provider_msg
+        self.http_status = http_status
 
 
 class BitgetUnknownResultError(BitgetApiError):
@@ -156,13 +161,6 @@ class BitgetRestClient:
     ) -> Any:
         query = canonical_query_string(params)
         body = compact_body(payload) if method.upper() != "GET" else ""
-        timestamp = str(int(time.time() * 1000))
-        signature = build_signature(self._api_secret, timestamp, method, path, query, body)
-        headers = self._signed_headers(
-            timestamp,
-            signature,
-            include_demo_header=not path.startswith("/api/v2/public/"),
-        )
         url = path if not query else f"{path}?{query}"
         content = body.encode("utf-8") if body else None
         retryable = method.upper() == "GET"
@@ -170,6 +168,13 @@ class BitgetRestClient:
         attempts = 1 + (self._max_get_retries if retryable else 0)
         last_error: Exception | None = None
         for attempt in range(attempts):
+            timestamp = str(int(time.time() * 1000))
+            signature = build_signature(self._api_secret, timestamp, method, path, query, body)
+            headers = self._signed_headers(
+                timestamp,
+                signature,
+                include_demo_header=not path.startswith("/api/v2/public/"),
+            )
             try:
                 response = await self._client.request(
                     method.upper(), url, headers=headers, content=content
@@ -183,6 +188,11 @@ class BitgetRestClient:
                 raise BitgetUnknownResultError(
                     f"Bitget POST {path} result unknown: transport failure"
                 ) from None
+            # Bitget documents HTTP 429 for REST rate limits. Only GETs may retry;
+            # wait before re-signing rather than hammering the exhausted UID budget.
+            if response.status_code == 429 and retryable and attempt < attempts - 1:
+                await asyncio.sleep(float(2 ** attempt))
+                continue
             if response.status_code >= 500 and retryable and attempt < attempts - 1:
                 last_error = None
                 continue
@@ -211,12 +221,16 @@ class BitgetRestClient:
                             f"{code} {msg}".strip(),
                             code=code,
                             provider_msg=msg,
+                            http_status=response.status_code,
                         )
                 if not retryable:
                     raise BitgetUnknownResultError(
                         f"Bitget POST {path} result unknown: invalid error acknowledgement"
                     )
-                raise BitgetApiError(f"Bitget {method.upper()} {path} HTTP {response.status_code}")
+                raise BitgetApiError(
+                    f"Bitget {method.upper()} {path} HTTP {response.status_code}",
+                    http_status=response.status_code,
+                )
             try:
                 envelope = response.json()
             except ValueError as exc:

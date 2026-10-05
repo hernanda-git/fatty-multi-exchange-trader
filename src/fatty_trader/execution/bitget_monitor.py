@@ -7,6 +7,7 @@ is treated as a latchable anomaly so it blocks new entries across restarts.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -40,6 +41,7 @@ class MonitorReport:
     status: str
     reasons: tuple[str, ...] = ()
     provider_exits_reconciled: int = 0
+    latched_reason: str | None = None
 
 
 class BitgetMonitor:
@@ -119,7 +121,8 @@ class BitgetMonitor:
             )
         if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
             return MonitorReport(
-                "kill-switch-latched", provider_exits_reconciled=provider_exits_reconciled
+                "kill-switch-latched", provider_exits_reconciled=provider_exits_reconciled,
+                latched_reason=self._repository.kill_switch_reason(self._scope),
             )
         return MonitorReport("ok", provider_exits_reconciled=provider_exits_reconciled)
 
@@ -165,12 +168,23 @@ class BitgetMonitor:
             return 0
         try:
             raw_fills = await self._client.get_fills(None)
-        except Exception:
-            reasons.append("provider-fills-invalid")
+        except Exception as exc:
+            # Never print provider bodies or arbitrary exception text (may contain secrets).
+            code = str(getattr(exc, "code", ""))
+            http_status = getattr(exc, "http_status", None)
+            logging.getLogger(__name__).warning(
+                "reason=provider-fills-read-failed exception=%s code=%s http_status=%s",
+                type(exc).__name__, code if code.isdecimal() else "unavailable",
+                http_status if isinstance(http_status, int) else "unavailable",
+            )
+            reasons.append("provider-fills-read-failed")
             return 0
         if isinstance(raw_fills, dict):
-            raw_fills = raw_fills.get("fillList", [])
+            raw_fills = raw_fills.get("fillList")
         if not isinstance(raw_fills, list) or not all(isinstance(fill, dict) for fill in raw_fills):
+            logging.getLogger(__name__).warning(
+                "reason=provider-fills-invalid shape=%s", type(raw_fills).__name__
+            )
             reasons.append("provider-fills-invalid")
             return 0
         reconciled = 0
@@ -194,12 +208,21 @@ class BitgetMonitor:
     ) -> list[dict[str, Any]]:
         try:
             result = await reader()
-        except Exception:
-            reasons.append(invalid_reason)
+        except Exception as exc:
+            read_reason = invalid_reason.removesuffix("invalid") + "read-failed"
+            code = str(getattr(exc, "code", ""))
+            logging.getLogger(__name__).warning(
+                "reason=%s exception=%s code=%s",
+                read_reason, type(exc).__name__, code if code.isdecimal() else "unavailable",
+            )
+            reasons.append(read_reason)
             return []
         if isinstance(result, dict) and set(result) <= {"entrustedList", "endId"}:
             result = result.get("entrustedList") or []
         if not isinstance(result, list) or not all(isinstance(row, dict) for row in result):
+            logging.getLogger(__name__).warning(
+                "reason=%s shape=%s", invalid_reason, type(result).__name__
+            )
             reasons.append(invalid_reason)
             return []
         return result

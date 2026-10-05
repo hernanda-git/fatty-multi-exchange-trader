@@ -137,7 +137,7 @@ async def test_stale_stream_blocks_symbol_and_marks_capability_stale(
 
 @pytest.mark.asyncio
 async def test_provider_read_failure_blocks_symbol_without_latching_global_switch(
-    repository: InMemoryProtectionCapabilityRepository,
+    repository: InMemoryProtectionCapabilityRepository, caplog,
 ) -> None:
     async def read_position(_: str) -> list[dict[str, str]]:
         raise TimeoutError("provider unavailable")
@@ -157,6 +157,8 @@ async def test_provider_read_failure_blocks_symbol_without_latching_global_switc
     assert report.allow_new_entries == {"BTCUSDT": False}
     assert report.reasons == ("provider-position-read-failed",)
     assert not hasattr(repository, "latch_kill_switch")
+    assert "reason=provider-position-read-failed exception=TimeoutError" in caplog.text
+    assert "provider unavailable" not in caplog.text
 
 
 @pytest.mark.asyncio

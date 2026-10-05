@@ -831,7 +831,8 @@ async def run_bitget_monitor_loop(
                 write_monitor_heartbeat(heartbeat_path)
             print(
                 f"service=monitor-bitget state={getattr(report, 'status', 'unknown')} "
-                f"reasons={','.join(getattr(report, 'reasons', ())) or 'none'}",
+                f"reasons={','.join(getattr(report, 'reasons', ())) or 'none'} "
+                f"latched_reason={getattr(report, 'latched_reason', None) or 'none'}",
                 flush=True,
             )
             _raise_if_background_failed(background, stop)

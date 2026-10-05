@@ -75,6 +75,138 @@ async def test_empty_bitget_pending_order_envelope_is_normalized() -> None:
     assert repository.kill_switch_active("bitget") is False
 
 
+@pytest.mark.asyncio
+async def test_fill_read_failure_is_not_misdiagnosed_as_shape_failure(caplog) -> None:
+    from fatty_trader.exchanges.bitget.client import BitgetApiError
+
+    class FailedVenue(ReadOnlyVenue):
+        async def get_fills(self, symbol=None):
+            raise BitgetApiError("do not log secret-provider-body", code="429", http_status=429)
+
+    repository = InMemoryReconciliationRepository()
+    report = await BitgetMonitor(
+        FailedVenue(), repository, live_intent_store=InMemoryLiveIntentStore()
+    ).run_once()
+    assert report.reasons == ("provider-fills-read-failed",)
+    assert repository.kill_switch_active("bitget")
+    assert "exception=BitgetApiError" in caplog.text
+    assert "code=429" in caplog.text
+    assert "http_status=429" in caplog.text
+    assert "secret-provider-body" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [{}, {"fillList": None}, [None], None])
+async def test_invalid_fill_shape_latches_with_safe_shape_diagnostic(payload, caplog) -> None:
+    class InvalidVenue(ReadOnlyVenue):
+        async def get_fills(self, symbol=None):
+            return payload
+
+    repository = InMemoryReconciliationRepository()
+    report = await BitgetMonitor(
+        InvalidVenue(), repository, live_intent_store=InMemoryLiveIntentStore()
+    ).run_once()
+    assert report.reasons == ("provider-fills-invalid",)
+    assert repository.kill_switch_active("bitget")
+    assert "reason=provider-fills-invalid" in caplog.text
+    assert "shape=" in caplog.text
+    assert "exception=" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_clean_cycle_exposes_persisted_latch_separately_from_current_failures() -> None:
+    repository = InMemoryReconciliationRepository()
+    repository.latch_kill_switch("bitget", "provider-fills-invalid")
+    report = await BitgetMonitor(ReadOnlyVenue(), repository).run_once()
+    assert report.status == "kill-switch-latched"
+    assert report.reasons == ()  # Clean current evidence, not a new fill failure.
+    assert report.latched_reason == "provider-fills-invalid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["positions", "orders"])
+@pytest.mark.parametrize("failure", ["exception", "shape"])
+async def test_monitor_row_read_diagnostics_distinguish_exception_from_shape(
+    endpoint, failure, caplog,
+) -> None:
+    venue = ReadOnlyVenue()
+
+    async def reader():
+        if failure == "exception":
+            raise TimeoutError("secret-debug-body")
+        return [None]
+
+    method = "get_all_positions" if endpoint == "positions" else "get_pending_orders"
+    setattr(venue, method, reader)
+    repository = InMemoryReconciliationRepository()
+    report = await BitgetMonitor(venue, repository).run_once()
+    expected = f"provider-{endpoint}-{'read-failed' if failure == 'exception' else 'invalid'}"
+    assert report.reasons == (expected,)
+    assert repository.kill_switch_active("bitget")
+    assert f"reason={expected}" in caplog.text
+    assert ("exception=TimeoutError" if failure == "exception" else "shape=list") in caplog.text
+    assert "secret-debug-body" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate_limited_reads", [1, 3])
+async def test_real_rest_client_monitor_retries_transient_429_but_latches_exhaustion(
+    rate_limited_reads, monkeypatch, caplog,
+) -> None:
+    import time
+
+    import httpx
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+
+    delays = []
+    fills_reads = []
+
+    async def sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr("asyncio.sleep", sleep)
+
+    def handler(request):
+        assert request.method == "GET"  # Production monitor stays provider-read-only.
+        path = request.url.path
+        if path.endswith("/fills"):
+            fills_reads.append(request)
+            if len(fills_reads) <= rate_limited_reads:
+                return httpx.Response(429, text="never-log-sensitive-body")
+            data = {"fillList": [], "endId": ""}
+        elif path.endswith("/time"):
+            data = {"serverTime": str(int(time.time() * 1000))}
+        elif path.endswith("/orders-pending"):
+            data = {"entrustedList": None, "endId": None}
+        else:
+            assert path.endswith("/all-position")
+            data = []
+        return httpx.Response(200, json={"code": "00000", "data": data})
+
+    client = BitgetRestClient("test", "test", "test", transport=httpx.MockTransport(handler))
+    repository = InMemoryReconciliationRepository()
+    try:
+        report = await BitgetMonitor(
+            client, repository, live_intent_store=InMemoryLiveIntentStore()
+        ).run_once()
+    finally:
+        await client.aclose()
+    if rate_limited_reads == 1:
+        assert report.status == "ok"
+        assert report.reasons == ()
+        assert not repository.kill_switch_active("bitget")
+        assert len(fills_reads) == 2
+        assert delays == [1.0]
+    else:
+        assert report.reasons == ("provider-fills-read-failed",)
+        assert repository.kill_switch_active("bitget")
+        assert len(fills_reads) == 3
+        assert delays == [1.0, 2.0]
+        assert "http_status=429" in caplog.text
+    assert "never-log-sensitive-body" not in caplog.text
+
+
 async def _empty_order_envelope() -> dict[str, object]:
     return {"entrustedList": None, "endId": None}
 

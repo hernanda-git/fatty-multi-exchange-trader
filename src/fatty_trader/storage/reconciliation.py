@@ -30,6 +30,7 @@ class ReconciliationRepository(Protocol):
     def update_intent(self, record: LiveIntentRecord) -> None: ...
     def expected_position_symbols(self, exchange: str) -> set[str]: ...
     def kill_switch_active(self, scope: str) -> bool: ...
+    def kill_switch_reason(self, scope: str) -> str | None: ...
     def latch_kill_switch(self, scope: str, reason: str) -> None: ...
     def release_kill_switch(self, scope: str, approval_reference: str) -> None: ...
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool: ...
@@ -51,6 +52,7 @@ class InMemoryReconciliationRepository:
         self.intents = [replace(intent) for intent in intents or []]
         self._expected_symbols = set(expected_symbols or set())
         self._kill_switches: set[str] = set()
+        self._kill_reasons: dict[str, str] = {}
         self._alert_keys: set[tuple[str, str]] = set()
         self._unhandled_mismatches: set[str] = set()
         self.alerts: list[str] = []
@@ -80,8 +82,12 @@ class InMemoryReconciliationRepository:
     def kill_switch_active(self, scope: str) -> bool:
         return scope in self._kill_switches
 
+    def kill_switch_reason(self, scope: str) -> str | None:
+        return self._kill_reasons.get(scope) if self.kill_switch_active(scope) else None
+
     def latch_kill_switch(self, scope: str, reason: str) -> None:
         self._kill_switches.add(scope)
+        self._kill_reasons[scope] = reason
         key = (scope, reason)
         if key not in self._alert_keys:
             self._alert_keys.add(key)
@@ -173,6 +179,18 @@ class PostgresReconciliationRepository:
             return False
         return bool(row["active"] if isinstance(row, dict) else row[0])
 
+    def kill_switch_reason(self, scope: str) -> str | None:
+        connection = self._connection_factory()
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT reason FROM venue_kill_switches WHERE scope = %s AND active", (scope,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        reason = row["reason"] if isinstance(row, dict) else row[0]
+        return reason if isinstance(reason, str) else None
+
     def is_active(self, scope: str) -> bool:
         return self.kill_switch_active(scope)
 
@@ -184,6 +202,9 @@ class PostgresReconciliationRepository:
                 """INSERT INTO venue_kill_switches (scope, active, reason, latched_at, updated_at)
                    VALUES (%s, TRUE, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                    ON CONFLICT (scope) DO UPDATE SET active = TRUE, reason = EXCLUDED.reason,
+                       latched_at = CASE WHEN venue_kill_switches.active
+                           THEN COALESCE(venue_kill_switches.latched_at, EXCLUDED.latched_at)
+                           ELSE EXCLUDED.latched_at END,
                        updated_at = CURRENT_TIMESTAMP""",
                 (scope, reason),
             )
