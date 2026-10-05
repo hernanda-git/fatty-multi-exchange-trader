@@ -1,5 +1,9 @@
 # Fresh Hermes Session Prompt — Fatty Bitget DEMO on fspmi-hostinger
 
+> Historical pre-LIVE prompt, not operating authority. Do not apply its DEMO
+> mission or execution=0 instructions to production. Current owner policy is
+> [permanent LIVE/LIVE/1](PRODUCTION-LIVE-POLICY.md). Receipts below are preserved.
+
 You are continuing work on the existing `fatty-multi-exchange-trader` deployment. This is a safety-critical trading system. Use the repository source, live remote evidence, and the context documents below as the source of truth. Do not guess and do not repeat historical work that is already verified.
 
 ## Mission

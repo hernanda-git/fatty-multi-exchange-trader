@@ -152,35 +152,26 @@ artifacts. The commit must contain the full protection documentation.
 The working directory is the deployment target for this existing Compose stack.
 Do not change the database volume, project name, credentials, or target host.
 
-During rebuild/recreate, explicitly close every provider mutation path. Shell
-assignments override `.env` for this command without rewriting the secret file:
+The permanent [production LIVE-only policy](PRODUCTION-LIVE-POLICY.md) supersedes
+historical mutation-closed rollout instructions. Do not use DEMO or execution=0
+shell overrides, or disable already-approved position protection during rollout.
+Preserve independent safety gates and obtain a safe owner-approved maintenance
+plan before a recreate. Validate rendered configuration before build/deployment:
 
 ```bash
-BITGET_EXECUTION_ENABLED=0 \
-BITGET_FALLBACK_MUTATIONS_ENABLED=0 \
-BITGET_OPERATOR_MUTATIONS_ENABLED=0 \
-BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=0 \
-BITGET_PROTECTION_CAPABILITY_GATE_ENABLED=0 \
-BITGET_PROTECTION_STREAM_ENABLED=0 \
-docker compose build dispatcher-bitget monitor-bitget migrate init
-
-BITGET_EXECUTION_ENABLED=0 \
-BITGET_FALLBACK_MUTATIONS_ENABLED=0 \
-BITGET_OPERATOR_MUTATIONS_ENABLED=0 \
-BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=0 \
-BITGET_PROTECTION_CAPABILITY_GATE_ENABLED=0 \
-BITGET_PROTECTION_STREAM_ENABLED=0 \
-docker compose up -d --force-recreate migrate init dispatcher-bitget monitor-bitget
+bash scripts/check_production_live_policy.sh
 ```
+
+Build/recreate only within that approved plan; this checker itself changes no
+service, database or provider state.
 
 Use `docker compose up -d --force-recreate`, not `docker compose restart`:
 restart does not rebuild the image or re-read environment values. The migration
 and init services are one-shot services and must exit `0`; they are not expected
 to remain running.
 
-If the stack's existing environment deliberately has an already-approved legacy
-execution gate, do not silently restore it. Read the approval record and effective
-container flags first. New protection mutation flags stay disabled until the
+Read the approval record and effective container flags first; production must
+remain LIVE/LIVE/1. New protection mutation flags stay disabled until the
 fallback close path and provider WebSocket compatibility have an independent
 approval.
 
@@ -199,7 +190,7 @@ Require:
 - `postgres`, `dispatcher-bitget`, and `monitor-bitget` running/healthy;
 - `migrate` and `init` exited with code `0`;
 - no restart loop or traceback;
-- no provider POST/cancel/close log line;
+- no unexpected provider mutation; ordinary approved LIVE activity is not a fault;
 - image was rebuilt from the pushed commit.
 
 Read the effective flags without printing secrets:

@@ -18,12 +18,13 @@ REPO_ROOT = Path(__file__).parents[2]
 COMPOSE = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
 
 
-def test_compose_keeps_bitget_execution_closed_by_default() -> None:
+def test_compose_requires_live_execution_but_keeps_independent_protection_flags_closed() -> None:
     dispatcher = COMPOSE.split("  dispatcher-bitget:", 1)[1].split("  monitor-binance:", 1)[0]
     monitor = COMPOSE.split("  monitor-bitget:", 1)[1].split("  operator-bot:", 1)[0]
     assert "TRADER_MODE: ${TRADER_MODE:-LIVE}" in dispatcher
     assert "BITGET_MODE: ${BITGET_MODE:-LIVE}" in dispatcher
-    assert "BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-0}" in dispatcher
+    assert 'FATTY_PRODUCTION_LIVE_ONLY: "1"' in dispatcher
+    assert "BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-1}" in dispatcher
     assert (
         "BITGET_PROTECTION_CAPABILITY_GATE_ENABLED: ${BITGET_PROTECTION_CAPABILITY_GATE_ENABLED:-0}"
         in dispatcher

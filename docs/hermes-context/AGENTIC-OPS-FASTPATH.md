@@ -146,15 +146,15 @@ a global position cap is enforced.
 4. Build `migrate init analyzer dispatcher-bitget intake monitor-bitget
    operator-bot notification-sender source-management web`.
 5. Run `docker compose run --rm --no-deps migrate` and then `init`.
-6. Recreate long-running services with
-   `BITGET_EXECUTION_ENABLED=0 docker compose up -d --no-deps --force-recreate ...`.
+6. Require `bash scripts/check_production_live_policy.sh` to pass before an
+   approved recreate. Preserve LIVE/LIVE/1; never use an execution-disabled shell
+   override. See `docs/PRODUCTION-LIVE-POLICY.md`; existing trade safety gates remain.
 7. Wait for healthchecks. Read the deployed canary source inside the container;
    do not trust only local SHA or the host verifier's `runtime_sha`.
 8. Re-run authenticated provider reads and check no unexpected queued,
    submitting, intent, fill, order, or position mutation occurred.
-9. If execution was already enabled, restore the prior env state by recreating
-   `dispatcher-bitget`, `monitor-bitget`, and `operator-bot`, then verify env and
-   provider state again.
+9. Verify actual LIVE/LIVE/1 in all Bitget containers with the runtime verifier;
+   do not silently restore historical closed-cutover environment states.
 10. Restore any pre-existing local edit and report LOCAL_TESTS,
     DEPLOYED_IMAGE, SERVICE_RUNTIME, LIVE_ACCOUNT_READ, and LIVE_ORDER_SMOKE
     separately.

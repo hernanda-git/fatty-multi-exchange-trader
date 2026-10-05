@@ -64,7 +64,9 @@ def build_health_report(
     )
     status = "ok" if config_ok and readiness == "ready" else "degraded"
     execution_enabled = (
-        service in {"dispatcher-bitget", "monitor-bitget"}
+        service in {"dispatcher-bitget", "monitor-bitget", "web"}
+        and mode == "LIVE"
+        and environ.get("BITGET_MODE", mode).upper() == "LIVE"
         and environ.get("BITGET_EXECUTION_ENABLED", "0") == "1"
     )
     return {
@@ -73,9 +75,11 @@ def build_health_report(
         "mode": mode,
         "venue_mode": venue_mode,
         "live_execution_enabled": execution_enabled,
-        "orders_enabled": execution_enabled,
+        # Web observes configuration, not dispatcher permission or kill switches.
+        "orders_enabled": None if service == "web" else execution_enabled,
         "components": components,
         "configuration": {
+            "execution_enabled": execution_enabled,
             "status": "ok" if config_ok else "degraded",
             "components": components,
             "evidence": "static environment only",

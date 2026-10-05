@@ -4,13 +4,15 @@ Telegram signal intake, one canonical interpretation, and isolated Binance USDâ“
 
 ## Runtime safety status
 
-Source defaults are closed by design. Repository code alone does not prove the
+Production is permanently LIVE-only with execution enabled; see
+[production policy](docs/PRODUCTION-LIVE-POLICY.md). Repository code alone does not prove the
 state of a running container or provider account. Read the effective environment,
 Compose state, database migrations, and authenticated provider reads before
 claiming readiness.
 
-- Bitget execution, capability admission, fallback mutation, stream mutation, and
-  operator mutation are disabled by default.
+- Production Bitget execution requires LIVE/LIVE/1; conflicting overrides fail
+  deployment admission. Capability, fallback, stream and operator mutation flags
+  retain independent default-closed gates.
 - Native protection is the primary design; mark-price WebSocket and REST watchdog
   are additive, feature-gated layers.
 - Missing protection is symbol-local admission failure, not an automatic global

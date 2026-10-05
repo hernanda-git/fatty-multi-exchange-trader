@@ -16,7 +16,7 @@ passing a narrow test selection does not approve those unrelated changes.
 - [ ] Ruff check/format, mypy, compile, wheel/sdist and secret/diff checks on the same final source hashes.
 - [ ] Independent final spec/security review with explicit approving verdict.
 - [ ] Push verified commit; CI on the exact remote SHA; PR review and merge to main.
-- [ ] Controlled, mutation-closed image/schema rollout; exact running-source/provider readback.
+- [ ] Owner-approved LIVE/LIVE/1 image/schema rollout with production policy admission; exact running-source/provider readback.
 
 ## Native position-market protection
 
@@ -36,10 +36,14 @@ trigger, symbol/side and market order type even if position TPSL fields are null
 
 ## Runtime safety during remediation
 
-New-entry execution stays closed. Fallback and stream mutation gates stay closed;
-a persisted fallback row alone is not working protection. Native exchange plans
-remain independent of the local dispatcher process. Do not clear a venue latch,
-replay a historical signal, or activate a new entry as a test.
+The current [production LIVE-only policy](PRODUCTION-LIVE-POLICY.md) requires
+LIVE/LIVE/1 and supersedes historical closed-entry remediation instructions.
+Do not disable the entry gate or deploy DEMO. Preserve established kill switches,
+protection and independent optional mutation approvals; a persisted fallback row
+alone is not working protection. Native exchange plans remain independent of the
+local dispatcher process. Do not clear a venue latch, replay a historical signal,
+or activate a new entry as a test. Require the rendered-policy checker before
+any separately approved deployment.
 
 ## Candidate integration contracts
 
@@ -76,7 +80,7 @@ commits. Docker context is allowlisted; the verification artifacts directory is
 ignored by Git. Packaging and image success are distinct from deployed schema,
 running source, authenticated account reads and approval to reopen execution.
 
-## Latest operational receipt
+## Historical operational receipt (not current configuration authority)
 
 Read-only refresh on 2026-10-02: PUMP flat, no pending PUMP plans; the provider
 returned a matching 1880-unit close fill at 0.005426. This receipt does not by

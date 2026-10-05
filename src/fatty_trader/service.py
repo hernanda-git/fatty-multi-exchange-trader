@@ -110,6 +110,11 @@ def service_config(name: str, environ: Mapping[str, str]) -> ServiceConfig:
     """Return a DEMO-first config with an isolated Bitget venue mode."""
     if name not in SUPPORTED_SERVICES:
         raise ValueError(f"unsupported service: {name}")
+    # Compose pins this marker; development/library fixtures remain isolated.
+    if "FATTY_PRODUCTION_LIVE_ONLY" in environ:
+        from fatty_trader.production_policy import validate_production_live_policy
+
+        validate_production_live_policy(environ)
     mode = environ.get("TRADER_MODE", "DEMO").upper()
     if mode not in {"DEMO", "LIVE"}:
         raise ValueError("TRADER_MODE must be DEMO or LIVE")

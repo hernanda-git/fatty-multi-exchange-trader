@@ -118,9 +118,9 @@ Current runtime state:
 If the canary misbehaves or any gate regresses:
 
 ```bash
-# Immediate: disable execution
-# Edit .env: BITGET_EXECUTION_ENABLED=0
-docker compose up -d --force-recreate dispatcher-bitget
+# Incident: use established audited kill-switch/containment procedures.
+# Preserve LIVE/LIVE/1; do not disable execution or bypass protection.
+bash scripts/check_production_live_policy.sh
 
 # Full revert to prior commit
 git checkout <prior_sha>
