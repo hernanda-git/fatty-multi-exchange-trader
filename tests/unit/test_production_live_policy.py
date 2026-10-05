@@ -129,6 +129,7 @@ def test_runtime_verifier_rejects_disabled_container_before_db_or_provider(tmp_p
     "kill_state,blocker",
     [
         ("true:incident", "kill_switch_active"),
+        ("true:stream-only", "kill_switch_active"),
         ("false:none", "source_lineage_mismatch"),
     ],
 )
@@ -166,7 +167,10 @@ def test_runtime_verifier_rejects_unsafe_runtime_without_provider_probe(
         "        sys.exit('unexpected provider probe with active kill switch')\n"
         "    print('stale-source' if '-c' in args and 'sh' not in args else 'LIVE|LIVE|1')\n"
         "elif args[:3] == ['exec', '-T', 'postgres']:\n"
-        f"    print({kill_state!r} if 'venue_kill_switches' in args[-1] else '1')\n"
+        f"    state = {kill_state!r}\n"
+        "    if state == 'true:stream-only' and 'bitget-protection-stream' not in args[-1]:\n"
+        "        state = 'false:none'\n"
+        "    print(state if 'venue_kill_switches' in args[-1] else '1')\n"
         "elif args[0] != 'logs':\n"
         "    sys.exit('unexpected command')\n"
     )

@@ -43,7 +43,7 @@ $compose_bin exec -T postgres psql -U fatty_app -d fatty_trader -Atc \
   "SELECT string_agg(version::text, ',' ORDER BY version) FROM schema_migrations;" \
   | sed 's/^/schema_migrations=/'
 kill_state="$($compose_bin exec -T postgres psql -U fatty_app -d fatty_trader -Atc \
-  "SELECT active || ':' || coalesce(reason, 'none') FROM venue_kill_switches WHERE scope IN ('global', 'bitget');")"
+  "SELECT active || ':' || coalesce(reason, 'none') FROM venue_kill_switches WHERE scope IN ('global', 'bitget', 'bitget-protection-stream');")"
 printf '%s\n' "$kill_state" | sed 's/^/entry_kill_switch=/'
 if printf '%s\n' "$kill_state" | grep -Eq '^(true|t):'; then
   printf 'runtime_blocked=kill_switch_active action=preserve_latch\n' >&2
