@@ -72,6 +72,24 @@ CI, merge and deployment are separate acceptance states. See
 - See [monitor repair evidence](bitget-monitor-provider-read-repair.md) for
   reproduced source faults, RED/GREEN receipts and the undeployed verdict.
 
+## Historical recovery and incident release
+
+- Follow [controlled historical recovery](CONTROLLED-HISTORICAL-RECOVERY.md):
+  approval permits evidence-backed work, not flat-account waivers or signal replay.
+- Preserve original fills and timestamps when importing historical close proof.
+  Pre-POST close binding is not retrospective attribution; same-symbol owners
+  require distinct epochs and disjoint fill claims.
+- Validate historical terminal-page contracts by endpoint. Authenticated null
+  archive responses and explicit empty current-fill responses are different
+  contracts; query failures must never be normalized to exhaustion.
+- Separate round-trip latency from host clock offset, and bound uncertainty before
+  declaring a provider clock anomaly. A slow GET alone is not proof of skew.
+- Release stream incidents using actual-worker authenticated liveness evidence,
+  not a successful second observation socket. Preserve exact incident identity
+  across review and transactional release.
+- A backup archive listing is necessary but insufficient: rehearse restoration
+  into a network-isolated database before relying on rollback.
+
 ## Verified operational recovery, not release readiness
 
 The original PUMP native market SL/TP installation was accepted and read back

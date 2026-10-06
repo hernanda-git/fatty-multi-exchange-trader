@@ -23,6 +23,7 @@ claiming readiness.
 
 - [Bitget protection architecture and contracts](docs/BITGET-PROTECTION-HARDENING.md)
 - [Bitget protection operations and controlled deployment](docs/BITGET-PROTECTION-OPERATIONS.md)
+- [Controlled historical recovery and incident-release contract](docs/CONTROLLED-HISTORICAL-RECOVERY.md)
 - [Architecture](ARCHITECTURE.md)
 - [Security](SECURITY.md)
 - [Operations](docs/OPERATIONS.md)
