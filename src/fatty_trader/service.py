@@ -632,6 +632,7 @@ def _bitget_dispatch_preflight(
     return preflight
 
 
+@owned_worker_health("dispatcher-bitget")
 async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     """Run the durable dispatcher; its REST execution graph remains closed by default."""
     from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
@@ -672,6 +673,19 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                 raise RuntimeError("Bitget lifecycle recovery is not ready")
         while True:
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
+            # Completed cycles prove liveness, not admission or execution success.
+            if cycle_state in {
+                "idle",
+                "acknowledged",
+                "filled",
+                "partial",
+                "rejected",
+                "expired",
+                "cutover-gated",
+                "kill-switch-latched",
+                "protection-stream-latched",
+            }:
+                worker_progress()
             print(
                 f"service=dispatcher-bitget mode={config.mode} venue_mode={config.venue_mode} "
                 f"state={cycle_state}",
@@ -1228,6 +1242,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     await asyncio.to_thread(listen)
 
 
+@owned_worker_health("source-management")
 async def run_source_management(environ: Mapping[str, str]) -> None:
     """Execute durable source-management updates (TP1 booked, SL to entry, close)."""
     import psycopg
@@ -1257,6 +1272,8 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "30"))
     while True:
         state = await asyncio.to_thread(executor.run_once, "source-management")
+        if state in {"idle", "reconciled"}:
+            worker_progress()
         print(f"service=source-management mode={mode} state={state}", flush=True)
         await asyncio.sleep(interval)
 
@@ -1531,7 +1548,14 @@ def main() -> int:
     if args.service == "web":
         return 0
     if args.check:
-        if args.service in {"intake", "analyzer", "operator-bot"}:
+        if args.service in {
+            "intake",
+            "analyzer",
+            "operator-bot",
+            "dispatcher-bitget",
+            "dispatcher-binance",
+            "source-management",
+        }:
             from fatty_trader.worker_health import check_worker_health
 
             return check_worker_health(args.service, os.environ)
