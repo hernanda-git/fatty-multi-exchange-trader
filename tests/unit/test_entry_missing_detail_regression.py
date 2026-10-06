@@ -41,7 +41,10 @@ async def classify(
             "price": "50000",
             "feeDetail": [{"totalFee": "-0.12", "feeCoin": "USDT"}],
         }
-        return {"fillList": [row], "endId": None if complete else "next-page"}
+        return {
+            "fillList": [row] if Decimal(quantity) > 0 else [],
+            "endId": "" if complete else "next-page",
+        }
 
     async def read_position(_: str) -> Any:
         return position
@@ -136,6 +139,7 @@ async def test_unknown_entry_persists_provider_fills_with_open_position(quantity
                 "fillId": "actual-fill",
                 "baseVolume": quantity,
                 "price": "50000",
+                "fee": "0",
             }
         ]
 

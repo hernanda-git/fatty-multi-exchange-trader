@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
@@ -137,6 +138,51 @@ class PostgresBitgetDispatchRepository:
             connection.rollback()
             raise
         return _dispatch_from_row(row) if row is not None else None
+
+    @contextmanager
+    def entry_permission(self, dispatch_id: UUID) -> Iterator[str | None]:
+        """Linearize ENTRY POST with source state and every kill-table writer.
+
+        Acquire source locks BEFORE the kill fence: a latch committed during a
+        blocked source read wins. SHARE fences INSERT too (missing scope rows),
+        without requiring all latch callers to adopt an advisory-lock convention.
+        Recompute database-clock freshness only AFTER all blocking locks. Keep
+        the fence through the single POST, never through reconciliation/closes.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT d.id FROM dispatches d JOIN canonical_signals s ON s.id=d.source_id "
+                "JOIN telegram_messages tm ON tm.id=s.message_id WHERE d.id=%s "
+                "FOR UPDATE OF d, s, tm",
+                (dispatch_id,),
+            )
+            cursor.fetchone()
+            cursor.execute("LOCK TABLE venue_kill_switches IN SHARE MODE")
+            cursor.execute(
+                "SELECT EXISTS(SELECT 1 FROM venue_kill_switches "
+                "WHERE scope IN ('global', 'bitget') AND active)"
+            )
+            killed = bool(cursor.fetchone()[0])
+            cursor.execute(
+                "SELECT d.state, COALESCE(("
+                + SOURCE_ELIGIBLE_SQL.format(alias="tm")
+                + "), false) FROM dispatches d JOIN canonical_signals s ON s.id=d.source_id "
+                "JOIN telegram_messages tm ON tm.id=s.message_id WHERE d.id=%s",
+                (dispatch_id,),
+            )
+            row = cursor.fetchone()
+            eligible = row is not None and row[0] in {"QUEUED", "SUBMITTING"} and row[1]
+            yield "REJECTED" if killed else (None if eligible else "EXPIRED")
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
 
     def entry_source_eligible(self, dispatch_id: UUID) -> bool:
         """Recheck immediately before a new ENTRY, not read-only recovery."""

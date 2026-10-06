@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
+from fatty_trader.exchanges.bitget.client import clock_skew_reason
 from fatty_trader.exchanges.bitget.metadata import (
     find_contract,
     metadata_from_contract,
@@ -170,8 +171,11 @@ class AsyncBitgetVenue:
         if position is not None:
             raise ValueError("Bitget symbol has an active position")
         clock_skew_ms = await self._client.get_clock_skew_ms()
-        if abs(clock_skew_ms) > MAX_CLOCK_SKEW_MS:
-            raise ValueError("Bitget clock skew exceeds safety limit")
+        clock_reason = clock_skew_reason(clock_skew_ms, MAX_CLOCK_SKEW_MS)
+        if clock_reason is not None:
+            raise ValueError(
+                "Bitget clock skew exceeds safety limit or is unproven: " + clock_reason
+            )
         contracts = await self._client.get_contracts()
         if not isinstance(contracts, list):
             raise ValueError("Bitget contracts response must be a list")

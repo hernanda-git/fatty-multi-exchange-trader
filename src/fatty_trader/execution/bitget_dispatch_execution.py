@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from decimal import Decimal
 from typing import Any, Protocol, cast
 from uuid import NAMESPACE_URL, uuid5
@@ -261,21 +262,54 @@ class BitgetDispatchExecution:
     async def _submit_guarded(
         self, dispatch: BitgetDispatch, intent: LiveIntentRecord
     ) -> AsyncExecutionResult:
-        def final_check() -> None:
+        @contextmanager
+        def permission() -> Iterator[None]:
+            with self._dispatch_repository.entry_permission(dispatch.id) as veto:
+                if veto is None:
+                    yield
+                    return
+            # Never persist/retire using another connection while holding source locks.
+            intent.state = "rejected"
+            self._store.update(intent)
+            if veto == "EXPIRED":
+                self._dispatch_repository.entry_source_eligible(dispatch.id)
+            else:
+                self._resolve_reservation(intent, "REJECTED")
+            raise BitgetEntryVeto(veto)
+
+        def final_check() -> AbstractContextManager[None]:
+            if callable(getattr(self._dispatch_repository, "entry_permission", None)):
+                unresolved = getattr(
+                    self._dispatch_repository, "unresolved_protection_issues", None
+                )
+                if (callable(unresolved) and unresolved()) or (
+                    callable(getattr(self._recovery_protection, "inventory", None))
+                    and not self.recovery_ready
+                ):
+                    intent.state = "rejected"
+                    self._store.update(intent)
+                    self._resolve_reservation(intent, "REJECTED")
+                    raise BitgetEntryVeto("REJECTED")
+                return permission()
+            # Offline/legacy doubles have no PostgreSQL mutation fence.
             veto = self._final_entry_veto(dispatch, intent)
             if veto is not None:
                 raise BitgetEntryVeto(veto)
+            return nullcontext()
 
         guarded = getattr(self._execution, "submit_entry_guarded", None)
         if callable(guarded):
             submit = cast(
-                Callable[[LiveIntentRecord, Callable[[], None]], Awaitable[AsyncExecutionResult]],
+                Callable[
+                    [LiveIntentRecord, Callable[[], AbstractContextManager[None]]],
+                    Awaitable[AsyncExecutionResult],
+                ],
                 guarded,
             )
             return await submit(intent, final_check)
         # Synchronous test/legacy boundaries still receive a last claim check.
-        final_check()
-        return await self._execution.submit_entry(intent)
+        with final_check():
+            return await self._execution.submit_entry(intent)
 
     def _final_entry_veto(self, dispatch: BitgetDispatch, intent: LiveIntentRecord) -> str | None:
         """Only the winning, known-unsent claim may retire its own intent.
@@ -293,6 +327,20 @@ class BitgetDispatchExecution:
             self._store.update(intent)
             self._resolve_reservation(intent, "REJECTED")
             return "REJECTED"
+        permission = getattr(repository, "entry_permission", None)
+        if callable(permission):
+            # Preliminary admission only; final POST holds this fence again after
+            # all awaited provider setup, rather than alternating unlocked reads.
+            with permission(dispatch.id) as veto:
+                pass
+            if veto is not None:
+                intent.state = "rejected"
+                self._store.update(intent)
+                if veto == "EXPIRED":
+                    repository.entry_source_eligible(dispatch.id)
+                else:
+                    self._resolve_reservation(intent, "REJECTED")
+            return cast(str | None, veto)
         if repository is not None and not repository.entry_source_eligible(dispatch.id):
             intent.state = "rejected"
             self._store.update(intent)

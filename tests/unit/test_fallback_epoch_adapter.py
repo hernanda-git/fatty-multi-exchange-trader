@@ -25,9 +25,10 @@ def fixture_client(mode="DEMO", epoch="1000", fill_epoch="1000", positions=None,
         "tradeSide": "open",
         "orderId": "order-1",
         "clientOid": intent.client_oid,
-        "tradeId": "fill-1",
+        "tradeId": "100",
         "baseVolume": "0.001",
         "price": "50000",
+        "fee": "0",
         "cTime": fill_epoch,
     }
 
@@ -50,7 +51,11 @@ def fixture_client(mode="DEMO", epoch="1000", fill_epoch="1000", positions=None,
             assert request.url.params["symbol"] == "BTCUSDT"
             data = positions if positions is not None else [position]
         elif path.endswith("fills"):
-            data = {"fillList": fills if fills is not None else [fill]}
+            batch = fills if fills is not None else [fill]
+            if request.url.params.get("idLessThan"):
+                data = {"fillList": [], "endId": ""}
+            else:
+                data = {"fillList": batch, "endId": batch[-1]["tradeId"] if batch else ""}
         else:
             raise AssertionError(f"unexpected request {request.method} {path}")
         return httpx.Response(200, json={"code": "00000", "data": data})

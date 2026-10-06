@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -41,6 +42,34 @@ class BitgetApiError(Exception):
         self.code = code
         self.provider_msg = provider_msg
         self.http_status = http_status
+        # Authenticated rows observed before a failed continuation are evidence,
+        # never a successful/empty page. Consumers may retain them as UNKNOWN.
+        self.partial_fill_result: dict[str, Any] | None = None
+
+
+class BitgetClockSkewInconclusiveError(BitgetApiError):
+    """Request latency or a local clock step prevents a reliable offset proof."""
+
+
+class ClockSkewEstimate(int):
+    """Legacy-compatible midpoint offset with an explicit worst-case uncertainty."""
+
+    uncertainty_ms: int
+
+    def __new__(cls, offset_ms: int, uncertainty_ms: int) -> ClockSkewEstimate:
+        instance = super().__new__(cls, offset_ms)
+        instance.uncertainty_ms = uncertainty_ms
+        return instance
+
+
+def clock_skew_reason(skew: int, limit_ms: int) -> str | None:
+    """Admit only if the entire offset interval is inside the unchanged limit."""
+    uncertainty = getattr(skew, "uncertainty_ms", 0)
+    if abs(skew) + uncertainty <= limit_ms:
+        return None
+    if abs(skew) - uncertainty > limit_ms:
+        return "clock-skew-exceeded"
+    return "clock-skew-inconclusive"
 
 
 class BitgetUnknownResultError(BitgetApiError):
@@ -284,9 +313,23 @@ class BitgetRestClient:
         except (TypeError, ValueError) as exc:
             raise BitgetApiError("Bitget server time response is invalid") from exc
 
-    async def get_clock_skew_ms(self) -> int:
-        """Return local-minus-server clock skew in milliseconds."""
-        return int(time.time() * 1000) - await self.get_server_time_ms()
+    async def get_clock_skew_ms(self) -> ClockSkewEstimate:
+        """Sample midpoint local-minus-server offset; bound latency, including retries.
+
+        The server timestamp can occur anywhere inside the GET interval. Half
+        its duration plus millisecond quantization is uncertainty, not skew.
+        Long requests/clock steps are inconclusive and remain fail-closed.
+        """
+        before = time.time() * 1000
+        started = time.monotonic()
+        server = await self.get_server_time_ms()
+        elapsed = (time.monotonic() - started) * 1000
+        after = time.time() * 1000
+        if elapsed < 0 or elapsed > 1000 or abs((after - before) - elapsed) > 10:
+            raise BitgetClockSkewInconclusiveError("clock-skew-inconclusive: timing uncertainty")
+        midpoint = (before + after) / 2
+        uncertainty = math.ceil(max(elapsed, after - before) / 2) + 1
+        return ClockSkewEstimate(round(midpoint - server), uncertainty)
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> Any:
         return await self._get("/api/v2/mix/market/contracts", {"productType": product_type})
@@ -464,11 +507,75 @@ class BitgetRestClient:
         symbol: str | None = None,
         product_type: str = "USDT-FUTURES",
         margin_coin: str = "USDT",
+        *,
+        max_pages: int = 20,
     ) -> Any:
-        params: dict[str, Any] = {"productType": product_type, "marginCoin": margin_coin}
+        """Bounded signed pagination; endId identifies the last trade, not has-more.
+
+        Only an explicit empty object page proves exhaustion. Null data is retained
+        as unknown: the official contract does not document null as an empty page.
+        Freeze the upper bound so new fills cannot shift the pagination window.
+        """
+        if not 1 <= max_pages <= 100:
+            raise ValueError("Bitget fill pagination bound must be between 1 and 100")
+        params: dict[str, Any] = {
+            "productType": product_type,
+            "marginCoin": margin_coin,
+            "limit": "100",
+            "endTime": str(int(time.time() * 1000)),
+        }
         if symbol is not None:
             params["symbol"] = symbol
-        return await self._get("/api/v2/mix/order/fills", params)
+        rows: list[dict[str, Any]] = []
+        pages: list[Any] = []
+        seen: set[str] = set()
+        cursor: str | None = None
+        for _ in range(max_pages):
+            # A GET failure mid-walk leaves the result unproven, never "no fills".
+            # Permanent provider errors (40309 delisted, 40008 expired signature)
+            # must keep propagating instead of degrading into an empty fill list.
+            try:
+                page = await self._get("/api/v2/mix/order/fills", params)
+            except BitgetApiError as exc:
+                exc.partial_fill_result = {
+                    "fillList": rows,
+                    "endId": cursor or "unproven",
+                    "pages": pages,
+                }
+                raise
+            pages.append(page)
+            if not isinstance(page, dict) or not isinstance(page.get("fillList"), list):
+                break
+            batch = page["fillList"]
+            if not all(isinstance(row, dict) for row in batch) or len(batch) > 100:
+                break
+            end_id = page.get("endId")
+            if not batch:
+                if end_id == "":
+                    return {"fillList": rows, "endId": "", "pages": pages}
+                break
+            ids = [row.get("tradeId") for row in batch]
+            if any(
+                not isinstance(fid, str)
+                or not fid.isascii()
+                or not fid.isdigit()
+                or fid.startswith("0")
+                for fid in ids
+            ):
+                break
+            if len(set(ids)) != len(ids) or any(fid in seen for fid in ids):
+                break
+            if cursor is not None and any(int(fid) >= int(cursor) for fid in ids):
+                break
+            rows.extend(batch)
+            seen.update(ids)
+            if end_id != ids[-1] or any(
+                int(ids[i]) <= int(ids[i + 1]) for i in range(len(ids) - 1)
+            ):
+                break
+            cursor = end_id
+            params["idLessThan"] = cursor
+        return {"fillList": rows, "endId": cursor or "unproven", "pages": pages}
 
     async def get_single_position(
         self,

@@ -1,0 +1,56 @@
+{
+  "source": "Authenticated GET-only provider_history.json WLDUSDT 2026-09-07/13; page only NOT exhaustion proof",
+  "page": {
+    "fillList": [
+      {
+        "tradeId": "1481578282081849344",
+        "symbol": "WLDUSDT",
+        "orderId": "1481578281885646851",
+        "price": "0.4506",
+        "baseVolume": "12",
+        "feeDetail": [
+          {
+            "deduction": "no",
+            "feeCoin": "USDT",
+            "totalDeductionFee": "0",
+            "totalFee": "-0.00324432"
+          }
+        ],
+        "side": "sell",
+        "quoteVolume": "5.4072",
+        "profit": "-0.0012",
+        "enterPointSource": "api",
+        "tradeSide": "sell_single",
+        "posMode": "one_way_mode",
+        "tradeScope": "taker",
+        "marginCoin": "USDT",
+        "cTime": "1788961709518"
+      },
+      {
+        "tradeId": "1481578277312925696",
+        "symbol": "WLDUSDT",
+        "orderId": "1481578277016059904",
+        "price": "0.4507",
+        "baseVolume": "12",
+        "feeDetail": [
+          {
+            "deduction": "no",
+            "feeCoin": "USDT",
+            "totalDeductionFee": "0",
+            "totalFee": "-0.00324504"
+          }
+        ],
+        "side": "buy",
+        "quoteVolume": "5.4084",
+        "profit": "0",
+        "enterPointSource": "api",
+        "tradeSide": "buy_single",
+        "posMode": "one_way_mode",
+        "tradeScope": "taker",
+        "marginCoin": "USDT",
+        "cTime": "1788961708381"
+      }
+    ],
+    "endId": "1481578277312925696"
+  }
+}

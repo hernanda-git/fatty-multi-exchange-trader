@@ -106,6 +106,38 @@ def _admitted_intent() -> LiveIntentRecord:
 
 
 @pytest.mark.asyncio
+async def test_permission_fence_covers_post_but_not_readback() -> None:
+    from contextlib import contextmanager
+
+    held = False
+
+    @contextmanager
+    def permission():
+        nonlocal held
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    class Client(FakeAsyncClient):
+        async def place_entry_order(self, **kwargs):
+            assert held, "ENTRY POST must hold the permission fence"
+            return await super().place_entry_order(**kwargs)
+
+        async def get_order_detail(self, symbol, *, client_oid):
+            assert not held, "GET reconciliation must not hold the kill fence"
+            return await super().get_order_detail(symbol, client_oid=client_oid)
+
+    client = Client()
+    await AsyncBitgetExecution(client, AsyncBitgetVenue(client)).submit_entry_guarded(
+        _admitted_intent(), permission
+    )
+    assert len(client.entry_calls) == 1
+    assert not held
+
+
+@pytest.mark.asyncio
 async def test_adapter_closes_the_owned_rest_client() -> None:
     client = FakeAsyncClient()
     client.closed = False
@@ -295,6 +327,7 @@ async def test_matching_fill_can_terminalize_missing_detail_after_complete_reads
                     "orderId": "provider-1",
                     "price": "50000",
                     "size": "0.001",
+                    "fee": "0",
                 }
             ]
 
@@ -340,6 +373,102 @@ async def test_matching_fill_with_unconsumed_fill_cursor_stays_unknown() -> None
     result = await adapter.reconcile_intent(intent)
 
     assert result.status is LiveOrderStatus.UNKNOWN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("known_source", ["detail", "durable"])
+async def test_partial_fill_page_cannot_shrink_known_fill_or_trigger_another_post(known_source):
+    class PartialPageClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol, *, client_oid):
+            return {
+                "status": "partially_filled",
+                "requestedQty": "10",
+                "filledQty": "10" if known_source == "detail" else "2",
+                "avgPrice": "100",
+                "orderId": "provider-1",
+            }
+
+        async def get_fills(self, symbol):
+            return [
+                {
+                    "tradeId": "page-fill",
+                    "orderId": "provider-1",
+                    "baseVolume": "2",
+                    "price": "100",
+                    "fee": "0.2",
+                }
+            ]
+
+    client = PartialPageClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    intent = _admitted_intent()
+    intent.requested_qty = Decimal("10")
+    if known_source == "durable":
+        intent.filled_qty = Decimal("10")
+        intent.avg_price = Decimal("100")
+    for _ in range(2):
+        result = await adapter.reconcile_intent(intent)
+        assert result.status is LiveOrderStatus.UNKNOWN
+        assert result.filled_qty == Decimal("10")
+        assert result.avg_price == Decimal("100")
+        assert result.provider_order_id == "provider-1"
+        assert result.provider_fill_ids == ("page-fill",)
+        assert result.provider_fills[0]["baseVolume"] == "2"
+        assert result.fee == Decimal("0.2")
+    assert client.entry_calls == []
+
+
+@pytest.mark.asyncio
+async def test_incomplete_page_preserves_previous_real_fill_evidence():
+    class PageClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol, *, client_oid):
+            return {
+                "status": "filled",
+                "filledQty": "10",
+                "avgPrice": "100",
+                "orderId": "provider-1",
+            }
+
+        async def get_fills(self, symbol):
+            return [
+                {
+                    "tradeId": "new-fill",
+                    "orderId": "provider-1",
+                    "size": "2",
+                    "price": "100",
+                    "fee": "0.2",
+                }
+            ]
+
+    client = PageClient()
+    intent = _admitted_intent()
+    intent.requested_qty = intent.filled_qty = Decimal("10")
+    intent.provider_fill_ids = ("old-fill",)
+    intent.provider_fills = (
+        {"tradeId": "old-fill", "orderId": "provider-1", "size": "8", "price": "100", "fee": "0.8"},
+    )
+    result = await AsyncBitgetExecution(client, AsyncBitgetVenue(client)).reconcile_intent(intent)
+    assert result.status is LiveOrderStatus.UNKNOWN
+    assert result.filled_qty == Decimal("10")
+    assert set(result.provider_fill_ids) == {"old-fill", "new-fill"}
+    assert len(result.provider_fills) == 2
+    assert result.fee == Decimal("1")
+    assert client.entry_calls == []
+
+
+@pytest.mark.asyncio
+async def test_nonempty_detail_does_not_discard_unconsumed_fill_cursor():
+    class CursorClient(FakeAsyncClient):
+        async def get_fills(self, symbol):
+            return {"fillList": await super().get_fills(symbol), "endId": "next-page"}
+
+    client = CursorClient()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    result = await adapter.reconcile_intent(_admitted_intent())
+    assert result.status is LiveOrderStatus.UNKNOWN
+    assert result.filled_qty == Decimal("0.001")
+    assert result.provider_fill_ids == ("fill-1",)
+    assert client.entry_calls == []
 
 
 @pytest.mark.asyncio

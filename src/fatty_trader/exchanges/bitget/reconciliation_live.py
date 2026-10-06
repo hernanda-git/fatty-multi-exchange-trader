@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -37,6 +38,7 @@ class NativeProtectionExpectation:
     stop_loss_size: Decimal | None = None
     take_profit_size: Decimal | None = None
     position_level: bool = True
+    provider_position_epoch: str | None = None
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
@@ -73,6 +75,38 @@ async def evaluate_position_protection(
     if position.take_profit_id is None:
         return ProtectionReadiness.MISSING_TAKE_PROFIT
     return ProtectionReadiness.PROTECTED
+
+
+def canonical_provider_epoch(value: Any) -> str | None:
+    """Accept only provider's canonical positive millisecond epoch token."""
+    return value if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) else None
+
+
+def owned_opening_fill_side(fill: dict[str, Any], side: str) -> bool:
+    """Opening-compatible direction ONLY within an independently owned ENTRY.
+
+    *_single is buy/sell, not an opening assertion. Callers must additionally
+    prove order ownership, full quantity, and the exact provider position epoch.
+    """
+    if side not in {"buy", "sell"} or fill.get("side") != side:
+        return False
+    if fill.get("reduceOnly") not in {None, "NO", "no", False}:
+        return False
+    trade_side = fill.get("tradeSide")
+    if trade_side == "open":
+        return True
+    if fill.get("posMode") != "one_way_mode" or trade_side != side + "_single":
+        return False
+    if str(fill.get("enterPointSource", "")).lower() == "sys":
+        return False
+    if "profit" in fill:
+        try:
+            profit = Decimal(str(fill["profit"]))
+        except (InvalidOperation, ValueError, TypeError):
+            return False
+        if not profit.is_finite() or profit != 0:
+            return False
+    return True
 
 
 def _positive_decimal(payload: dict[str, Any], *fields: str) -> Decimal | None:
@@ -233,6 +267,12 @@ def _verify_exact_leg(
         return f"{leg_name}-client-oid-missing"
     if client_oid is not None and observed_client_oid != client_oid:
         return f"{leg_name}-client-oid-mismatch"
+    if expectation.provider_position_epoch is not None:
+        plan_epoch = canonical_provider_epoch(plan.get("cTime"))
+        if plan_epoch is None:
+            return f"{leg_name}-epoch-unproven"
+        if int(plan_epoch) < int(expectation.provider_position_epoch):
+            return f"{leg_name}-epoch-mismatch"
 
     observed_trigger = _parse_decimal(plan, f"{leg}TriggerPrice", "triggerPrice")
     if observed_trigger is None or observed_trigger != trigger:
@@ -306,6 +346,13 @@ async def _confirm_exact_native_protection(
     if observed_quantity != expectation.quantity:
         return ProtectionReport(
             ProtectionState.DEGRADED, observed_quantity, "position-quantity-mismatch"
+        )
+    if (
+        expectation.provider_position_epoch is not None
+        and canonical_provider_epoch(position.get("cTime")) != expectation.provider_position_epoch
+    ):
+        return ProtectionReport(
+            ProtectionState.DEGRADED, observed_quantity, "position-epoch-mismatch"
         )
 
     expected_sl_id = expectation.stop_loss_provider_order_id

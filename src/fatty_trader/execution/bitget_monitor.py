@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from fatty_trader.exchanges.bitget.client import (
+    BitgetClockSkewInconclusiveError,
+    clock_skew_reason,
+)
 from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
 from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
     ProviderFillReconciliationError,
@@ -97,11 +101,14 @@ class BitgetMonitor:
                 reasons.append("verified-close-evidence-unavailable")
         try:
             skew = await self._client.get_clock_skew_ms()
+        except BitgetClockSkewInconclusiveError:
+            reasons.append("clock-skew-inconclusive")
         except Exception:
             reasons.append("clock-skew-unavailable")
         else:
-            if abs(skew) > self._max_clock_skew_ms:
-                reasons.append("clock-skew-exceeded")
+            reason = clock_skew_reason(skew, self._max_clock_skew_ms)
+            if reason is not None:
+                reasons.append(reason)
         unique_reasons = tuple(dict.fromkeys(reasons))
         if unique_reasons:
             latchable_reasons = tuple(
