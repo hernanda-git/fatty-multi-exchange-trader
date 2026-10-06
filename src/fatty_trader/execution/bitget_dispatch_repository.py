@@ -162,7 +162,7 @@ class PostgresBitgetDispatchRepository:
             cursor.execute("LOCK TABLE venue_kill_switches IN SHARE MODE")
             cursor.execute(
                 "SELECT EXISTS(SELECT 1 FROM venue_kill_switches "
-                "WHERE scope IN ('global', 'bitget') AND active)"
+                "WHERE scope IN ('global', 'bitget', 'bitget-protection-stream') AND active)"
             )
             killed = bool(cursor.fetchone()[0])
             cursor.execute(

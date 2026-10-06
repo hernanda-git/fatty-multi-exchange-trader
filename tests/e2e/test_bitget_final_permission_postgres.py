@@ -21,7 +21,7 @@ from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 psycopg = pytest.importorskip("psycopg")
 
 
-@pytest.mark.parametrize("scope", ["global", "bitget"])
+@pytest.mark.parametrize("scope", ["global", "bitget", "bitget-protection-stream"])
 def test_kill_latched_while_final_source_read_waits_prevents_post(scope):
     dsn = os.environ.get("FATTY_TEST_POSTGRES_DSN")
     if not dsn:
