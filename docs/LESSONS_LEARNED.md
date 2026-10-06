@@ -90,11 +90,14 @@ CI, merge and deployment are separate acceptance states. See
 - A backup archive listing is necessary but insufficient: rehearse restoration
   into a network-isolated database before relying on rollback.
 
-## Verified operational recovery, not release readiness
+## Historical operational receipt, not current configuration
 
 The original PUMP native market SL/TP installation was accepted and read back
 without entry replay. Later authenticated reads showed no PUMP position/pending
 orders and a matching 1880-unit close fill at 0.005426. This receipt does not
 by itself attribute the close to a particular plan or prove all bot accounting.
-The candidate has not been released. Entry/fallback/stream mutation gates stay
-closed until the full verification and deployment gates are satisfied.
+Historical closed-entry rollout instructions are superseded by the permanent
+[production LIVE-only policy](PRODUCTION-LIVE-POLICY.md). Keep LIVE/LIVE/1,
+existing incident latches and independent optional mutation flags. Current
+activation requires the controlled-recovery and full verification gates; this
+historical receipt is not release approval.

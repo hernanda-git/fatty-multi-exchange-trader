@@ -1,6 +1,7 @@
 # Agentic Ops Fast Path — Fatty Bitget
 
-> Read [current remediation gates](../remediation-verification.md) first.
+> Read [current remediation gates](../remediation-verification.md) and the
+> [controlled historical recovery contract](../CONTROLLED-HISTORICAL-RECOVERY.md) first.
 > This handoff's dated deployment facts remain historical, not current readiness
 > or mutation authorization. Verify current source/image/schema/provider lineage.
 
