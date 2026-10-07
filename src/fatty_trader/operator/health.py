@@ -484,6 +484,7 @@ def load_operator_health_snapshot(
         "fallback_positions",
         "kill_switch",
         "kill_reason",
+        "active_kill_switches",
     )
     metrics = dict.fromkeys(names, "UNKNOWN")
     try:
@@ -507,7 +508,11 @@ def load_operator_health_snapshot(
                 "              (SELECT active FROM venue_kill_switches WHERE "
                 "scope='bitget'),\n"
                 "              (SELECT reason FROM venue_kill_switches WHERE "
-                "scope='bitget')\n"
+                "scope='bitget'),\n"
+                "              (SELECT coalesce(json_agg(json_build_object('scope', scope, "
+                "'reason', reason) ORDER BY scope), '[]'::json) "
+                "FROM venue_kill_switches WHERE active AND scope IN "
+                "('bitget', 'bitget-protection-stream'))\n"
                 "        "
             ),
         )

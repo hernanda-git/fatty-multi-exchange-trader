@@ -380,7 +380,10 @@ def load_db_metrics() -> dict:
         " FROM venue_kill_switches WHERE scope = 'bitget'), "
         "(SELECT COALESCE(json_object_agg(state, count), '{}'::json) FROM (SELECT state, count(*) FROM bitget_margin_reservations WHERE exchange = 'bitget' GROUP BY state) r), "
         "(SELECT EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - max(captured_at)))::text FROM balance_snapshots WHERE exchange = 'bitget'), "
-        "(SELECT status FROM bitget_post_fill_reconciliations WHERE exchange = 'bitget' ORDER BY created_at DESC LIMIT 1)"
+        "(SELECT status FROM bitget_post_fill_reconciliations WHERE exchange = 'bitget' ORDER BY created_at DESC LIMIT 1), "
+        "(SELECT coalesce(json_agg(json_build_object('scope', scope, 'reason', reason) "
+        "ORDER BY scope), '[]'::json) FROM venue_kill_switches "
+        "WHERE active AND scope IN ('bitget', 'bitget-protection-stream'))"
     )
     return {
         "messages": row.get("col0", "0"),
@@ -391,6 +394,7 @@ def load_db_metrics() -> dict:
         "active_intents": row.get("col5", "0"),
         "fallback_positions": row.get("col6", "0"),
         "kill_switch": row.get("col7", "UNKNOWN"),
+        "active_kill_switches": json.loads(row.get("col11", "[]")),
         "reservation_totals": row.get("col8", "{}"),
         "newest_balance_snapshot_age_seconds": row.get("col9", "N/A"),
         "latest_post_fill_reconciliation": row.get("col10", "N/A"),
@@ -455,11 +459,39 @@ def get_service_status() -> dict[str, int | str]:
     present = {row[0] for row in rows}
     rows.extend([name, "missing", ""] for name in sorted(expected - present))
     running = sum(len(row) > 1 and row[1].lower() == "running" for row in rows)
-    healthy = sum(len(row) > 2 and row[2].lower() == "healthy" for row in rows)
+    healthy = sum(
+        len(row) > 2 and row[1].lower() == "running" and row[2].lower() == "healthy" for row in rows
+    )
     starting = sum(len(row) > 2 and row[2].lower() == "starting" for row in rows)
-    unhealthy = sum(len(row) > 2 and row[2].lower() == "unhealthy" for row in rows)
+    unhealthy = sum(
+        len(row) < 2
+        or row[1].lower() != "running"
+        or (len(row) > 2 and row[2].lower() == "unhealthy")
+        for row in rows
+    )
+    dispatcher_states = [row[1].upper() for row in rows if row[0] == "dispatcher-bitget"]
+    dispatcher_state = ", ".join(dispatcher_states) or "UNKNOWN"
+    lifecycle = "UNKNOWN"
+    if "RESTARTING" in dispatcher_states:
+        # Only retain a fixed startup-failure marker, never arbitrary log payloads.
+        # Bound the read to this incident window: historical failures do not prove
+        # that an otherwise running worker is currently blocked.
+        try:
+            logs = subprocess.run(
+                ["docker", "compose", "logs", "--no-color", "--tail", "50", "dispatcher-bitget"],
+                capture_output=True,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+                timeout=10,
+            )
+            if logs.returncode == 0 and "Bitget lifecycle recovery is not ready" in logs.stdout:
+                lifecycle = "BLOCKED"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     return {
         "status": "OK",
+        "dispatcher_state": dispatcher_state,
+        "lifecycle_recovery": lifecycle,
         "total": len(rows),
         "running": running,
         "healthy": healthy,

@@ -243,11 +243,29 @@ def format_report(
         or _count(services.get("starting")) > 0
         or _count(services.get("unexpected_runtime")) > 0
         or _count(services.get("running")) < _count(services.get("total"))
+        or str(services.get("dispatcher_state", "RUNNING")).upper() != "RUNNING"
     )
     codex_unhealthy = codex.get("status") in {"AUTH_FAILED", "N/A"}
+    latch_evidence = metrics.get("active_kill_switches", [])
+    active_latches = latch_evidence if isinstance(latch_evidence, list) else []
+    kill_unhealthy = (
+        not isinstance(latch_evidence, list)
+        or str(metrics.get("kill_switch", "UNKNOWN")).upper() not in {"INACTIVE", "RELEASED"}
+        or bool(active_latches)
+    )
+    lifecycle = str(services.get("lifecycle_recovery", "UNKNOWN")).upper()
+    execution_ready = str(modes.get("execution_enabled", "UNKNOWN")) == "1"
     overall = (
         "🟢 ONLINE"
-        if live_runtime and provider_known and not service_unhealthy and not codex_unhealthy
+        if (
+            live_runtime
+            and provider_known
+            and not service_unhealthy
+            and not codex_unhealthy
+            and not kill_unhealthy
+            and execution_ready
+            and lifecycle != "BLOCKED"
+        )
         else "⚠️ DEGRADED"
     )
     execution_raw = str(modes.get("execution_enabled", "UNKNOWN"))
@@ -271,6 +289,12 @@ def format_report(
         kill_display = "✅ INACTIVE"
     else:
         kill_display = "⚠️ UNKNOWN"
+
+    if active_latches:
+        kill_display = "🔴 ACTIVE · " + "; ".join(
+            f"{latch.get('scope', 'UNKNOWN')}: {latch.get('reason', 'UNKNOWN')}"
+            for latch in active_latches
+        )
 
     if services.get("status") == "OK":
         service_line = (
@@ -297,7 +321,9 @@ def format_report(
         f"<b>{overall}  SYSTEM</b>",
         "<pre>Runtime    "
         f"{_html(modes.get('mode', '?'))} · Bitget {_html(modes.get('venue_mode', '?'))}\n"
-        f"Execution  {_html(execution)}\n"
+        f"Execution  {_html(execution)} · permission only, not fill evidence\n"
+        f"Lifecycle  {_html(lifecycle)}\n"
+        f"Dispatcher {_html(services.get('dispatcher_state', 'UNKNOWN'))}\n"
         f"Host       fspmi-hostinger\n"
         f"Services   {_html(service_line)}\n"
         f"Provider   {status_mark(provider_summary)} {_html(provider_summary)}\n"
@@ -466,6 +492,7 @@ def format_report(
         f"Post-fill       {_html(metrics.get('latest_post_fill_reconciliation', 'N/A'))}\n"
         f"Fallback mon.  {_html(metrics.get('fallback_positions', '0'))} active</pre>"
     )
+    L.append("<i>Signals/analyzer output are not provider fills; triggers are not execution.</i>")
     L.append("")
 
     # ── Risk controls ──────────────────────────────────────────────────
