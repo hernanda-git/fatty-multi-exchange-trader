@@ -407,6 +407,8 @@ def test_dead_or_stopped_worker_cannot_attest_young_metadata(tmp_path):
         path = tmp_path / "proof.json"
         assert readiness.read_monitor_readiness(path)["pid"] == process.pid
         os.kill(process.pid, signal.SIGSTOP)
+        stopped_pid, stopped_status = os.waitpid(process.pid, os.WUNTRACED)
+        assert stopped_pid == process.pid and os.WIFSTOPPED(stopped_status)
         with pytest.raises(readiness.ReadinessUnavailable):
             readiness.read_monitor_readiness(path)
         os.kill(process.pid, signal.SIGCONT)
