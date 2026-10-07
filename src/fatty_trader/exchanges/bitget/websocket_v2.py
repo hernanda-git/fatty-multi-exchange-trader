@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import json
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
@@ -42,6 +43,7 @@ from fatty_trader.exchanges.bitget.ws_models import (
     WebSocketProtocolError,
 )
 from fatty_trader.exchanges.bitget.ws_v2_models import (
+    V2_PRIVATE_CHANNELS,
     build_v2_login_message,
     build_v2_private_subscription,
     build_v2_public_subscription,
@@ -134,6 +136,10 @@ class BitgetV2WebSocket:
         # been acknowledged AND it has been heard from within the bound.
         self._private_authenticated = False
         self._last_private_activity_at: float | None = None
+        self._connection_generation: str | None = None
+        self._private_login_ack_at: float | None = None
+        self._private_subscription_acks: set[str] = set()
+        self._private_pong_at: float | None = None
         self._readers: list[asyncio.Task[None]] = []
         self._queues: dict[str, asyncio.Queue[Any]] = {}
         self._any_event = asyncio.Event()
@@ -191,12 +197,54 @@ class BitgetV2WebSocket:
             raise ValueError("Bitget v2 private stream requires api key, secret and passphrase")
         return list(build_v2_private_subscription()["args"])
 
+    def _reset_release_facts(self) -> None:
+        self._private_login_ack_at = None
+        self._private_subscription_acks.clear()
+        self._private_pong_at = None
+
+    def release_readiness(self) -> dict[str, Any]:
+        """Safe current-connection facts; empty tickers never mean watched health."""
+        now = self._clock()
+        pong_age = None if self._private_pong_at is None else now - self._private_pong_at
+        private_ready = (
+            self._state is V2ConnectionState.CONNECTED
+            and self._both_legs_open()
+            and self._reader_error is None
+            and self._private_authenticated
+            and self._private_login_ack_at is not None
+            and self._private_subscription_acks == set(V2_PRIVATE_CHANNELS)
+            and pong_age is not None
+            and 0 <= pong_age <= self._private_silent_after
+        )
+        watched = (
+            all(
+                (received_at := self.last_mark_event_at(symbol)) is not None
+                and 0 <= now - received_at <= self._stale_after
+                for symbol in self._symbols
+            )
+            if self._symbols
+            else None
+        )
+        return {
+            "ready": bool(private_ready and watched is not False),
+            "account_stream_fresh": bool(private_ready),
+            "connection_generation": self._connection_generation,
+            "login_ack_at": self._private_login_ack_at,
+            "subscription_acks": sorted(self._private_subscription_acks),
+            "pong_at": self._private_pong_at,
+            "pong_max_age_seconds": self._private_silent_after,
+            "watched_symbols": list(self._symbols),
+            "watched_symbols_healthy": watched,
+        }
+
     # --- lifecycle ---------------------------------------------------------
 
     async def connect(self) -> None:
         """Open both legs, authenticate the private one, subscribe both."""
         self._state = V2ConnectionState.CONNECTING
         self._private_authenticated = False
+        self._reset_release_facts()
+        self._connection_generation = uuid.uuid4().hex
         try:
             self._private_subscription_args()  # fail before opening sockets
             public = await self._transport.connect(self._public_url)
@@ -221,6 +269,7 @@ class BitgetV2WebSocket:
             )
             await self._receive_login_ack(private)
             self._private_authenticated = True
+            self._private_login_ack_at = self._clock()
             await private.send(_json(build_v2_private_subscription()))
         except Exception:
             # Never leave a half-open pair looking healthy.
@@ -234,7 +283,7 @@ class BitgetV2WebSocket:
         self._last_event_at = now
         self._last_mark_event_at = {}
         self._last_ping_at = now
-        self._last_pong_at = now
+        self._last_pong_at = None
         self._last_private_activity_at = now
         self._state = V2ConnectionState.CONNECTED
         self._start_readers()
@@ -384,7 +433,7 @@ class BitgetV2WebSocket:
                             f"component=bitget-ws-v2 state=connect_error "
                             f"public={self._public_url} private={self._private_url} "
                             f"consecutive_failures={attempt} "
-                            f"error_type={type(exc).__name__} error={exc}",
+                            f"error_type={type(exc).__name__}",
                             flush=True,
                         )
                         continue
@@ -414,7 +463,7 @@ class BitgetV2WebSocket:
                     print(
                         f"component=bitget-ws-v2 state=read_error "
                         f"consecutive_failures={attempt} "
-                        f"error_type={type(exc).__name__} error={exc}",
+                        f"error_type={type(exc).__name__}",
                         flush=True,
                     )
                     await self._close_public()
@@ -554,11 +603,25 @@ class BitgetV2WebSocket:
                     self._last_pong_at = now
                     if leg == "private":
                         self._last_private_activity_at = now
+                        self._private_pong_at = now
                     # Wake the main receive loop even with no business events;
                     # a pong is the account stream's idle liveness evidence.
                     self._any_event.set()
                     continue
                 events = normalize_v2_frame(raw)
+                if leg == "private":
+                    payload = json.loads(raw)
+                    if payload.get("event") == "subscribe":
+                        code = payload.get("code", "0")
+                        if not isinstance(code, str) or code not in {"0", "00000"}:
+                            raise WebSocketProtocolError("Private subscription not acknowledged")
+                        arg = payload.get("arg", {})
+                        if (
+                            arg.get("instType") == "USDT-FUTURES"
+                            and arg.get("instId") == "default"
+                            and arg.get("channel") in V2_PRIVATE_CHANNELS
+                        ):
+                            self._private_subscription_acks.add(arg["channel"])
                 if leg == "private":
                     # Any private frame proves the socket is alive.
                     self._last_private_activity_at = now
@@ -598,6 +661,7 @@ class BitgetV2WebSocket:
             self._any_event.set()
 
     async def _close_public(self) -> None:
+        self._reset_release_facts()
         await self._stop_readers()
         connection, self._public = self._public, None
         if connection is not None:
@@ -605,6 +669,7 @@ class BitgetV2WebSocket:
                 await connection.close()
 
     async def _close_private(self) -> None:
+        self._reset_release_facts()
         await self._stop_readers()
         connection, self._private = self._private, None
         if connection is not None:
@@ -633,7 +698,11 @@ class BitgetV2WebSocket:
                 f"Bitget v2 login failed: {payload.get('code')}",
                 code=str(payload.get("code", "")) or None,
             )
-        if payload.get("event") != "login" or str(payload.get("code", "0")) not in {"0", "00000"}:
+        code = payload.get("code")
+        valid_code = (isinstance(code, str) and code in {"0", "00000"}) or (
+            type(code) is int and code == 0
+        )
+        if payload.get("event") != "login" or not valid_code:
             raise WebSocketProtocolError("Bitget v2 login was not acknowledged")
 
     @staticmethod

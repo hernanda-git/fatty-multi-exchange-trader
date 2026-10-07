@@ -136,6 +136,7 @@ class BitgetProtectionStreamRuntime:
             raise ValueError("Bitget protection stream environment must be DEMO or LIVE")
         self._now = now or (lambda: datetime.now(UTC))
         self._active_symbol_source = active_symbol_source
+        self.symbol_source_ready = active_symbol_source is None
         if stale_after <= 0:
             raise ValueError("stale_after must be positive")
         self._stale_after = stale_after
@@ -185,6 +186,7 @@ class BitgetProtectionStreamRuntime:
                 )
             )
         except Exception as exc:
+            self.symbol_source_ready = False
             logger.warning(
                 "Bitget protection stream active-symbol read failed: %s",
                 type(exc).__name__,
@@ -195,6 +197,7 @@ class BitgetProtectionStreamRuntime:
         current = set(self._socket.symbols)
         stale = tuple(symbol for symbol in current if symbol not in symbols)
         unsubscribed = await self._socket.unsubscribe_symbols(stale)
+        self.symbol_source_ready = True
         return subscribed, unsubscribed
 
     async def _on_event(self, event: BitgetWebSocketEvent) -> None:

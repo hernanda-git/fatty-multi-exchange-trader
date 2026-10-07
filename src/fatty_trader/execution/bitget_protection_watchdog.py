@@ -123,6 +123,10 @@ class BitgetProtectionWatchdog:
             and str(getattr(socket_state, "value", socket_state)).upper() == "CONNECTED"
         )
         reasons: list[str] = []
+        private_proof = getattr(self._socket, "release_readiness", None)
+        if callable(private_proof) and private_proof().get("account_stream_fresh") is not True:
+            socket_ready = False
+            reasons.append("private-stream-unavailable")
         if socket_dead or not socket_ready:
             reasons.append("socket-not-connected")
 

@@ -8,8 +8,10 @@ is treated as a latchable anomaly so it blocks new entries across restarts.
 from __future__ import annotations
 
 import logging
+import math
+import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
@@ -42,6 +44,9 @@ class MonitorReport:
     reasons: tuple[str, ...] = ()
     provider_exits_reconciled: int = 0
     latched_reason: str | None = None
+    observed_at: float | None = None
+    observed_monotonic: float | None = None
+    clock_observation: dict[str, Any] | None = None
 
 
 class BitgetMonitor:
@@ -57,6 +62,8 @@ class BitgetMonitor:
         enforce_kill_switch: bool = True,
         fallback_mutations_enabled: bool = False,
         live_intent_store: LiveIntentStoreProtocol | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")
@@ -67,8 +74,51 @@ class BitgetMonitor:
         self._enforce_kill_switch = enforce_kill_switch
         self._fallback_mutations_enabled = fallback_mutations_enabled
         self._live_intent_store = live_intent_store
+        self._clock = clock
+        self._wall_clock = wall_clock
+        self._clock_observation: dict[str, Any] | None = None
 
     async def run_once(self) -> MonitorReport:
+        observed_at, observed_monotonic = self._wall_clock(), self._clock()
+        self._clock_observation = None
+        report = await self._run_once()
+        return replace(
+            report,
+            observed_at=observed_at,
+            observed_monotonic=observed_monotonic,
+            clock_observation=self._clock_observation,
+        )
+
+    async def _observe_clock(self) -> float:
+        server_reader = getattr(self._client, "get_server_time_ms", None)
+        if not callable(server_reader):
+            # Legacy clients remain supported but cannot publish a release interval.
+            return await self._client.get_clock_skew_ms()
+        wall_start, mono_start = self._wall_clock(), self._clock()
+        server_ms = await server_reader()
+        wall_end, mono_end = self._wall_clock(), self._clock()
+        elapsed = mono_end - mono_start
+        lower, upper = wall_start * 1000 - server_ms, wall_end * 1000 - server_ms
+        valid = (
+            all(math.isfinite(v) for v in (lower, upper, elapsed, wall_start, wall_end))
+            and 0 <= elapsed <= 5
+            and abs((wall_end - wall_start) - elapsed) <= 0.05
+            and lower <= upper
+        )
+        self._clock_observation = {
+            "observed_at": wall_start,
+            "observed_monotonic": mono_start,
+            "lower_ms": lower,
+            "upper_ms": upper,
+            "bound_ms": self._max_clock_skew_ms,
+            "clean": valid
+            and -self._max_clock_skew_ms <= lower <= upper <= self._max_clock_skew_ms,
+        }
+        if not valid:
+            raise ValueError("inconclusive clock observation")
+        return float(max(abs(lower), abs(upper)))
+
+    async def _run_once(self) -> MonitorReport:
         reasons: list[str] = []
         await self._reconcile_unresolved_intents(reasons)
         provider_exits_reconciled = await self._reconcile_provider_exits(reasons)
@@ -96,7 +146,7 @@ class BitgetMonitor:
                 # Retain reservations and surface read/DB failures; never infer release.
                 reasons.append("verified-close-evidence-unavailable")
         try:
-            skew = await self._client.get_clock_skew_ms()
+            skew = await self._observe_clock()
         except Exception:
             reasons.append("clock-skew-unavailable")
         else:

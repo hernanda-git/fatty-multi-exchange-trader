@@ -786,6 +786,7 @@ async def run_bitget_monitor_loop(
     heartbeat_path: str | None = None,
     cycle_timeout: float | None = None,
     stall_timeout: float | None = None,
+    readiness: Any | None = None,
 ) -> None:
     """Run monitor, optional stream, and optional watchdog with shared shutdown."""
     if not math.isfinite(interval) or interval <= 0:
@@ -813,6 +814,7 @@ async def run_bitget_monitor_loop(
                     stop,
                     heartbeat_path=heartbeat_path,
                     cycle_timeout=cycle_timeout,
+                    readiness=readiness,
                 )
             )
         )
@@ -836,6 +838,8 @@ async def run_bitget_monitor_loop(
                 flush=True,
             )
             _raise_if_background_failed(background, stop)
+            if readiness is not None:
+                readiness.monitor_completed(report)
             await _wait_for_stop(stop, interval)
     finally:
         stop.set()
@@ -844,6 +848,8 @@ async def run_bitget_monitor_loop(
                 task.cancel()
         if background:
             await asyncio.gather(*background, return_exceptions=True)
+        if readiness is not None:
+            readiness.close()
 
 
 async def _run_bitget_watchdog_loop(
@@ -853,6 +859,7 @@ async def _run_bitget_watchdog_loop(
     *,
     heartbeat_path: str | None = None,
     cycle_timeout: float | None = None,
+    readiness: Any | None = None,
 ) -> None:
     """Run the REST protection watchdog independently of the legacy monitor cadence."""
     while not stop_event.is_set():
@@ -860,9 +867,21 @@ async def _run_bitget_watchdog_loop(
         stream_symbols = getattr(watchdog, "stream_symbols", ())
         if callable(refresh_symbols):
             refresh_symbols(stream_symbols)
-        report = await _run_cycle_with_timeout(
-            watchdog.run_once, cycle_timeout=cycle_timeout, component="Bitget protection watchdog"
-        )
+        observed_at, observed_monotonic = time.time(), time.monotonic()
+        try:
+            report = await _run_cycle_with_timeout(
+                watchdog.run_once,
+                cycle_timeout=cycle_timeout,
+                component="Bitget protection watchdog",
+            )
+        except BaseException:
+            if readiness is not None:
+                readiness.invalidate("watchdog-cycle-failed")
+            raise
+        if readiness is not None:
+            readiness.watchdog_completed(
+                report, observed_at=observed_at, observed_monotonic=observed_monotonic
+            )
         if heartbeat_path is not None:
             write_monitor_heartbeat(heartbeat_path)
         print(
@@ -1021,6 +1040,11 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         active_symbol_source=lambda: [entry["symbol"] for entry in load_active()],
         kill_switch=repository,
     )
+    from fatty_trader.execution.bitget_release_readiness import MonitorReadinessPublisher
+
+    readiness = MonitorReadinessPublisher(
+        environ, socket=stream.socket if stream else None, stream=stream
+    )
     try:
         await run_bitget_monitor_loop(
             monitor,
@@ -1031,8 +1055,10 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
             heartbeat_path=heartbeat_path,
             cycle_timeout=cycle_timeout,
             stall_timeout=stall_timeout,
+            readiness=readiness,
         )
     finally:
+        readiness.close()
         await client.aclose()
 
 
