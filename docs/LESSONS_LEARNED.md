@@ -78,5 +78,22 @@ The original PUMP native market SL/TP installation was accepted and read back
 without entry replay. Later authenticated reads showed no PUMP position/pending
 orders and a matching 1880-unit close fill at 0.005426. This receipt does not
 by itself attribute the close to a particular plan or prove all bot accounting.
-The candidate has not been released. Entry/fallback/stream mutation gates stay
-closed until the full verification and deployment gates are satisfied.
+The original candidate receipt did not establish release readiness. Current
+production configuration is governed by [LIVE-only policy](PRODUCTION-LIVE-POLICY.md),
+not historical closed-gate notes. Do not infer current admission from old receipts.
+
+## Report truth and recovery evidence
+
+- A canonical signal with a dispatch count is queue creation, not execution.
+  Explicitly disclaim absent provider order/fill confirmation in the setup card.
+- Historical filled recovery with an unresolved close/protection reason is a
+  blocked recovery event, not a new successful entry.
+- Aggregate health includes global, venue and stream latches. Missing dispatcher
+  or lifecycle evidence defaults to UNKNOWN/degraded, never running/ready.
+- Signed historical positions provide actual `ctime` and position IDs. Matching
+  economics and time is a diagnostic candidate, not a direct entry-to-epoch binding;
+  never substitute the earliest fill time for a position creation epoch.
+- A truthful report deployment does not restore blocked entry. Preserve historical
+  uncertainty and obtain a reviewed policy before any new operational baseline.
+- See [deployed correction and remaining recovery blockers](REPORT-TRUTH-RECOVERY-STATUS.md)
+  and [notification contract](SIGNAL-NOTIFICATION-TRUTH.md).
