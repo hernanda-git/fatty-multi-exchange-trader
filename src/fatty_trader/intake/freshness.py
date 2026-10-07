@@ -90,4 +90,10 @@ AND NOT EXISTS (
 AND {alias}.entry_expires_at > clock_timestamp()
 AND {alias}.received_at > clock_timestamp() - interval '5 minutes'
 AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
+-- Baseline cutoff never resurrects preactivation entries, even if exclusions
+-- become invalid or authenticated runtime context is missing.
+AND NOT EXISTS (
+    SELECT 1 FROM bitget_operational_baseline_activations baseline_epoch
+    WHERE {alias}.received_at <= baseline_epoch.source_cutoff
+)
 """

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL, expire_source_dispatch
+from fatty_trader.storage.operational_baseline import BaselineContext, set_baseline_context
 
 
 class Cursor(Protocol):
@@ -43,8 +44,24 @@ class PostgresBitgetMarginReservationRepository:
     account read immediately before calling this method and reject stale evidence.
     """
 
-    def __init__(self, connection_factory: Callable[[], Connection]) -> None:
+    def __init__(
+        self,
+        connection_factory: Callable[[], Connection],
+        *,
+        baseline_context: BaselineContext | None = None,
+    ) -> None:
         self._connection_factory = connection_factory
+        self.bind_baseline_context(baseline_context)
+
+    def bind_baseline_context(self, context: BaselineContext | None) -> None:
+        """Bind an authenticated LIVE client context before recovery/dispatch starts.
+
+        Authentication belongs to runtime assembly, not environment/ledger inference.
+        None explicitly disables all baseline exclusions.
+        """
+        if context is not None and not isinstance(context, BaselineContext):
+            raise TypeError("baseline context must be BaselineContext or None")
+        self._baseline_context = context
 
     def reserve(
         self,
@@ -132,10 +149,18 @@ class PostgresBitgetMarginReservationRepository:
             if observed_at - now > max_future_skew:
                 connection.commit()
                 return BalanceAdmission.rejected("future-balance-snapshot")
+            context = self._baseline_context if environment == "LIVE" else None
+            set_baseline_context(cursor, context)
+            exclusion = (
+                "NOT EXISTS(SELECT 1 FROM bitget_operational_baseline_exclusions e "
+                "WHERE e.kind='reservation' AND e.row_id=bitget_margin_reservations.id)"
+                if context is not None
+                else "TRUE"
+            )
             cursor.execute(
-                """SELECT symbol FROM bitget_margin_reservations
+                f"""SELECT symbol FROM bitget_margin_reservations
                 WHERE exchange = %s AND (environment = %s OR environment IS NULL)
-                  AND state IN ('reserved', 'unknown', 'consumed')""",
+                  AND state IN ('reserved', 'unknown', 'consumed') AND ({exclusion})""",
                 (exchange, environment),
             )
             owners = [_first(row, None) for row in cursor.fetchall()]
@@ -184,10 +209,11 @@ class PostgresBitgetMarginReservationRepository:
             if returned_snapshot is not None:
                 snapshot_id = _uuid_from_row(returned_snapshot, snapshot_id)
             cursor.execute(
-                """
+                f"""
                 SELECT COALESCE(SUM(planned_margin_usdt), 0)
                 FROM bitget_margin_reservations
                 WHERE exchange = %s AND state IN ('reserved', 'unknown', 'consumed')
+                  AND ({exclusion})
                 """,
                 (exchange,),
             )
@@ -478,6 +504,22 @@ class PostgresBitgetMarginReservationRepository:
         try:
             cursor = connection.cursor()
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext('bitget'))")
+            if normalized == "FILLED" and self._baseline_context is not None:
+                set_baseline_context(cursor, self._baseline_context)
+                cursor.execute(
+                    "SELECT id FROM bitget_margin_reservations WHERE id=%s FOR UPDATE",
+                    (reservation_id,),
+                )
+                cursor.execute(
+                    "SELECT EXISTS(SELECT 1 FROM bitget_operational_baseline_exclusions "
+                    "WHERE kind='reservation' AND row_id=%s)",
+                    (reservation_id,),
+                )
+                if cursor.fetchone()[0]:
+                    # Literal consumed/FILLED history survives. Do not rejuvenate or
+                    # rewrite its evidence when a GET reader repeats historical truth.
+                    connection.commit()
+                    return
             cursor.execute(
                 """
                 UPDATE bitget_margin_reservations

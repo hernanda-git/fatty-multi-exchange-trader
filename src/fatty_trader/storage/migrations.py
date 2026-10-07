@@ -18,6 +18,7 @@ from typing import Any, Final, Protocol
 
 from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
 from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
+from fatty_trader.storage.operational_baseline_schema import OPERATIONAL_BASELINE_SCHEMA_SQL
 from fatty_trader.storage.schema import (
     ADMISSION_CONSTRAINTS_SCHEMA_SQL,
     BITGET_DISPATCH_SCHEMA_SQL,
@@ -344,6 +345,7 @@ MIGRATIONS: Final = [
     (21, INTAKE_COVERAGE_SCHEMA_SQL),
     (22, FALLBACK_OWNERSHIP_SCHEMA_SQL),
     (23, VERIFIED_CLOSE_SCHEMA_SQL),
+    (24, OPERATIONAL_BASELINE_SCHEMA_SQL),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

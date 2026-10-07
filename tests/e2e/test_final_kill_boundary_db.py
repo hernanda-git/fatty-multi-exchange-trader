@@ -60,10 +60,13 @@ async def test_service_final_kill_blocks_known_unsent_entry(
                 lock_ready.set()
                 deadline = monotonic() + 10
                 while monotonic() < deadline:
+                    # Match the query prefix: the added cutoff can push its
+                    # trailing FOR UPDATE past track_activity_query_size. Blocking
+                    # PID still proves the same real dispatch row-lock wait.
                     row = observer.execute(
                         "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
                         "WHERE %s = ANY(pg_blocking_pids(pid)) "
-                        "AND query LIKE '%%FOR UPDATE OF d%%')",
+                        "AND query LIKE 'SELECT d.state, COALESCE%%')",
                         (locker_pid,),
                     ).fetchone()
                     assert row is not None

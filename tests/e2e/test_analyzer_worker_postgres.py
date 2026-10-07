@@ -71,6 +71,12 @@ def database():
             from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
 
             conn.execute(INTAKE_COVERAGE_SCHEMA_SQL)
+            # Minimal worker fixture's new source-eligibility dependency. The
+            # complete additive schema is exercised by migration E2E tests.
+            conn.execute(
+                "CREATE TABLE bitget_operational_baseline_activations "
+                "(source_cutoff timestamptz NOT NULL)"
+            )
         yield connect
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:

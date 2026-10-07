@@ -81,7 +81,7 @@ def test_upgrade_adds_binding_without_admitting_historical_closes(postgres_schem
 'SELL','CLOSE','filled',1,1)"""
         )
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-    assert _migrate(dsn, schema) == [23]
+    assert _migrate(dsn, schema) == [v for v, _ in all_migrations if v > 22]
     assert _migrate(dsn, schema) == []
     with _connect(dsn, schema) as c:
         assert c.execute("SELECT count(*) FROM bitget_verified_close_bindings").fetchone()[0] == 0

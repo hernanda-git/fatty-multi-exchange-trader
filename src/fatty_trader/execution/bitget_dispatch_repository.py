@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL, expire_source_dispatch
+from fatty_trader.storage.operational_baseline import BaselineContext, set_baseline_context
 
 
 def _retire_stale(cursor: Any) -> None:
@@ -118,8 +119,24 @@ SELECT dispatch_id FROM reservation;
 class PostgresBitgetDispatchRepository:
     """Lease-safe dispatch repository; every mutation is transactional and auditable."""
 
-    def __init__(self, connection_factory: Callable[[], Connection]) -> None:
+    def __init__(
+        self,
+        connection_factory: Callable[[], Connection],
+        *,
+        baseline_context: BaselineContext | None = None,
+    ) -> None:
         self._connection_factory = connection_factory
+        self.bind_baseline_context(baseline_context)
+
+    def bind_baseline_context(self, context: BaselineContext | None) -> None:
+        """Bind an authenticated LIVE client context before recovery/dispatch starts.
+
+        Authentication belongs to runtime assembly, not environment/ledger inference.
+        None explicitly disables all baseline exclusions.
+        """
+        if context is not None and not isinstance(context, BaselineContext):
+            raise TypeError("baseline context must be BaselineContext or None")
+        self._baseline_context = context
 
     def claim(self, worker_id: str, lease_seconds: int) -> BitgetDispatch | None:
         if not worker_id:
@@ -171,8 +188,15 @@ class PostgresBitgetDispatchRepository:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            set_baseline_context(cursor, self._baseline_context)
+            exclusion = (
+                "NOT EXISTS(SELECT 1 FROM bitget_operational_baseline_exclusions e "
+                "WHERE e.kind='intent' AND e.row_id=i.id)"
+                if self._baseline_context is not None
+                else "TRUE"
+            )
             cursor.execute(
-                """SELECT d.id, d.state, d.claimed_by, d.attempts,
+                f"""SELECT d.id, d.state, d.claimed_by, d.attempts,
                           s.pair_token, s.direction, s.entry_price, s.stop_loss,
                           s.take_profits, tm.channel_id, tm.message_id, i.client_order_id
                    FROM live_order_intents i
@@ -182,6 +206,7 @@ class PostgresBitgetDispatchRepository:
                    LEFT JOIN canonical_signals s ON s.id = d.source_id
                    LEFT JOIN telegram_messages tm ON tm.id = s.message_id
                    WHERE i.exchange = 'bitget' AND i.role = 'ENTRY'
+                     AND ({exclusion})
                      AND (i.filled_qty > 0 OR i.state NOT IN
                           ('rejected', 'cancelled', 'reconciled'))
                    ORDER BY d.created_at, d.id"""
@@ -206,10 +231,18 @@ class PostgresBitgetDispatchRepository:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            set_baseline_context(cursor, self._baseline_context)
+            exclusion = (
+                "NOT EXISTS(SELECT 1 FROM bitget_operational_baseline_exclusions e "
+                "WHERE e.kind='dispatch' AND e.row_id=d.id)"
+                if self._baseline_context is not None
+                else "TRUE"
+            )
             cursor.execute(
-                """SELECT EXISTS(
-                SELECT 1 FROM dispatches WHERE lower(exchange)='bitget'
-                AND (state='UNPROTECTED' OR terminal_reason='missing-protection-escalated'
+                f"""SELECT EXISTS(
+                SELECT 1 FROM dispatches d WHERE lower(exchange)='bitget'
+                AND ({exclusion}) AND (state='UNPROTECTED'
+                     OR terminal_reason='missing-protection-escalated'
                      OR terminal_reason LIKE 'recovery-missing-protection:%%'
                      OR terminal_reason LIKE 'recovery-filled-protection-unverified%%')
             )""",
@@ -231,21 +264,37 @@ class PostgresBitgetDispatchRepository:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            context = self._baseline_context if environment == "LIVE" else None
+            set_baseline_context(cursor, context)
+            intent_filter = (
+                "NOT EXISTS(SELECT 1 FROM bitget_operational_baseline_exclusions e "
+                "WHERE e.kind='intent' AND e.row_id=i.id)"
+                if context
+                else "TRUE"
+            )
+            margin_filter = (
+                "NOT EXISTS(SELECT 1 FROM bitget_operational_baseline_exclusions e "
+                "WHERE e.kind='reservation' AND e.row_id=m.id)"
+                if context
+                else "TRUE"
+            )
             cursor.execute(
-                """SELECT EXISTS (
+                f"""SELECT EXISTS (
                     SELECT 1 FROM live_order_intents i
                     LEFT JOIN bitget_margin_reservations m ON m.exchange=i.exchange
                         AND m.client_order_id=i.client_order_id
                     LEFT JOIN dispatches d ON d.id=m.dispatch_id AND d.exchange=i.exchange
                     WHERE i.exchange='bitget' AND i.role='ENTRY'
-                      AND (i.filled_qty>0 OR i.state NOT IN ('rejected','cancelled','reconciled'))
+                      AND ({intent_filter}) AND (i.filled_qty>0
+                           OR i.state NOT IN ('rejected','cancelled','reconciled'))
                       AND (d.id IS NULL OR m.environment IS DISTINCT FROM %s)
                 ), EXISTS (
                     SELECT 1 FROM bitget_margin_reservations m
                     LEFT JOIN live_order_intents i ON i.exchange=m.exchange
                         AND i.client_order_id=m.client_order_id AND i.role='ENTRY'
                     WHERE m.exchange='bitget' AND m.state IN ('reserved','unknown','consumed')
-                      AND (m.environment=%s OR m.environment IS NULL) AND i.client_order_id IS NULL
+                      AND ({margin_filter}) AND (m.environment=%s OR m.environment IS NULL)
+                      AND i.client_order_id IS NULL
                 )""",
                 (environment, environment),
             )
