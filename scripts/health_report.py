@@ -383,7 +383,7 @@ def load_db_metrics() -> dict:
         "(SELECT status FROM bitget_post_fill_reconciliations WHERE exchange = 'bitget' ORDER BY created_at DESC LIMIT 1), "
         "(SELECT coalesce(json_agg(json_build_object('scope', scope, 'reason', reason) "
         "ORDER BY scope), '[]'::json) FROM venue_kill_switches "
-        "WHERE active AND scope IN ('bitget', 'bitget-protection-stream'))"
+        "WHERE active AND scope IN ('global', 'bitget', 'bitget-protection-stream'))"
     )
     return {
         "messages": row.get("col0", "0"),

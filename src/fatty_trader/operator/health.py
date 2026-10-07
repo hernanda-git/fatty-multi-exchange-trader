@@ -512,7 +512,7 @@ def load_operator_health_snapshot(
                 "              (SELECT coalesce(json_agg(json_build_object('scope', scope, "
                 "'reason', reason) ORDER BY scope), '[]'::json) "
                 "FROM venue_kill_switches WHERE active AND scope IN "
-                "('bitget', 'bitget-protection-stream'))\n"
+                "('global', 'bitget', 'bitget-protection-stream'))\n"
                 "        "
             ),
         )

@@ -243,7 +243,7 @@ def format_report(
         or _count(services.get("starting")) > 0
         or _count(services.get("unexpected_runtime")) > 0
         or _count(services.get("running")) < _count(services.get("total"))
-        or str(services.get("dispatcher_state", "RUNNING")).upper() != "RUNNING"
+        or str(services.get("dispatcher_state", "UNKNOWN")).upper() != "RUNNING"
     )
     codex_unhealthy = codex.get("status") in {"AUTH_FAILED", "N/A"}
     latch_evidence = metrics.get("active_kill_switches", [])
@@ -264,7 +264,7 @@ def format_report(
             and not codex_unhealthy
             and not kill_unhealthy
             and execution_ready
-            and lifecycle != "BLOCKED"
+            and lifecycle == "READY"
         )
         else "⚠️ DEGRADED"
     )

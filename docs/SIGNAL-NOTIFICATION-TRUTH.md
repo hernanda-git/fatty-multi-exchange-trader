@@ -31,7 +31,15 @@ Regression tests cover the exact queued TRUMP shape, zero dispatch count,
 historical FILLED recovery, and mode-independent cutover refusal. Existing
 notification tests retain HTML, redaction, management, and outbox coverage.
 
-This change modifies presentation only. It does not release safety latches,
+This change modifies presentation only. Aggregate health includes all entry-blocking
+latch scopes (`global`, `bitget`, `bitget-protection-stream`), dispatcher state,
+and lifecycle readiness. Missing dispatcher/readiness evidence must be degraded,
+not replaced with a permissive default. The present loaders do not establish a
+positive worker-owned lifecycle-ready observation; they therefore cannot claim
+ONLINE from absent evidence. A healthy fixture explicitly proves READY/RUNNING
+before testing the negative cases.
+
+It does not release safety latches,
 replay queued signals, rewrite ownership, place protective orders, or make entry
 admission ready. Deploying the notification sender is separate from restoring
 live execution; source tests and a rebuilt image are not live-fill proof.

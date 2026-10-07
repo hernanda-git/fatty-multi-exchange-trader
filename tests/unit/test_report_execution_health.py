@@ -137,6 +137,7 @@ def test_cron_loads_all_active_bitget_latch_scopes(monkeypatch):
     assert metrics["active_kill_switches"][0]["scope"] == "bitget-protection-stream"
     assert "active" in queries[0]
     assert "bitget-protection-stream" in queries[0]
+    assert "'global'" in queries[0]
     assert "DEGRADED" in render(metrics=metrics)
 
 
@@ -152,6 +153,7 @@ def test_operator_command_loads_stream_latch_through_shared_reader():
     class LatchCursor(Cursor):
         def execute(self, sql):
             assert "bitget-protection-stream" in sql
+            assert "'global'" in sql
 
         def fetchone(self):
             return (
