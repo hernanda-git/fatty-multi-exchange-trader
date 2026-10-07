@@ -347,8 +347,8 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
 
 
 def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
-    reason = str(payload.get("reason", ""))
-    dispatch_id = escape(_safe_value(payload.get("dispatch_id", "")))
+    reason = _safe_text(_safe_value(payload.get("reason", "")), limit=512)
+    dispatch_id = escape(_safe_text(_safe_value(payload.get("dispatch_id", "")), limit=96))
     if reason.startswith(("recovery-missing-protection:", "recovery-filled-protection-unverified")):
         return (
             "⛔ <b>Recovery Diblokir</b>\n"
@@ -378,7 +378,7 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
             "LIVE     : Gate boleh berjalan setelah approval\n"
             f"Ref      : <code>{dispatch_id}</code>"
         )
-    state = escape(_safe_value(payload.get("to_state", "diperbarui")))
+    state = escape(_safe_text(_safe_value(payload.get("to_state", "diperbarui")), limit=32))
     return (
         f"📈 <b>Status Eksekusi</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -389,8 +389,8 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
 
 
 def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
-    reason = str(payload.get("reason", ""))
-    dispatch_id = escape(_safe_value(payload.get("dispatch_id", "")))
+    reason = _safe_text(_safe_value(payload.get("reason", "")), limit=512)
+    dispatch_id = escape(_safe_text(_safe_value(payload.get("dispatch_id", "")), limit=96))
     if reason == "cutover-gated":
         return _format_execution_event_html(payload)
     return (
