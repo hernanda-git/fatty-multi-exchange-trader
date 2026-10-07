@@ -326,7 +326,11 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
         dispatch_count = max(0, int(dispatches))
     except (TypeError, ValueError):
         dispatch_count = 0
-    process_label = f"{dispatch_count} proses eksekusi dibuat"
+    process_label = (
+        f"{dispatch_count} antrean eksekusi dibuat"
+        if dispatch_count
+        else "Tidak ada antrean eksekusi dibuat"
+    )
     direction_icon = "🟢" if direction == "LONG" else "🔴" if direction == "SHORT" else "⚪"
     return (
         f"📊 <b>Setup Terdeteksi · {pair} {direction_icon} {direction}</b>\n"
@@ -336,6 +340,7 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
         f"TP     : <code>{take_profits}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"Status : {process_label}\n"
+        "<i>Belum ada konfirmasi order/fill provider pada laporan ini.</i>\n"
         f"ID: <code>#{source_id}</code>\n"
         f"Waktu: <code>{escape(source_received_at)}</code>"
     )[:4000]
@@ -344,12 +349,21 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
 def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
     reason = str(payload.get("reason", ""))
     dispatch_id = escape(_safe_value(payload.get("dispatch_id", "")))
+    if reason.startswith(("recovery-missing-protection:", "recovery-filled-protection-unverified")):
+        return (
+            "⛔ <b>Recovery Diblokir</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "Fill historis, bukan entry baru.\n"
+            "Penutupan/proteksi belum terverifikasi; entry baru tetap diblokir.\n"
+            f"Alasan: <code>{escape(reason)}</code>\n"
+            f"Dispatch: <code>{dispatch_id}</code>"
+        )
     if reason == "cutover-gated":
         return (
             "⛔ <b>Eksekusi Diblokir</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "Tidak ada order dikirim.\n"
-            "Alasan: mode DEMO · eksekusi live belum diaktifkan."
+            "Alasan: gate eksekusi tertutup · order tidak diizinkan."
         )
     if reason == "approved-provider-flat-readback-no-order-or-intent":
         return (

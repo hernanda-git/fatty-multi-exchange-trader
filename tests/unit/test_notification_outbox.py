@@ -95,7 +95,8 @@ def test_signal_analysis_with_trade_uses_compact_trade_card() -> None:
     assert "Entry  : <code>0.47</code>" in text
     assert "SL     : <code>0.4562</code>" in text
     assert "TP     : <code>0.51</code>" in text
-    assert "1 proses eksekusi dibuat" in text
+    assert "1 antrean eksekusi dibuat" in text
+    assert "Belum ada konfirmasi order/fill provider pada laporan ini" in text
 
 
 def test_cutover_event_states_that_no_order_was_sent() -> None:
