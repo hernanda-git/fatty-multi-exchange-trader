@@ -165,6 +165,7 @@ class PostgresBitgetLiveLatchRecovery:
         # additionally refuse EVERY future/unbaselined unresolved commitment.
         cursor.execute(
             "SELECT EXISTS(SELECT 1 FROM live_order_intents i WHERE exchange='bitget' "
+            "AND role='ENTRY' "
             "AND (filled_qty>0 OR state NOT IN ('rejected','cancelled','reconciled')) "
             "AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b "
             "WHERE b.record_kind='intent' AND b.record_id=i.id)), "
