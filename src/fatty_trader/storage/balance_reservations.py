@@ -322,6 +322,11 @@ class PostgresBitgetMarginReservationRepository:
             binding = cursor.fetchone()
             if binding is None or str(binding[0]) != str(reservation_id):
                 return reject("close-intent-not-bound")
+            from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+            remaining = PostgresLiveIntentStore(self._connection_factory).remaining_owned_quantity(
+                entry_client_order_id
+            )
             if (
                 entry[1] != symbol
                 or entry[3] != "ENTRY"
@@ -340,7 +345,7 @@ class PostgresBitgetMarginReservationRepository:
                     for q in (entry[6], close_intent[5], close_intent[6])
                 )
                 or close_intent[5] != close_intent[6]
-                or close_intent[6] != entry[6]
+                or remaining != 0
             ):
                 return reject("close-intent-not-bound")
             cursor.execute(
@@ -491,6 +496,9 @@ class PostgresBitgetMarginReservationRepository:
                     resolved_at = clock_timestamp(),
                     resolution_reason = %s
                 WHERE id = %s
+                  AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                      WHERE b.record_kind='reservation'
+                        AND b.record_id=bitget_margin_reservations.id)
                 """,
                 (
                     state,

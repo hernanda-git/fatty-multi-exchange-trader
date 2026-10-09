@@ -354,3 +354,71 @@ async def test_fallback_unknown_close_readback_is_not_confirmed_flat(
     assert result["reason"] == "close-readback-unknown"
     assert not any(name == "triggered" for name, _ in events)
     assert any(name == "intent" and args[1] == "unknown" for name, args in events)
+
+
+@pytest.mark.parametrize(
+    "ticker",
+    [
+        {"lastPr": "94"},
+        {"markPrice": "NaN", "lastPr": "94"},
+        {"markPrice": "Infinity"},
+        {"markPrice": "0"},
+        {"code": "40000", "data": [{"markPrice": "94"}]},
+    ],
+)
+def test_fallback_never_substitutes_last_trade_for_valid_mark(ticker):
+    with pytest.raises((ValueError, ArithmeticError)):
+        fallback._ticker_mark_price(ticker)
+
+
+def test_mark_price_wins_over_last_trade_and_accepts_provider_envelope():
+    assert fallback._ticker_mark_price({"markPrice": "100", "lastPr": "94"}) == Decimal("100")
+    assert fallback._ticker_mark_price(
+        {"code": "00000", "data": [{"markPrice": "100", "lastPr": "94"}]}
+    ) == Decimal("100")
+
+
+@pytest.mark.asyncio
+async def test_rest_last_trade_wick_without_mark_cannot_claim_close(monkeypatch, active_entry):
+    class LastTradeClient(FakeClient):
+        async def get_ticker(self, symbol):
+            return {"lastPr": "90"}
+
+    client = LastTradeClient([[{"total": "0.01"}]])
+    monkeypatch.setattr(fallback, "load_active", lambda: [active_entry])
+    monkeypatch.setattr(
+        fallback, "_owned_quantity", lambda positions, entry: fallback._open_quantity(positions)
+    )
+    monkeypatch.setattr(
+        fallback,
+        "_ensure_close_intent",
+        lambda *args: pytest.fail("missing mark must not claim a close"),
+    )
+    assert await fallback.run_fallback_monitor_async(client, environment="DEMO") == []
+    assert client.close_calls == []
+
+
+@pytest.mark.parametrize(
+    ("position_mode", "margin_mode", "expected"),
+    [
+        ("one_way_mode", "isolated", Decimal("0.01")),
+        ("hedge_mode", "isolated", None),
+        ("one_way_mode", "crossed", None),
+        (None, "isolated", None),
+        ("one_way_mode", None, None),
+    ],
+)
+def test_owned_fallback_requires_account_modes_before_reduce_only_close(
+    monkeypatch, active_entry, position_mode, margin_mode, expected
+):
+    active_entry.update(position_key="entry-owner", provider_position_epoch="1000")
+    position = {
+        "symbol": "BTCUSDT",
+        "holdSide": "long",
+        "cTime": "1000",
+        "total": "0.01",
+        "posMode": position_mode,
+        "marginMode": margin_mode,
+    }
+    monkeypatch.setattr(fallback, "_db_query", lambda *args: [["entry-owner"]])
+    assert fallback._owned_quantity([position], active_entry) == expected

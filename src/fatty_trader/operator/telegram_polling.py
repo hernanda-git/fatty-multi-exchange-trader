@@ -129,15 +129,16 @@ class TelegramBotApi:
             response = self._client.post(f"{self._prefix}/{method}", json=payload)
             response.raise_for_status()
             body = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise RuntimeError("Telegram Bot API request failed") from exc
+        except (httpx.HTTPError, ValueError):
+            # HTTP exception strings include the Bot API URL and its secret token.
+            raise RuntimeError("Telegram Bot API request failed") from None
         if not isinstance(body, dict) or body.get("ok") is not True:
             raise RuntimeError("Telegram Bot API rejected request")
         return body.get("result")
 
 
 class TelegramCommandPoller:
-    """Advance Bot API updates exactly once and route only private slash commands."""
+    """Route private commands with durable at-most-once update claims."""
 
     def __init__(
         self,
@@ -160,9 +161,11 @@ class TelegramCommandPoller:
             update_id = update.get("update_id")
             if not isinstance(update_id, int):
                 continue
+            claimed = self._receipt_store is None or self._receipt_store.claim(update_id)
+            # A transient database failure must not acknowledge an unclaimed update.
             self.offset = update_id + 1
             processed += 1
-            if self._receipt_store is not None and not self._receipt_store.claim(update_id):
+            if not claimed:
                 continue
             self._handle_update(update)
         return processed

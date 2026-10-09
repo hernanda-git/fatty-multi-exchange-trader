@@ -5,7 +5,11 @@ scheduled unit must use the provider-first Python report so the live Telegram
 card cannot silently fall back to DB-only position snapshots.
 """
 
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "telegram_health_report.sh"
 DEPLOY_SERVICE = (
@@ -87,3 +91,28 @@ def test_scheduled_unit_uses_provider_first_report():
     assert "scripts/health_report.py" in text
     assert "telegram_health_report.sh" not in text
     assert "TimeoutStartSec=120" in text
+
+
+@pytest.mark.parametrize("large", [False, True])
+def test_manual_report_budgeting_preserves_literal_source_backslashes(large):
+    text = _text()
+    command = next(
+        line
+        for line in text.splitlines()
+        if line.startswith('report="$(printf') and "bounded_html" in line
+    )
+    body = r"source \c must not truncate the report \n stays literal"
+    if large:
+        body += "🟢&amp;" * 2000
+    report = f"<b>Source</b><pre>{body}</pre>"
+    result = subprocess.run(
+        ["bash", "-c", command + "\nprintf '%s' \"$report\""],
+        env={**os.environ, "root": str(SCRIPT.parent.parent), "report": report},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert r"\c must not truncate the report \n stays literal" in result.stdout
+    assert len(result.stdout.encode("utf-16-le")) // 2 <= 4000
+    assert result.stdout.endswith("</pre>")
+    assert "printf '%b" not in text

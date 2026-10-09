@@ -179,6 +179,8 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
             balance_snapshot_id=uuid4(),
             margin_reservation_id=uuid4(),
             observed_at=datetime.now(UTC),
+            planned_stop_loss=Decimal("90"),
+            planned_take_profits=(Decimal("110"),),
         )
         assert await runtime.execution.submit_entry(next_dispatch, submission) == "REJECTED"
         assert store.get(runtime.execution.client_oid(next_dispatch)) is None

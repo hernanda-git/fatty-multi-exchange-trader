@@ -213,10 +213,12 @@ def _plan_at_leverage(
         return _MIN_NOTIONAL_FAILURE
     raw_qty = (margin * leverage) / per_qty
     qty = round_qty_to_step(raw_qty, meta.size_step)
-    # Step rounding can round up past the cap, so re-derive size and margin from the
-    # capped quantity before the guard sees them.
+    # The production path submits a market order. A limit maximum is not its
+    # quantity limit; floor to the market ceiling before deriving reserved margin.
+    if meta.max_market_order_qty is not None and qty > meta.max_market_order_qty:
+        qty = round_qty_to_step(meta.max_market_order_qty, meta.size_step)
+    # Re-derive realized margin from the capped quantity before the guard sees it.
     capped = _enforce_margin_cap(
-        margin=margin,
         leverage=leverage,
         qty=qty,
         entry=rounded_entry,
@@ -307,33 +309,29 @@ def _margin_cap(risk: BitgetLiveRiskConfig) -> Decimal | None:
 
 def _enforce_margin_cap(
     *,
-    margin: Decimal,
     leverage: int,
     qty: Decimal,
     entry: Decimal,
     meta: SymbolMetadata,
     cap: Decimal | None,
 ) -> tuple[Decimal, Decimal] | None:
-    """Shrink the quantity until the *actual* margin (notional / leverage) fits the cap.
+    """Return step-rounded quantity and its actual notional/leverage margin.
 
-    Sizing rounds quantity to the exchange step, so a capped request can round *up*
-    past the ceiling. Recomputing margin from the final quantity and flooring the
-    quantity keeps realized margin at or below the cap. Returns None if no size
-    survives.
+    Both venue quantity ceilings and margin caps can shrink the allocation.
+    Persisting the original margin after flooring misstates the reservation and
+    makes post-fill reconciliation report a false mismatch.
     """
-    if cap is None:
-        return margin, qty
     if qty <= 0:
         return None
     per_qty = entry * meta.contract_value
     if per_qty <= 0:
         return None
-    max_qty = (cap * Decimal(leverage)) / per_qty
+    max_qty = qty if cap is None else (cap * Decimal(leverage)) / per_qty
     capped_qty = round_qty_to_step(min(qty, max_qty), meta.size_step)
     if capped_qty < meta.min_order_qty:
         return None
     actual_margin = (capped_qty * per_qty) / Decimal(leverage)
-    if actual_margin > cap:
+    if cap is not None and actual_margin > cap:
         return None
     return actual_margin, capped_qty
 

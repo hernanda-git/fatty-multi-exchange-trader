@@ -11,13 +11,13 @@ from __future__ import annotations
 import json
 import time
 from decimal import Decimal, InvalidOperation
-from typing import Any
 from urllib.request import urlopen
 
 _TICKER_URL = (
     "https://api.bitget.com/api/v2/mix/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
 )
 _CACHE_TTL_SECONDS = 10.0
+_MAX_TICKER_AGE_SECONDS = 30.0
 _cache: dict[str, tuple[float, Decimal]] = {}
 
 
@@ -37,12 +37,21 @@ def public_last_price(
     try:
         with urlopen(_TICKER_URL.format(symbol=symbol), timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, dict) or payload.get("code") != "00000":
+            return None
         data = payload.get("data")
-        row: Any = data[0] if isinstance(data, list) and data else data
+        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+            return None
+        row = data[0]
+        if row.get("symbol") != symbol:
+            return None
+        ticker_age = time.time() - int(row["ts"]) / 1000
+        if not -30 <= ticker_age <= _MAX_TICKER_AGE_SECONDS:
+            return None
         price = Decimal(str(row["lastPr"]))
-        if price <= 0:
+        if not price.is_finite() or price <= 0:
             return None
     except (OSError, KeyError, TypeError, ValueError, InvalidOperation):
         return None
-    _cache[symbol] = (clock, price)
+    _cache[symbol] = (clock - max(0, ticker_age), price)
     return price

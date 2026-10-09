@@ -12,10 +12,17 @@ import inspect
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
 from fatty_trader.exchanges.bitget.live import LiveIntentRecord, LiveIntentStoreProtocol
+from fatty_trader.exchanges.bitget.metadata import find_contract, metadata_from_contract
+from fatty_trader.exchanges.bitget.reconciliation_live import (
+    NativeProtectionExpectation,
+    confirm_native_protection,
+)
+from fatty_trader.execution.protection import ProtectionState
+from fatty_trader.risk.sizing import round_price_to_tick, round_qty_to_step
 
 
 class BitgetOperatorClient(Protocol):
@@ -23,6 +30,11 @@ class BitgetOperatorClient(Protocol):
     def get_account(self) -> Any: ...
     def get_all_positions(self) -> Any: ...
     def get_pending_orders(self, symbol: str | None = None) -> Any: ...
+    def get_contracts(self) -> Any: ...
+    def get_pending_plan_orders(self, symbol: str) -> Any: ...
+    def modify_position_stop_loss(
+        self, *, symbol: str, order_id: str, client_oid: str, trigger_price: str
+    ) -> Any: ...
     def place_market_close(
         self, *, symbol: str, side: str, quantity: str, client_oid: str
     ) -> Any: ...
@@ -38,6 +50,12 @@ class BitgetOperatorClient(Protocol):
         take_profit: str | None,
     ) -> Any: ...
     def aclose(self) -> Any: ...
+
+
+class PendingEntryExecution(Protocol):
+    async def cancel_pending_entries(
+        self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
+    ) -> bool: ...
 
 
 def _decimal(value: object, field: str) -> Decimal:
@@ -85,9 +103,11 @@ class BitgetOperatorGateway:
         intent_store: LiveIntentStoreProtocol,
         *,
         client_oid_factory: Callable[[], str] | None = None,
+        entry_execution: PendingEntryExecution | None = None,
     ) -> None:
         self._client = client
         self._intent_store = intent_store
+        self._entry_execution = entry_execution
         self._client_oid_factory = client_oid_factory or (lambda: f"operator-close-{uuid4().hex}")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
@@ -327,6 +347,32 @@ class BitgetOperatorGateway:
             return {"count": len(states), "state": "reconciliation-pending"}
         return {"count": len(states), "state": "closed"}
 
+    def cancel_pending_entries(
+        self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
+    ) -> bool:
+        """Cancel only durable bot entry legs, never symbol-wide/protective orders.
+
+        The entry execution adapter owns the intent-first cancellation fence and
+        terminal provider readback. Missing wiring is not evidence of no orders.
+        """
+        from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+        if self._entry_execution is None:
+            raise SourceManagementReconciliationPending("owned entry cancellation is not wired")
+        try:
+            result = self._run(
+                self._entry_execution.cancel_pending_entries(
+                    symbol.upper(), management_id, reconciliation_only=True
+                )
+                if reconciliation_only
+                else self._entry_execution.cancel_pending_entries(symbol.upper(), management_id)
+            )
+        except (BitgetUnknownResultError, TimeoutError) as exc:
+            raise SourceManagementReconciliationPending(
+                "owned entry cancellation result is unknown"
+            ) from exc
+        return result is True
+
     def close_reduce_only(
         self, *, symbol: str, side: str, quantity: Decimal, client_oid: str
     ) -> None:
@@ -363,6 +409,105 @@ class BitgetOperatorGateway:
         intent.state = "submitted"
         self._intent_store.update(intent)
 
+    def normalize_tp1_close_quantity(self, symbol: str, quantity: Decimal) -> Decimal:
+        """Floor the existing half policy to lot steps; never close the residual."""
+        metadata = self._symbol_metadata(symbol)
+        if not quantity.is_finite() or quantity <= 0:
+            raise ValueError("TP1 position quantity is invalid")
+        close = round_qty_to_step(quantity / Decimal("2"), metadata.size_step)
+        residual = quantity - close
+        if (
+            close < metadata.min_order_qty
+            or residual < metadata.size_step
+            or residual % metadata.size_step != 0
+            or (metadata.max_market_order_qty is not None and close > metadata.max_market_order_qty)
+        ):
+            raise ValueError("TP1 half close cannot preserve a nonzero lot-safe residual")
+        return close
+
+    def _symbol_metadata(self, symbol: str) -> Any:
+        contracts = [
+            dict(row) for row in _rows(self._run(self._client.get_contracts()), "contracts")
+        ]
+        matching = [
+            row for row in contracts if str(row.get("symbol", "")).upper() == symbol.upper()
+        ]
+        if len(matching) != 1:
+            raise ValueError("Bitget contract must resolve uniquely")
+        return metadata_from_contract(find_contract(matching, symbol))
+
+    def _confirm_stop_protection(
+        self, expectation: NativeProtectionExpectation, *, plans: Any = None
+    ) -> bool:
+        positions = self._run(self._client.get_all_positions())
+        rows = [
+            dict(row)
+            for row in _rows(positions, "positions")
+            if str(row.get("symbol", "")).upper() == expectation.symbol
+        ]
+        pending = (
+            self._run(self._client.get_pending_plan_orders(expectation.symbol))
+            if plans is None
+            else plans
+        )
+
+        async def read_position() -> Any:
+            return rows
+
+        async def read_plans() -> Any:
+            return pending
+
+        report = self._run(
+            confirm_native_protection(read_position, read_plans, expectation=expectation)
+        )
+        return bool(report.state == ProtectionState.VENUE_PROTECTED)
+
+    def _reconcile_stop_intent(self, intent: LiveIntentRecord) -> None:
+        from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+        root = self._intent_store.get(intent.stop_mutation_root_oid or "")
+        if (
+            intent.role != "SL"
+            or root is None
+            or root.role != "ENTRY"
+            or not intent.provider_order_id
+            or not intent.stop_mutation_take_profit_id
+            or intent.planned_stop_loss is None
+            or not intent.planned_take_profits
+        ):
+            raise SourceManagementReconciliationPending("stop mutation ownership is unconfirmed")
+        expectation = NativeProtectionExpectation(
+            symbol=intent.symbol,
+            hold_side="long" if intent.side == "SELL" else "short",
+            quantity=intent.requested_qty,
+            stop_loss=intent.planned_stop_loss,
+            take_profit=intent.planned_take_profits[0],
+            stop_loss_client_oid=root.client_oid,
+            take_profit_client_oid=root.client_oid,
+            stop_loss_provider_order_id=intent.provider_order_id,
+            take_profit_provider_order_id=intent.stop_mutation_take_profit_id,
+        )
+        try:
+            confirmed = self._confirm_stop_protection(expectation)
+        except Exception as exc:
+            raise SourceManagementReconciliationPending("stop-loss readback failed") from exc
+        if not confirmed:
+            raise SourceManagementReconciliationPending("stop-loss readback is unconfirmed")
+        self._intent_store.update_active_stop(
+            intent.symbol, root.client_oid, intent.planned_stop_loss, intent.client_oid
+        )
+        intent.state = "reconciled"
+        self._intent_store.update(intent)
+
+    def reconcile_stop_loss(self, client_oid: str) -> None:
+        """Recover a previous management claim using GET evidence only."""
+        from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+        intent = self._intent_store.get(client_oid)
+        if intent is None:
+            raise SourceManagementReconciliationPending("claimed stop intent is not available")
+        self._reconcile_stop_intent(intent)
+
     def replace_stop_loss(
         self,
         *,
@@ -372,18 +517,72 @@ class BitgetOperatorGateway:
         stop_loss: Decimal,
         client_oid: str,
     ) -> None:
-        """Fail closed when an existing native SL needs an unverified cancel-plan adapter."""
+        """Modify one owned position SL in place, preserving the original full TP."""
         from fatty_trader.execution.source_management import SourceManagementReconciliationPending
 
-        if self._intent_store.get(client_oid) is not None:
-            raise SourceManagementReconciliationPending(
-                "existing stop-loss intent requires reconciliation"
-            )
+        existing = self._intent_store.get(client_oid)
+        if existing is not None:
+            if existing.symbol != symbol.upper() or existing.side != (
+                "SELL" if side == "LONG" else "BUY"
+            ):
+                raise SourceManagementReconciliationPending("stop mutation intent conflicts")
+            self._reconcile_stop_intent(existing)
+            return
+        symbol = symbol.upper()
+        if side not in {"LONG", "SHORT"} or not stop_loss.is_finite() or stop_loss <= 0:
+            raise ValueError("stop-loss request is invalid")
+        normalized_stop = round_price_to_tick(stop_loss, self._symbol_metadata(symbol).price_tick)
         positions = self.get_positions(symbol)
         if len(positions) != 1 or positions[0]["side"] != side or positions[0]["size"] != quantity:
-            raise ValueError("Bitget position changed before stop-loss replacement")
-        if positions[0]["stop_loss"] is not None:
-            raise ValueError("native SL replacement requires verified cancel-plan-order adapter")
+            raise ValueError("Bitget position changed before stop-loss modification")
+        position = positions[0]
+        sl_id = str(position["stop_loss_id"] or "").strip()
+        tp_id = str(position["take_profit_id"] or "").strip()
+        if not sl_id or not tp_id:
+            raise ValueError("owned native SL and retained TP identities are required")
+        pending = self._run(self._client.get_pending_plan_orders(symbol))
+        plans = [dict(row) for row in _rows(pending, "pending protection")]
+        candidates = [
+            row
+            for row in plans
+            if str(row.get("orderId", row.get("planOrderId", row.get("id", "")))) == sl_id
+            and str(row.get("planType", row.get("type", ""))).lower() == "pos_loss"
+        ]
+        if len(candidates) != 1:
+            raise ValueError("native SL plan was not found uniquely")
+        plan = candidates[0]
+        root_oid = str(
+            plan.get("stopLossClientOid")
+            or plan.get("clientOid")
+            or plan.get("clientOrderId")
+            or ""
+        ).strip()
+        root = self._intent_store.get(root_oid)
+        if (
+            root is None
+            or root.role != "ENTRY"
+            or root.symbol.upper() != symbol
+            or root.side.upper() not in ({"BUY", "LONG"} if side == "LONG" else {"SELL", "SHORT"})
+            or root.entry_leg == "limit"
+            or root.planned_stop_loss is None
+            or not root.planned_take_profits
+            or self._intent_store.remaining_owned_quantity(root_oid) != quantity
+        ):
+            raise ValueError("native SL ownership does not match the live residual")
+        old_stop = root.active_stop_loss_price or root.planned_stop_loss
+        expectation = NativeProtectionExpectation(
+            symbol=symbol,
+            hold_side=side.lower(),
+            quantity=quantity,
+            stop_loss=old_stop,
+            take_profit=root.planned_take_profits[0],
+            stop_loss_client_oid=root_oid,
+            take_profit_client_oid=root_oid,
+            stop_loss_provider_order_id=sl_id,
+            take_profit_provider_order_id=tp_id,
+        )
+        if not self._confirm_stop_protection(expectation, plans=pending):
+            raise ValueError("owned native protection strict pre-readback failed")
         intent = LiveIntentRecord(
             "bitget",
             client_oid,
@@ -392,25 +591,43 @@ class BitgetOperatorGateway:
             "SL",
             "requested",
             quantity,
+            provider_order_id=sl_id,
+            planned_stop_loss=normalized_stop,
+            planned_take_profits=root.planned_take_profits,
+            stop_mutation_root_oid=root_oid,
+            stop_mutation_take_profit_id=tp_id,
         )
-        self._intent_store.save(intent)
-        submitted = self._run(
-            self._client.place_position_tpsl(
-                symbol=symbol,
-                hold_side=side.lower(),
-                quantity=str(quantity),
-                stop_loss=str(stop_loss),
-                take_profit=None,
+        if not self._intent_store.claim(intent):
+            previous = self._intent_store.get(client_oid)
+            if previous is None:
+                raise SourceManagementReconciliationPending("stop intent claim was lost")
+            self._reconcile_stop_intent(previous)
+            return
+        try:
+            submitted = self._run(
+                self._client.modify_position_stop_loss(
+                    symbol=symbol,
+                    order_id=sl_id,
+                    client_oid=root_oid,
+                    trigger_price=str(normalized_stop),
+                )
             )
-        )
-        if not _protection_ack_is_valid(submitted):
+        except Exception as exc:
             intent.state = "unknown"
             self._intent_store.update(intent)
-            raise SourceManagementReconciliationPending("stop-loss acknowledgement is invalid")
-        current = self.get_positions(symbol)
-        if len(current) != 1 or current[0]["stop_loss"] != stop_loss:
+            raise SourceManagementReconciliationPending(
+                "stop modification result is unknown"
+            ) from exc
+        if (
+            not isinstance(submitted, Mapping)
+            or str(submitted.get("orderId") or "") != sl_id
+            or str(submitted.get("clientOid") or "") != root_oid
+        ):
             intent.state = "unknown"
             self._intent_store.update(intent)
-            raise SourceManagementReconciliationPending("stop-loss readback is unconfirmed")
-        intent.state = "reconciled"
+            raise SourceManagementReconciliationPending(
+                "stop modification acknowledgement is invalid"
+            )
+        intent.state = "acknowledged"
         self._intent_store.update(intent)
+        self._reconcile_stop_intent(intent)

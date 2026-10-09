@@ -20,14 +20,47 @@ from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
 
 class GetOnlyProtectionRecovery:
-    def __init__(self, client: Any, repository: Any, *, environment: str) -> None:
+    def __init__(
+        self, client: Any, repository: Any, *, environment: str, intent_store: Any = None
+    ) -> None:
         self._client = client
         self._repository = repository
         self._environment = environment
         self._verified: dict[str, tuple[str, str, Decimal]] = {}
+        self._intent_store = intent_store
 
     def begin(self) -> None:
         self._verified.clear()
+
+    async def verify_account_binding(self) -> None:
+        """Prove baseline exclusions belong to the currently authenticated account."""
+        binding = getattr(self._repository, "baseline_binding_issues", None)
+        if not callable(binding):
+            return
+        client_dict = getattr(self._client, "__dict__", {})
+        client_class = getattr(self._client, "__class__", None)
+        has_get = "_get" in client_dict or (
+            client_class is not None and hasattr(client_class, "_get")
+        )
+        if not has_get:
+            return
+        try:
+            getter = getattr(self._client, "_get", None)
+        except Exception:
+            return
+        if not callable(getter):
+            return
+        identity = await getter("/api/v2/spot/account/info")
+        account_id = identity.get("userId") if isinstance(identity, dict) else None
+        if (
+            not isinstance(account_id, str)
+            or not account_id.isascii()
+            or not account_id.isdecimal()
+            or int(account_id) <= 0
+        ):
+            raise ValueError("recovery authenticated account identity is invalid")
+        if binding(account_id, self._environment):
+            raise ValueError("baseline account/environment binding mismatch")
 
     async def __call__(
         self, intent: LiveIntentRecord, plan: ProtectionPlan
@@ -63,6 +96,7 @@ class GetOnlyProtectionRecovery:
         return AsyncProtectionResult(report.state, report.observed_quantity, reason)
 
     async def inventory(self) -> tuple[str, ...]:
+        await self.verify_account_binding()
         issues = list(self._repository.inventory_issues(self._environment))
         positions = await self._client.get_all_positions()
         if not isinstance(positions, list):
@@ -89,7 +123,49 @@ class GetOnlyProtectionRecovery:
         pending = await self._client.get_pending_orders()
         if not isinstance(pending, list) or not all(isinstance(row, dict) for row in pending):
             raise ValueError("recovery pending inventory invalid")
-        # No open order is silently classified safe; ambiguous/manual entries block.
-        if pending:
-            issues.append("pending-orders-require-reconciliation")
+        owned = self._intent_store.pending_entries() if self._intent_store is not None else ()
+        matched: set[str] = set()
+        for row in pending:
+            candidates = [intent for intent in owned if intent.client_oid == row.get("clientOid")]
+            if len(candidates) != 1 or not self._matches_pending_entry(candidates[0], row):
+                issues.append("pending-orders-require-reconciliation")
+                continue
+            if candidates[0].client_oid in matched:
+                issues.append("pending-entry-duplicate")
+            matched.add(candidates[0].client_oid)
+        if any(intent.client_oid not in matched for intent in owned):
+            issues.append("owned-pending-entry-inventory-mismatch")
         return tuple(sorted(set(issues)))
+
+    @staticmethod
+    def _matches_pending_entry(intent: LiveIntentRecord, row: dict[str, Any]) -> bool:
+        """Only an exact durable non-reduce-only LIMIT leg may remain working."""
+        if (
+            intent.role != "ENTRY"
+            or getattr(intent, "entry_leg", None) != "limit"
+            or getattr(intent, "order_type", None) != "limit"
+            or not isinstance(row.get("symbol"), str)
+            or row["symbol"].upper() != intent.symbol
+            or not isinstance(row.get("side"), str)
+            or row["side"].upper() != intent.side
+            or row.get("orderType") != "limit"
+            or row.get("reduceOnly") not in ("NO", "no", False)
+            or row.get("state", row.get("status")) not in ("live", "partially_filled")
+            or not row.get("orderId")
+            or (intent.provider_order_id is not None and row["orderId"] != intent.provider_order_id)
+        ):
+            return False
+        try:
+            price = Decimal(str(row.get("price")))
+            size = Decimal(str(row.get("size")))
+            filled = Decimal(str(row.get("baseVolume", "0")))
+        except Exception:
+            return False
+        return (
+            price.is_finite()
+            and size.is_finite()
+            and filled.is_finite()
+            and price == getattr(intent, "limit_price", None)
+            and size == intent.requested_qty
+            and Decimal("0") <= filled <= size
+        )

@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 
 from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
-from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore
+from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore, LiveIntentRecord
 from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
 
 
@@ -219,3 +220,265 @@ def test_gateway_rejects_calls_from_an_active_async_loop() -> None:
             gateway.get_balance()
 
     asyncio.run(invoke())
+
+
+@pytest.mark.parametrize("terminal", [True, False, {"success": True}, None])
+def test_source_cancel_delegates_exact_owned_lifecycle_not_broad_order_cancel(terminal) -> None:
+    class EntryExecution:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, UUID]] = []
+
+        async def cancel_pending_entries(self, symbol: str, management_id: UUID) -> object:
+            self.calls.append((symbol, management_id))
+            return terminal
+
+    client = FakeBitgetClient()
+    client.position_rows[0]["stopLossTriggerPrice"] = "59000"
+    client.position_rows[0]["stopSurplusTriggerPrice"] = "61000"
+    execution = EntryExecution()
+    gateway = BitgetOperatorGateway(client, InMemoryLiveIntentStore(), entry_execution=execution)
+    management_id = uuid4()
+
+    assert gateway.cancel_pending_entries("btcusdt", management_id) is (terminal is True)
+    assert execution.calls == [("BTCUSDT", management_id)]
+    assert client.calls == []
+    assert client.position_rows[0]["stopLossTriggerPrice"] == "59000"
+    assert client.position_rows[0]["stopSurplusTriggerPrice"] == "61000"
+    gateway.close()
+
+
+def test_source_cancel_missing_adapter_is_pending_not_unowned_order_cancellation() -> None:
+    from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+    gateway, client, _ = make_gateway()
+    with pytest.raises(SourceManagementReconciliationPending, match="not wired"):
+        gateway.cancel_pending_entries("BTCUSDT", uuid4())
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("error", [BitgetUnknownResultError("unknown"), TimeoutError()])
+def test_source_cancel_ambiguous_result_is_pending_and_not_retried(error) -> None:
+    from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+    class EntryExecution:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def cancel_pending_entries(self, symbol: str, management_id: UUID) -> bool:
+            self.calls += 1
+            raise error
+
+    client = FakeBitgetClient()
+    execution = EntryExecution()
+    gateway = BitgetOperatorGateway(client, InMemoryLiveIntentStore(), entry_execution=execution)
+
+    with pytest.raises(SourceManagementReconciliationPending, match="unknown"):
+        gateway.cancel_pending_entries("BTCUSDT", uuid4())
+    assert execution.calls == 1
+    assert client.calls == []
+    gateway.close()
+
+
+class StopModifyClient(FakeBitgetClient):
+    def __init__(self, store: InMemoryLiveIntentStore) -> None:
+        super().__init__()
+        self.store = store
+        self.position_rows[0].update(
+            posMode="one_way_mode", stopLossId="sl-plan", takeProfitId="tp-plan"
+        )
+        self.plans = [
+            {
+                "symbol": "BTCUSDT",
+                "holdSide": "long",
+                "planStatus": "live",
+                "posMode": "one_way_mode",
+                "marginMode": "isolated",
+                "planType": kind,
+                "orderId": order_id,
+                "clientOid": "root-entry",
+                "triggerPrice": trigger,
+                "triggerType": "mark_price",
+                "executePrice": "0",
+                "size": "",
+            }
+            for kind, order_id, trigger in (
+                ("pos_loss", "sl-plan", "59000"),
+                ("pos_profit", "tp-plan", "62000"),
+            )
+        ]
+        self.modify_error: Exception | None = None
+        self.apply_modify = True
+        self.change_tp = False
+
+    async def get_contracts(self) -> list[dict[str, str]]:
+        return [
+            {
+                "symbol": "BTCUSDT",
+                "pricePlace": "1",
+                "priceEndStep": "5",
+                "sizeMultiplier": "0.001",
+                "minTradeNum": "0.001",
+                "maxLever": "125",
+            }
+        ]
+
+    async def get_pending_plan_orders(self, symbol: str) -> list[dict[str, Any]]:
+        self.calls.append(("get_pending_plan_orders", symbol))
+        return self.plans
+
+    async def modify_position_stop_loss(self, **kwargs: Any) -> dict[str, str]:
+        intent = self.store.get("management-sl")
+        assert intent is not None and intent.state == "requested"
+        assert intent.planned_stop_loss == Decimal(kwargs["trigger_price"])
+        assert intent.provider_order_id == "sl-plan"
+        self.calls.append(("modify_position_stop_loss", kwargs))
+        if self.apply_modify:
+            self.plans[0]["triggerPrice"] = kwargs["trigger_price"]
+        if self.change_tp:
+            self.position_rows[0]["takeProfitId"] = "different-tp"
+        if self.modify_error is not None:
+            raise self.modify_error
+        return {"orderId": "sl-plan", "clientOid": "root-entry"}
+
+
+def stop_gateway() -> tuple[BitgetOperatorGateway, StopModifyClient, InMemoryLiveIntentStore]:
+    store = InMemoryLiveIntentStore()
+    store.save(
+        LiveIntentRecord(
+            "bitget",
+            "root-entry",
+            "BTCUSDT",
+            "BUY",
+            filled_qty=Decimal("0.01"),
+            planned_stop_loss=Decimal("59000"),
+            planned_take_profits=(Decimal("62000"),),
+        )
+    )
+    client = StopModifyClient(store)
+    return BitgetOperatorGateway(client, store), client, store
+
+
+def move_stop(gateway: BitgetOperatorGateway) -> None:
+    gateway.replace_stop_loss(
+        symbol="BTCUSDT",
+        side="LONG",
+        quantity=Decimal("0.01"),
+        stop_loss=Decimal("60000.24"),
+        client_oid="management-sl",
+    )
+
+
+def test_source_stop_modifies_exact_owned_sl_preserves_full_tp_and_rounds_tick() -> None:
+    gateway, client, store = stop_gateway()
+    move_stop(gateway)
+    assert (
+        "modify_position_stop_loss",
+        {
+            "symbol": "BTCUSDT",
+            "order_id": "sl-plan",
+            "client_oid": "root-entry",
+            "trigger_price": "60000.0",
+        },
+    ) in client.calls
+    assert store.get("management-sl").state == "reconciled"
+    assert store.get("root-entry").active_stop_loss_price == Decimal("60000")
+    assert client.plans[1]["orderId"] == "tp-plan"
+    assert client.plans[1]["triggerPrice"] == "62000"
+    assert not any(
+        name.startswith("cancel") or name == "place_position_tpsl" for name, _ in client.calls
+    )
+    gateway.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("clientOid", "unowned"),
+        ("triggerType", "fill_price"),
+        ("executePrice", "1"),
+        ("holdSide", "short"),
+        ("symbol", "ETHUSDT"),
+        ("posMode", "hedge_mode"),
+        ("marginMode", "crossed"),
+        ("size", "0.01"),
+        ("planStatus", "cancelled"),
+        ("triggerPrice", "58000"),
+    ],
+)
+def test_source_stop_rejects_nonmatching_old_native_plan_before_mutation(field, value) -> None:
+    gateway, client, store = stop_gateway()
+    client.plans[0][field] = value
+    with pytest.raises(ValueError):
+        move_stop(gateway)
+    assert store.get("management-sl") is None
+    assert not any(name == "modify_position_stop_loss" for name, _ in client.calls)
+    gateway.close()
+
+
+@pytest.mark.parametrize("apply_modify", [True, False])
+def test_ambiguous_stop_modify_is_get_reconciled_never_posted_again(apply_modify) -> None:
+    from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+    gateway, client, store = stop_gateway()
+    client.modify_error = BitgetUnknownResultError("unknown")
+    client.apply_modify = apply_modify
+    with pytest.raises(SourceManagementReconciliationPending, match="unknown"):
+        move_stop(gateway)
+    assert store.get("management-sl").state == "unknown"
+    if apply_modify:
+        gateway.reconcile_stop_loss("management-sl")
+        assert store.get("management-sl").state == "reconciled"
+    else:
+        with pytest.raises(SourceManagementReconciliationPending):
+            gateway.reconcile_stop_loss("management-sl")
+    assert sum(name == "modify_position_stop_loss" for name, _ in client.calls) == 1
+    gateway.close()
+
+
+@pytest.mark.parametrize("flat", [True, False])
+def test_stop_modify_neither_flat_nor_replaced_tp_proves_completion(flat) -> None:
+    from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+    gateway, client, store = stop_gateway()
+    client.change_tp = True
+    with pytest.raises(SourceManagementReconciliationPending):
+        move_stop(gateway)
+    if flat:
+        client.position_rows = []
+    with pytest.raises(SourceManagementReconciliationPending):
+        gateway.reconcile_stop_loss("management-sl")
+    assert store.get("root-entry").active_stop_loss_price is None
+    assert sum(name == "modify_position_stop_loss" for name, _ in client.calls) == 1
+    gateway.close()
+
+
+def test_stop_modify_rejects_unowned_residual_without_post() -> None:
+    gateway, client, store = stop_gateway()
+    root = store.get("root-entry")
+    root.filled_qty = Decimal("0.02")
+    store.update(root)
+    with pytest.raises(ValueError, match="ownership"):
+        move_stop(gateway)
+    assert not any(name == "modify_position_stop_loss" for name, _ in client.calls)
+    gateway.close()
+
+
+@pytest.mark.parametrize(
+    ("quantity", "expected"),
+    [
+        ("0.011", "0.005"),
+        ("0.002", "0.001"),
+        ("0.001", None),
+        ("0.0025", None),
+    ],
+)
+def test_tp1_half_policy_is_lot_safe_and_preserves_residual(quantity, expected) -> None:
+    gateway, _, _ = stop_gateway()
+    if expected is None:
+        with pytest.raises(ValueError):
+            gateway.normalize_tp1_close_quantity("BTCUSDT", Decimal(quantity))
+    else:
+        assert gateway.normalize_tp1_close_quantity("BTCUSDT", Decimal(quantity)) == Decimal(
+            expected
+        )
+    gateway.close()

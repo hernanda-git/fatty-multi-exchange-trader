@@ -10,7 +10,6 @@ from fatty_trader.exchanges.bitget.read_model import BitgetPositionState
 from fatty_trader.execution.protection import (
     ProtectionReport,
     ProtectionState,
-    protection_is_confirmed,
 )
 
 
@@ -43,8 +42,8 @@ class NativeProtectionExpectation:
             raise ValueError("native protection symbol is required")
         if self.hold_side.strip().lower() not in {"long", "short", "buy", "sell"}:
             raise ValueError("native protection hold side is invalid")
-        if self.quantity <= 0:
-            raise ValueError("native protection quantity must be positive")
+        if not self.quantity.is_finite() or self.quantity <= 0:
+            raise ValueError("native protection quantity must be finite and positive")
         if self.stop_loss is None and self.take_profit is None:
             raise ValueError("native protection requires a stop loss or take profit")
         for value, name in (
@@ -53,8 +52,8 @@ class NativeProtectionExpectation:
             (self.stop_loss_size, "stop loss size"),
             (self.take_profit_size, "take profit size"),
         ):
-            if value is not None and value <= 0:
-                raise ValueError(f"native protection {name} must be positive")
+            if value is not None and (not value.is_finite() or value <= 0):
+                raise ValueError(f"native protection {name} must be finite and positive")
         if self.stop_loss_size is not None and self.stop_loss_size > self.quantity:
             raise ValueError("native protection stop loss size exceeds position quantity")
         if self.take_profit_size is not None and self.take_profit_size > self.quantity:
@@ -84,13 +83,8 @@ def _positive_decimal(payload: dict[str, Any], *fields: str) -> Decimal | None:
             value = Decimal(str(raw))
         except (InvalidOperation, TypeError, ValueError):
             return None
-        return value if value >= 0 else None
+        return value if value.is_finite() and value >= 0 else None
     return None
-
-
-def _plan_matches_quantity(plan: dict[str, Any], expected_quantity: Decimal) -> bool:
-    quantity = _positive_decimal(plan, "size", "executeSize", "quantity")
-    return quantity == expected_quantity
 
 
 def _canonical_hold_side(value: Any) -> str | None:
@@ -99,6 +93,20 @@ def _canonical_hold_side(value: Any) -> str | None:
         return "buy"
     if normalized in {"short", "sell"}:
         return "sell"
+    return None
+
+
+def _plan_hold_side(plan: dict[str, Any]) -> str | None:
+    """Pending plans expose position direction separately from execution direction."""
+    if plan.get("holdSide") is not None:
+        return _canonical_hold_side(plan["holdSide"])
+    pos_side = str(plan.get("posSide") or "").strip().lower()
+    if pos_side in {"long", "short"}:
+        return _canonical_hold_side(pos_side)
+    if pos_side == "net" and str(plan.get("posMode") or "").strip().lower() == "one_way_mode":
+        # TP/SL are exits: selling closes a long; buying closes a short.
+        side = str(plan.get("side") or "").strip().lower()
+        return {"sell": "buy", "buy": "sell"}.get(side)
     return None
 
 
@@ -158,6 +166,7 @@ _ACTIVE_PLAN_STATUSES = frozenset(
         "live",
         "new",
         "not_triggered",
+        "not_trigger",
         "open",
         "pending",
         "waiting",
@@ -173,11 +182,13 @@ def _find_exact_plan(
     provider_order_id: str | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     leg_name = "stop-loss" if leg == "stopLoss" else "take-profit"
+    leg_size = expectation.stop_loss_size if leg == "stopLoss" else expectation.take_profit_size
+    position_level = expectation.position_level and leg_size is None
     expected_type = (
         "pos_loss"
-        if leg == "stopLoss" and expectation.position_level
+        if leg == "stopLoss" and position_level
         else "pos_profit"
-        if leg == "stopSurplus" and expectation.position_level
+        if leg == "stopSurplus" and position_level
         else "loss_plan"
         if leg == "stopLoss"
         else "profit_plan"
@@ -216,7 +227,7 @@ def _verify_exact_leg(
     symbol = str(plan.get("symbol", "")).strip().upper()
     if symbol != expectation.symbol.strip().upper():
         return f"{leg_name}-symbol-mismatch"
-    hold_side = _canonical_hold_side(plan.get("holdSide", plan.get("side")))
+    hold_side = _plan_hold_side(plan)
     expected_hold_side = _canonical_hold_side(expectation.hold_side)
     if hold_side != expected_hold_side:
         return f"{leg_name}-side-mismatch"
@@ -240,13 +251,21 @@ def _verify_exact_leg(
     trigger_type = str(_plan_field(plan, leg, "TriggerType") or "").strip().lower()
     if trigger_type != "mark_price":
         return f"{leg_name}-trigger-type-mismatch"
-    execute_price = _parse_decimal(plan, f"{leg}ExecutePrice", "executePrice", zero_if_empty=True)
+    execute_price = _parse_decimal(
+        plan, f"{leg}ExecutePrice", "executePrice", "price", zero_if_empty=True
+    )
     if execute_price != Decimal("0"):
         return f"{leg_name}-execute-mode-mismatch"
+    if plan.get("orderType") is not None and str(plan["orderType"]).strip().lower() != "market":
+        return f"{leg_name}-execute-mode-mismatch"
+    if plan.get("posMode") is not None and str(plan["posMode"]).strip().lower() != "one_way_mode":
+        return f"{leg_name}-position-mode-mismatch"
+    if plan.get("marginMode") is not None and str(plan["marginMode"]).strip().lower() != "isolated":
+        return f"{leg_name}-margin-mode-mismatch"
 
-    if expectation.position_level:
-        raw_size = plan.get("size")
-        if raw_size is not None and str(raw_size).strip() not in {"", "0", "0.0"}:
+    if expectation.position_level and expected_size is None:
+        observed_size = _parse_decimal(plan, "size", zero_if_empty=True)
+        if observed_size != Decimal("0"):
             return f"{leg_name}-size-mismatch"
     elif expected_size is None:
         return f"{leg_name}-size-expectation-missing"
@@ -266,9 +285,12 @@ async def _confirm_exact_native_protection(
         raw_position = await read_position()
     except Exception:
         return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-read-failed")
-    if not isinstance(raw_position, list):
+    if not isinstance(raw_position, list) or not all(
+        isinstance(row, dict) and _positive_decimal(row, "total", "size", "quantity") is not None
+        for row in raw_position
+    ):
         return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-position-invalid")
-    positions: list[dict[str, Any]] = [row for row in raw_position if isinstance(row, dict)]
+    positions: list[dict[str, Any]] = raw_position
     open_positions: list[dict[str, Any]] = []
     for row in positions:
         quantity = _positive_decimal(row, "total", "size", "quantity")
@@ -308,22 +330,30 @@ async def _confirm_exact_native_protection(
             ProtectionState.DEGRADED, observed_quantity, "position-quantity-mismatch"
         )
 
+    if expectation.stop_loss_size is not None and expectation.stop_loss_size < observed_quantity:
+        return ProtectionReport(
+            ProtectionState.DEGRADED, observed_quantity, "stop-loss-size-does-not-cover-position"
+        )
     expected_sl_id = expectation.stop_loss_provider_order_id
     expected_tp_id = expectation.take_profit_provider_order_id
-    observed_sl_id = str(position.get("stopLossId", "")).strip() or None
-    observed_tp_id = str(position.get("takeProfitId", "")).strip() or None
-    if expectation.stop_loss is not None and observed_sl_id is None:
+    sl_position_level = expectation.position_level and expectation.stop_loss_size is None
+    tp_position_level = expectation.position_level and expectation.take_profit_size is None
+    observed_sl_id = str(position.get("stopLossId") or "").strip() or None
+    observed_tp_id = str(position.get("takeProfitId") or "").strip() or None
+    if sl_position_level and expectation.stop_loss is not None and observed_sl_id is None:
         return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, "missing-stop-loss")
-    if expectation.take_profit is not None and observed_tp_id is None:
+    if tp_position_level and expectation.take_profit is not None and observed_tp_id is None:
         return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, "missing-take-profit")
-    if expected_sl_id is not None and observed_sl_id != expected_sl_id:
+    if sl_position_level and expected_sl_id is not None and observed_sl_id != expected_sl_id:
         return ProtectionReport(
             ProtectionState.DEGRADED, observed_quantity, "stop-loss-id-mismatch"
         )
-    if expected_tp_id is not None and observed_tp_id != expected_tp_id:
+    if tp_position_level and expected_tp_id is not None and observed_tp_id != expected_tp_id:
         return ProtectionReport(
             ProtectionState.DEGRADED, observed_quantity, "take-profit-id-mismatch"
         )
+    sl_plan_id = expected_sl_id or (observed_sl_id if sl_position_level else None)
+    tp_plan_id = expected_tp_id or (observed_tp_id if tp_position_level else None)
 
     try:
         raw_plans = await read_pending_plans()
@@ -344,7 +374,7 @@ async def _confirm_exact_native_protection(
             plans,
             expectation=expectation,
             leg="stopLoss",
-            provider_order_id=expected_sl_id or observed_sl_id,
+            provider_order_id=sl_plan_id,
         )
         if stop_loss_plan is None:
             return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, reason)
@@ -353,7 +383,7 @@ async def _confirm_exact_native_protection(
             expectation=expectation,
             leg="stopLoss",
             trigger=expectation.stop_loss,
-            provider_order_id=expected_sl_id or observed_sl_id,
+            provider_order_id=sl_plan_id,
             client_oid=expectation.stop_loss_client_oid,
             expected_size=expectation.stop_loss_size,
         )
@@ -365,7 +395,7 @@ async def _confirm_exact_native_protection(
             plans,
             expectation=expectation,
             leg="stopSurplus",
-            provider_order_id=expected_tp_id or observed_tp_id,
+            provider_order_id=tp_plan_id,
         )
         if take_profit_plan is None:
             return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, reason)
@@ -374,7 +404,7 @@ async def _confirm_exact_native_protection(
             expectation=expectation,
             leg="stopSurplus",
             trigger=expectation.take_profit,
-            provider_order_id=expected_tp_id or observed_tp_id,
+            provider_order_id=tp_plan_id,
             client_oid=expectation.take_profit_client_oid,
             expected_size=expectation.take_profit_size,
         )
@@ -416,78 +446,89 @@ async def _confirm_legacy_native_protection(
     read_pending_plans: Callable[[], Awaitable[Any]],
     expected_quantity: Decimal,
 ) -> ProtectionReport:
-    """Compatibility verifier for monitor calls that only have a quantity."""
+    """Check the live position's own active market/mark plans, never unrelated sizes.
+
+    A quantity-only monitor cannot prove the source's intended trigger. It can still
+    prove both provider IDs, position identity, trigger mode and full-position coverage.
+    Failure to read the plans is not evidence of protection.
+    """
     try:
         raw_position = await read_position()
     except Exception:
         return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-read-failed")
-    if not isinstance(raw_position, list):
+    if not isinstance(raw_position, list) or not all(
+        isinstance(row, dict) and _positive_decimal(row, "total", "size", "quantity") is not None
+        for row in raw_position
+    ):
         return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-position-invalid")
-    positions = [row for row in raw_position if isinstance(row, dict)]
     open_positions = [
         row
-        for row in positions
-        if (quantity := _positive_decimal(row, "total", "size", "quantity")) is not None
-        and quantity > 0
+        for row in raw_position
+        if (_positive_decimal(row, "total", "size", "quantity") or Decimal("0")) > 0
     ]
     if len(open_positions) != 1:
         return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "position-not-open")
     position = open_positions[0]
     observed = _positive_decimal(position, "total", "size", "quantity")
-    if observed is None:
-        return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-position-invalid")
-    if str(position.get("marginMode", "")).lower() != "isolated":
+    assert observed is not None
+    if str(position.get("marginMode", "")).strip().lower() != "isolated":
         return ProtectionReport(ProtectionState.DEGRADED, observed, "margin-mode-not-isolated")
     if observed != expected_quantity:
         return ProtectionReport(ProtectionState.DEGRADED, observed, "position-quantity-mismatch")
-
-    # Some symbols (e.g. GRASSUSDT) reject orders-plan-pending with 400172.
-    # Fall back to position-field verification when plan read fails.
-    raw_plans: list[dict[str, Any]] | None = None
-    plans_unsupported = False
-    plans_verified = False
+    sl_id = str(position.get("stopLossId") or "").strip()
+    tp_id = str(position.get("takeProfitId") or "").strip()
+    if not sl_id:
+        return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
+    if not tp_id:
+        return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
     try:
-        raw_plans = await read_pending_plans()
+        plans = await read_pending_plans()
     except Exception as exc:
-        if "400172" in str(exc):
-            plans_unsupported = True
-        else:
-            return ProtectionReport(ProtectionState.FAILED, observed, "provider-plans-invalid")
-
-    if not plans_unsupported and raw_plans is not None:
-        if not isinstance(raw_plans, list) or not all(isinstance(plan, dict) for plan in raw_plans):
-            return ProtectionReport(ProtectionState.FAILED, observed, "provider-plans-invalid")
-        plan_types = {
-            str(plan.get("planType", plan.get("type", ""))).lower()
-            for plan in raw_plans
-            if _plan_matches_quantity(plan, expected_quantity)
-        }
-        has_stop_loss = any(
-            "loss" in plan_type or "stop_loss" in plan_type for plan_type in plan_types
+        return ProtectionReport(
+            ProtectionState.DEGRADED if "400172" in str(exc) else ProtectionState.FAILED,
+            observed,
+            "provider-plans-unavailable" if "400172" in str(exc) else "provider-plans-read-failed",
         )
-        has_take_profit = any(
-            "profit" in plan_type or "surplus" in plan_type or "take_profit" in plan_type
-            for plan_type in plan_types
+    if not isinstance(plans, list) or not all(isinstance(plan, dict) for plan in plans):
+        return ProtectionReport(ProtectionState.FAILED, observed, "provider-plans-invalid")
+    triggers: dict[str, Decimal] = {}
+    for leg, plan_type, order_id in (
+        ("stopLoss", "pos_loss", sl_id),
+        ("stopSurplus", "pos_profit", tp_id),
+    ):
+        matches = [
+            plan
+            for plan in plans
+            if _plan_type(plan) == plan_type and _plan_order_id(plan) == order_id
+        ]
+        leg_name = "stop-loss" if leg == "stopLoss" else "take-profit"
+        if len(matches) != 1:
+            return ProtectionReport(
+                ProtectionState.DEGRADED, observed, f"{leg_name}-plan-not-unique"
+            )
+        trigger = _parse_decimal(matches[0], f"{leg}TriggerPrice", "triggerPrice")
+        if trigger is None or trigger <= 0:
+            return ProtectionReport(
+                ProtectionState.DEGRADED, observed, f"{leg_name}-trigger-mismatch"
+            )
+        triggers[leg] = trigger
+    try:
+        expectation = NativeProtectionExpectation(
+            symbol=str(position.get("symbol") or ""),
+            hold_side=str(position.get("holdSide") or ""),
+            quantity=expected_quantity,
+            stop_loss=triggers["stopLoss"],
+            take_profit=triggers["stopSurplus"],
+            stop_loss_provider_order_id=sl_id,
+            take_profit_provider_order_id=tp_id,
         )
-        if not has_stop_loss:
-            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
-        if not has_take_profit:
-            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
-        plans_verified = True
+    except ValueError:
+        return ProtectionReport(ProtectionState.FAILED, observed, "provider-position-invalid")
 
-    if not plans_verified:
-        # The plan endpoint is known to reject some symbols with 400172. In
-        # that case the position-level IDs are the only provider-backed proof.
-        has_stop_loss_field = bool(position.get("stopLossId"))
-        has_take_profit_field = bool(position.get("takeProfitId"))
-        if not has_stop_loss_field:
-            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-stop-loss")
-        if not has_take_profit_field:
-            return ProtectionReport(ProtectionState.DEGRADED, observed, "missing-take-profit")
+    async def position_snapshot() -> Any:
+        return raw_position
 
-    report = ProtectionReport(ProtectionState.VENUE_PROTECTED, observed)
-    return (
-        report
-        if protection_is_confirmed(report, expected_quantity)
-        else ProtectionReport(ProtectionState.DEGRADED, observed, "position-quantity-mismatch")
-    )
+    async def plan_snapshot() -> Any:
+        return plans
+
+    return await _confirm_exact_native_protection(position_snapshot, plan_snapshot, expectation)

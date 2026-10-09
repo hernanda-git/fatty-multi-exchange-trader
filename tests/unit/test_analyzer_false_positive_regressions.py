@@ -48,6 +48,37 @@ def test_classifier_rejects_negated_entry_even_with_geometry():
     assert result.signal is None
 
 
+def test_classifier_rejects_hallucinated_prices_despite_valid_geometry():
+    result = _classifier("$BTC long, use the attached chart")
+    assert result.actionable is False
+    assert result.signal is None
+    assert "source text" in result.reason
+
+
+def test_classifier_rejects_invented_target():
+    result = _classifier("$BTC long entry 100 stop 90", take_profits=[110])
+    assert result.actionable is False
+    assert result.signal is None
+
+
+def test_classifier_rejects_substituted_asset_and_direction():
+    for overrides in ({"pair": "ETH"}, {"side": "SHORT", "entry": 90, "stop_loss": 100}):
+        result = _classifier("$BTC long entry 100 stop 90", **overrides)
+        assert result.actionable is False
+        assert result.signal is None
+
+
+def test_classifier_accepts_explicit_grouped_and_decimal_prices():
+    result = _classifier(
+        "$BTCUSDT buy at 64,500.00 stop 64,000 target 65,000",
+        entry="64500",
+        stop_loss="64000",
+        take_profits=["65000"],
+    )
+    assert result.actionable is True
+    assert result.signal is not None
+
+
 def test_image_rejects_non_entry_action():
     signal = signal_from_image_json(
         {

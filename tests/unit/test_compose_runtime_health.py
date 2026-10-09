@@ -67,7 +67,7 @@ def test_socket_proves_owner_without_web_pid_namespace(monkeypatch, tmp_path):
         child.stdout.close()
 
 
-def test_compose_isolates_each_owner_socket_and_web_has_read_only_mounts():
+def test_compose_isolates_each_owner_socket_and_web_has_read_only_mounts(monkeypatch):
     compose = json.loads(
         subprocess.check_output(
             [
@@ -114,6 +114,24 @@ def test_compose_isolates_each_owner_socket_and_web_has_read_only_mounts():
                 assert not any(v["source"] == volume for v in other.get("volumes", []))
         assert "pid" not in worker
     assert "SERVICE_COMPONENTS" not in web["environment"]
+    assert services["source-management"]["healthcheck"]["test"][-3:] == [
+        "--service",
+        "source-management",
+        "--check",
+    ]
+    import io
+    import urllib.request
+
+    probe = web["healthcheck"]["test"][-1]
+    for status, expected_exit in (("ok", 0), ("degraded", 1)):
+        monkeypatch.setattr(
+            urllib.request,
+            "urlopen",
+            (lambda s=status: lambda *args, **kwargs: io.StringIO(json.dumps({"status": s})))(),
+        )
+        with pytest.raises(SystemExit) as raised:
+            exec(probe, {})
+        assert raised.value.code == expected_exit
 
 
 @pytest.mark.parametrize(

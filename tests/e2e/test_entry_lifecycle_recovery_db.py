@@ -185,6 +185,8 @@ def _owned_entry(dsn, schema, crash_state, filled_qty=Decimal("2")):
         planned_margin_usdt=Decimal("1"),
         planned_leverage=1,
         margin_mode="ISOLATED",
+        planned_stop_loss=Decimal("90"),
+        planned_take_profits=(Decimal("110"),),
     )
     store.save(intent)
     return dispatch, intent, store
@@ -258,3 +260,34 @@ def test_changed_protection_verdict_gets_distinct_durable_outbox_event(postgres_
         "recovery-protection-verified",
         "recovery-missing-protection:unconfirmed",
     }
+
+
+def test_validated_plan_survives_real_entry_claim_and_restart_without_replacement(postgres_schema):
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    store = PostgresLiveIntentStore(lambda: _connect(dsn, schema))
+    intent = LiveIntentRecord(
+        "bitget",
+        "precision-plan",
+        "BTCUSDT",
+        "BUY",
+        requested_qty=Decimal("0.002"),
+        planned_stop_loss=Decimal("63000.1"),
+        planned_take_profits=(Decimal("65000.1"), Decimal("66000.2")),
+    )
+    assert store.claim(intent)
+    losing_intent = LiveIntentRecord(
+        "bitget",
+        "precision-plan",
+        "BTCUSDT",
+        "BUY",
+        requested_qty=Decimal("0.002"),
+        planned_stop_loss=Decimal("62000"),
+        planned_take_profits=(Decimal("67000"),),
+    )
+    assert not store.claim(losing_intent)
+    restarted_store = PostgresLiveIntentStore(lambda: _connect(dsn, schema))
+    restored = restarted_store.get(intent.client_oid)
+    assert restored is not None
+    assert restored.planned_stop_loss == Decimal("63000.1")
+    assert restored.planned_take_profits == (Decimal("65000.1"), Decimal("66000.2"))

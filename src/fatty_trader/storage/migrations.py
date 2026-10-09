@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Final, Protocol
 
+from fatty_trader.storage.bitget_baseline_schema import BITGET_BASELINE_SCHEMA_SQL
 from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
 from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
 from fatty_trader.storage.schema import (
@@ -344,6 +345,44 @@ MIGRATIONS: Final = [
     (21, INTAKE_COVERAGE_SCHEMA_SQL),
     (22, FALLBACK_OWNERSHIP_SCHEMA_SQL),
     (23, VERIFIED_CLOSE_SCHEMA_SQL),
+    (24, BITGET_BASELINE_SCHEMA_SQL),
+    (
+        25,
+        """
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS dispatch_id UUID REFERENCES dispatches(id);
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS entry_leg TEXT;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'market';
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS limit_price NUMERIC;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS cancel_requested_by UUID;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS provider_terminal BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS cancel_post_claimed BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS active_stop_loss_price NUMERIC;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS stop_mutation_root_oid TEXT;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS stop_mutation_take_profit_id TEXT;
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS protection_root_oid TEXT;
+        ALTER TABLE live_order_intents DROP CONSTRAINT live_order_intents_state_check;
+        ALTER TABLE live_order_intents ADD CONSTRAINT live_order_intents_state_check CHECK
+            (state IN ('staged','requested','acknowledged','submitted','partially_filled',
+                       'filled','cancelled','rejected','unknown','reconciled'));
+        ALTER TABLE live_order_intents ADD CONSTRAINT bitget_entry_leg_shape CHECK (
+            entry_leg IS NULL OR (
+                exchange='bitget' AND role='ENTRY' AND dispatch_id IS NOT NULL
+                AND ((entry_leg='market' AND order_type='market' AND limit_price IS NULL)
+                  OR (entry_leg='limit' AND order_type='limit' AND limit_price>0))
+            )
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS bitget_dispatch_entry_leg
+            ON live_order_intents (dispatch_id, entry_leg) WHERE entry_leg IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS bitget_waiting_entries
+            ON live_order_intents (symbol) WHERE entry_leg='limit' AND NOT provider_terminal;
+        ALTER TABLE source_management_updates DROP CONSTRAINT source_management_updates_state_check;
+        ALTER TABLE source_management_updates ADD CONSTRAINT source_management_updates_state_check
+            CHECK (state IN ('queued','claimed','reconciliation-pending','failed','reconciled','cancelled-flat','entries-cancelled'));
+        ALTER TABLE source_management_updates DROP CONSTRAINT source_management_updates_action_check;
+        ALTER TABLE source_management_updates ADD CONSTRAINT source_management_updates_action_check
+            CHECK (action IN ('TP1_BOOKED','TP_BOOKED','SL_TO_ENTRY','CLOSE'));
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

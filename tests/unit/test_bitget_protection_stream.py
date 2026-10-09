@@ -313,3 +313,73 @@ async def test_symbol_iterator_failure_preserves_existing_subscription() -> None
     )
 
     assert await runtime.sync_active_symbols() == ((), ())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason",
+    ["provider-position-read-failed", "provider-position-invalid", "position-ownership-unverified"],
+)
+async def test_proven_preclaim_failure_allows_next_fresh_mark_to_retry_read(active_entry, reason):
+    calls = []
+
+    async def close(request):
+        calls.append(request)
+        return StreamCloseResult(request.fallback_id, False, reason)
+
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=lambda: datetime.fromtimestamp(0.021, UTC),
+        transport_fresh=lambda _symbol: True,
+    )
+    assert await engine.handle_event(mark("BTCUSDT", "94", 10))
+    assert engine.pending_fallback_ids == frozenset()
+    assert await engine.handle_event(mark("BTCUSDT", "94", 11))
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+async def test_nonfinite_fallback_state_does_not_kill_event_processing(active_entry, value):
+    invalid_entry = dict(active_entry, id="invalid", stop_loss=Decimal(value))
+    calls = []
+
+    async def close(request):
+        calls.append(request)
+        return StreamCloseResult(request.fallback_id, True, "submitted")
+
+    engine = BitgetFallbackStreamEngine(
+        lambda: [invalid_entry, active_entry],
+        close,
+        now=lambda: datetime.fromtimestamp(0.021, UTC),
+        transport_fresh=lambda _symbol: True,
+    )
+    assert await engine.handle_event(mark("BTCUSDT", "94", 10)) == [
+        StreamCloseResult("fallback-1", True, "submitted")
+    ]
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_dynamic_subscription_runtime_propagates_reader_failure():
+    class FailedSocket:
+        symbols = ()
+
+        async def run(self, on_event, stop_event):
+            raise RuntimeError("reader-failed")
+
+        async def subscribe_symbols(self, symbols):
+            return ()
+
+        async def unsubscribe_symbols(self, symbols):
+            return ()
+
+    runtime = BitgetProtectionStreamRuntime(
+        FailedSocket(),
+        InMemoryProtectionCapabilityRepository(),
+        environment="LIVE",
+        active_symbol_source=lambda: [],
+    )
+    with pytest.raises(RuntimeError, match="reader-failed"):
+        await asyncio.wait_for(runtime.run(asyncio.Event()), timeout=3)

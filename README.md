@@ -21,6 +21,9 @@ claiming readiness.
 
 ## Documentation
 
+- [2026-10-09 full audit, repairs and evidence boundaries](docs/AUDIT-20261009.md)
+- [Owner-selected trading and management rules](docs/TRADING-RULES.md)
+- [Coding-agent workflow](AGENTS.md)
 - [Bitget protection architecture and contracts](docs/BITGET-PROTECTION-HARDENING.md)
 - [Bitget protection operations and controlled deployment](docs/BITGET-PROTECTION-OPERATIONS.md)
 - [Architecture](ARCHITECTURE.md)

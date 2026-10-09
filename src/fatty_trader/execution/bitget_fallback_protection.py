@@ -388,6 +388,8 @@ def _owned_quantity(value: Any, entry: dict[str, Any]) -> Decimal | None:
         row.get("symbol") != entry["symbol"]
         or row.get("holdSide") != ("long" if direction == "LONG" else "short")
         or str(row.get("cTime")) != str(entry["provider_position_epoch"])
+        or row.get("posMode") != "one_way_mode"
+        or row.get("marginMode") != "isolated"
     ):
         return None
     quantity = _open_quantity(rows)
@@ -826,16 +828,19 @@ async def run_fallback_monitor_async(
 
 
 def _ticker_mark_price(value: Any) -> Decimal:
+    """Require the mark; a last-trade wick is not a native mark-price trigger."""
+    if isinstance(value, dict) and "data" in value:
+        if value.get("code", "00000") != "00000":
+            raise ValueError("Bitget ticker reports provider failure")
+        value = value["data"]
     rows = value if isinstance(value, list) else [value]
     for row in rows:
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or row.get("markPrice") is None:
             continue
-        raw = row.get("markPrice", row.get("lastPr"))
-        if raw is not None:
-            price = Decimal(str(raw))
-            if price > 0:
-                return price
-    raise ValueError("Bitget ticker has no positive mark price")
+        price = Decimal(str(row["markPrice"]))
+        if price.is_finite() and price > 0:
+            return price
+    raise ValueError("Bitget ticker has no finite positive mark price")
 
 
 def run_fallback_monitor() -> list[dict[str, Any]]:

@@ -265,3 +265,100 @@ async def test_one_snapshot_supplies_duplicate_symbols_and_explicit_policy():
     assert reservations.kwargs["observed_at"] == stamp
     assert reservations.kwargs["max_snapshot_age"] == timedelta(seconds=4)
     assert reservations.kwargs["max_future_skew"] == timedelta(seconds=0.5)
+
+
+@pytest.mark.asyncio
+async def test_preflight_validates_and_carries_tick_prices_without_rewriting_source(monkeypatch):
+    from dataclasses import replace
+
+    from fatty_trader.risk import live_policy
+
+    dispatch = replace(
+        _dispatch(),
+        stop_loss=Decimal("2.25005"),
+        take_profits=(Decimal("2.60005"), Decimal("2.70004")),
+    )
+    seen = []
+    original = live_policy.plan_live_position
+
+    def capture(data):
+        seen.append(data.stop_loss)
+        return original(data)
+
+    monkeypatch.setattr(live_policy, "plan_live_position", capture)
+    admission = await _bitget_dispatch_preflight(
+        Venue(),
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+        reservation_repository=Reservations(),
+    )(dispatch)
+
+    assert seen == [Decimal("2.2501")]
+    assert admission.submission.planned_stop_loss == Decimal("2.2501")
+    assert admission.submission.planned_take_profits == (Decimal("2.6001"), Decimal("2.7000"))
+    assert dispatch.stop_loss == Decimal("2.25005")
+    assert dispatch.take_profits == (Decimal("2.60005"), Decimal("2.70004"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stop,targets",
+    [
+        ("2.31996", ("2.60",)),
+        ("2.25", ("2.32004",)),
+        ("2.25", ("2.60001", "2.60004")),
+    ],
+)
+async def test_rounded_invalid_geometry_is_rejected_before_reservation(stop, targets):
+    from dataclasses import replace
+
+    reservations = Reservations()
+    dispatch = replace(
+        _dispatch(),
+        stop_loss=Decimal(stop),
+        take_profits=tuple(Decimal(target) for target in targets),
+    )
+    with pytest.raises(ValueError, match="rounded"):
+        await _bitget_dispatch_preflight(
+            Venue(),
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            reservation_repository=reservations,
+        )(dispatch)
+    assert reservations.kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_stop_rounded_across_liquidation_buffer_is_rejected_before_reservation(monkeypatch):
+    from dataclasses import replace
+
+    from fatty_trader.domain.enums import Direction
+    from fatty_trader.domain.models import BitgetLiveRiskConfig
+    from fatty_trader.risk import live_policy
+
+    venue = Venue()
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={"price_tick": Decimal("0.01"), "price_precision": 2}
+    )
+    # A known liquidation price makes the real guard boundary deterministic:
+    # 2.20 + 10% * (2.32 - 2.20) = 2.212. Raw 2.214 passes; tick 2.21 fails.
+    monkeypatch.setattr(live_policy, "estimate_liquidation_price", lambda **kwargs: Decimal("2.20"))
+    dispatch = replace(_dispatch(), stop_loss=Decimal("2.214"))
+    raw_decision = live_policy.plan_live_position(
+        live_policy.LiveSizingInput(
+            meta=venue.snapshot.metadata,
+            risk=BitgetLiveRiskConfig(max_margin_per_trade_usdt=Decimal("1")),
+            available_usdt=Decimal("100"),
+            entry=Decimal("2.32"),
+            direction=Direction.LONG,
+            active_positions=0,
+            stop_loss=dispatch.stop_loss,
+        )
+    )
+    assert raw_decision.accepted
+    reservations = Reservations()
+    with pytest.raises(ValueError, match="sl-guard"):
+        await _bitget_dispatch_preflight(
+            venue,
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            reservation_repository=reservations,
+        )(dispatch)
+    assert reservations.kwargs is None

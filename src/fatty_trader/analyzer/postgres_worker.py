@@ -21,16 +21,13 @@ from fatty_trader.analyzer.trade_management import parse_source_management
 from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL
 from fatty_trader.intake.persistence import RawTelegramMessage
 
-_SELECT_RECEIVED = """
+_SELECT_RECEIVED = f"""
 SELECT id, channel_id, message_id, revision_hash, raw_text, received_at,
        has_media, media_path, media_sha256, media_mime_type, media_size_bytes,
        ingestion_origin, entry_expires_at, entry_rejection_reason
-FROM telegram_messages
+FROM telegram_messages tm
 WHERE intake_state = 'RECEIVED' AND channel_id = ANY(%s)
-  AND entry_rejection_reason IS NULL
-  AND entry_expires_at > clock_timestamp()
-  AND received_at > clock_timestamp() - interval '5 minutes'
-  AND received_at <= clock_timestamp() + interval '30 seconds'
+  AND {SOURCE_ELIGIBLE_SQL.format(alias="tm")}
 ORDER BY received_at, message_id
 FOR UPDATE SKIP LOCKED
 LIMIT %s
@@ -136,6 +133,22 @@ def process_received_batch(
                 )
                 cursor.execute("SAVEPOINT analyzer_message")
                 try:
+                    if len(row) >= 14:
+                        cursor.execute(
+                            "SELECT 1 FROM telegram_messages tm WHERE tm.id = %s AND "
+                            + SOURCE_ELIGIBLE_SQL.format(alias="tm"),
+                            (message_uuid,),
+                        )
+                        if cursor.fetchone() is None:
+                            cursor.execute(
+                                "UPDATE telegram_messages SET intake_state='EXPIRED', "
+                                "entry_rejection_reason=COALESCE(entry_rejection_reason, "
+                                "'stale-source-message') WHERE id=%s",
+                                (message_uuid,),
+                            )
+                            cursor.execute("RELEASE SAVEPOINT analyzer_message")
+                            processed += 1
+                            continue
                     image_result: dict[str, Any] | None = None
                     image_status: str | None = None
                     if image_analysis_enabled and message.has_media and message.media_path:
@@ -198,7 +211,8 @@ def process_received_batch(
                         if cursor.fetchone() is None:
                             cursor.execute(
                                 "UPDATE telegram_messages SET intake_state='EXPIRED', "
-                                "entry_rejection_reason='stale-source-message' WHERE id=%s",
+                                "entry_rejection_reason=COALESCE(entry_rejection_reason, "
+                                "'stale-source-message') WHERE id=%s",
                                 (message_uuid,),
                             )
                             cursor.execute("RELEASE SAVEPOINT analyzer_message")

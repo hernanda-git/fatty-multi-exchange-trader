@@ -42,10 +42,11 @@ class FakeAsyncClient:
             {
                 "symbol": "BTCUSDT",
                 "pricePlace": "2",
-                "priceEndStep": "0.01",
+                "priceEndStep": "1",
                 "sizeMultiplier": "0.001",
                 "minTradeNum": "0.001",
-                "maxTradeNum": "100",
+                "maxOrderQty": "100",
+                "maxMarketOrderQty": "100",
                 "minTradeUSDT": "5",
                 "maxLever": "50",
                 "contractValue": "1",
@@ -556,3 +557,83 @@ async def test_native_unsupported_fallback_registers_when_monitor_can_mutate(
     assert result.reason == "fallback-registration-failed"
     assert adapter.degraded is True
     assert registrations == []
+
+
+@pytest.mark.parametrize(
+    "state,base_volume,expected",
+    [
+        ("live", "0", LiveOrderStatus.ACCEPTED),
+        ("filled", "0.001", LiveOrderStatus.FILLED),
+        ("partially_filled", "0.0004", LiveOrderStatus.PARTIAL),
+        ("canceled", "0.0004", LiveOrderStatus.PARTIAL),
+        ("canceled", "0", LiveOrderStatus.REJECTED),
+    ],
+)
+async def test_documented_v2_state_and_detail_volume_without_fill_rows(
+    state: str, base_volume: str, expected: LiveOrderStatus
+) -> None:
+    class DetailClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            return {
+                "state": state,
+                "size": "0.001",
+                "baseVolume": base_volume,
+                "priceAvg": "50000",
+                "orderId": "provider-1",
+            }
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return []
+
+    client = DetailClient()
+    result = await AsyncBitgetExecution(client, AsyncBitgetVenue(client)).reconcile_intent(
+        _admitted_intent()
+    )
+    assert result.status is expected
+    assert result.filled_qty == Decimal(base_volume)
+
+
+async def test_incomplete_fill_page_does_not_hide_cumulative_detail_volume() -> None:
+    class PaginatedClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            return {
+                "state": "filled",
+                "size": "0.001",
+                "baseVolume": "0.001",
+                "priceAvg": "50000",
+                "orderId": "provider-1",
+            }
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return [
+                {
+                    "tradeId": "recent-fill",
+                    "orderId": "provider-1",
+                    "baseVolume": "0.0004",
+                    "price": "51000",
+                }
+            ]
+
+    client = PaginatedClient()
+    result = await AsyncBitgetExecution(client, AsyncBitgetVenue(client)).reconcile_intent(
+        _admitted_intent()
+    )
+    assert result.filled_qty == Decimal("0.001")
+    assert result.avg_price == Decimal("50000")
+    assert result.provider_fill_ids == ("recent-fill",)
+
+
+async def test_malformed_fill_row_never_fabricates_full_requested_quantity() -> None:
+    class MalformedClient(FakeAsyncClient):
+        async def get_order_detail(self, symbol: str, *, client_oid: str) -> dict[str, str]:
+            return {"state": "live", "size": "0.001", "orderId": "provider-1"}
+
+        async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+            return [{"orderId": "provider-1", "price": "50000"}]
+
+    client = MalformedClient()
+    result = await AsyncBitgetExecution(client, AsyncBitgetVenue(client)).reconcile_intent(
+        _admitted_intent()
+    )
+    assert result.status is LiveOrderStatus.ACCEPTED
+    assert result.filled_qty == Decimal("0")

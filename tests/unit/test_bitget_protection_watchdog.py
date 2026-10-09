@@ -226,3 +226,59 @@ async def test_stale_stream_is_local_to_the_affected_symbol() -> None:
     assert report.status is WatchdogStatus.STALE
     assert report.allow_new_entries == {"BTCUSDT": False, "ETHUSDT": True}
     assert report.reasons == ("protection-stream-stale",)
+
+
+@pytest.mark.asyncio
+async def test_fresh_stream_does_not_grant_unallowlisted_fallback():
+    repository = InMemoryProtectionCapabilityRepository()
+    repository.upsert(
+        BitgetProtectionCapability(
+            exchange="bitget",
+            environment="LIVE",
+            symbol="BTCUSDT",
+            fallback_allowed=False,
+            stream_state=StreamState.HEALTHY,
+            last_stream_at=_NOW,
+        )
+    )
+
+    async def read_position(_symbol):
+        return []
+
+    report = await BitgetProtectionWatchdog(
+        FakeSocket(True),
+        repository,
+        environment="LIVE",
+        symbols=["BTCUSDT"],
+        read_position=read_position,
+        now=lambda: _NOW,
+    ).run_once()
+    assert report.allow_new_entries == {"BTCUSDT": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"symbol": "BTCUSDT"}],
+        [{"symbol": "BTCUSDT", "total": "NaN"}],
+        [{"symbol": "BTCUSDT", "total": "Infinity"}],
+        [{"symbol": "OTHERUSDT", "total": "1"}],
+        [{"symbol": "BTCUSDT", "total": "-1"}],
+    ],
+)
+async def test_invalid_provider_quantity_blocks_even_fresh_stream(repository, rows):
+    async def read_position(_symbol):
+        return rows
+
+    report = await BitgetProtectionWatchdog(
+        FakeSocket(True),
+        repository,
+        environment="LIVE",
+        symbols=["BTCUSDT"],
+        read_position=read_position,
+        now=lambda: _NOW,
+    ).run_once()
+    assert report.status is WatchdogStatus.FAILED
+    assert report.allow_new_entries == {"BTCUSDT": False}
+    assert report.reasons == ("provider-position-invalid",)

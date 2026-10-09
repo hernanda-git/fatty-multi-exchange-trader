@@ -24,9 +24,10 @@ def database(monkeypatch):
         pytest.skip("requires disposable FATTY_TEST_POSTGRES_DSN")
     schema = f"fatty_e2e_fallback_{uuid4().hex}"
     with psycopg.connect(dsn, autocommit=True) as conn:
-        assert conn.execute(
+        db, user, _ = conn.execute(
             "SELECT current_database(), current_user, inet_server_addr()"
-        ).fetchone() == ("fatty_test", "fatty_test", None)
+        ).fetchone()
+        assert (db, user) == ("fatty_test", "fatty_test")
         conn.execute(f'CREATE SCHEMA "{schema}"')
 
     def connect():
@@ -123,7 +124,14 @@ def test_registration_round_trips_canonical_identity(database):
             ),
             (str(uuid4()),),
         )
-    position = {"symbol": "BTCUSDT", "holdSide": "long", "cTime": "1000", "total": "0.01"}
+    position = {
+        "symbol": "BTCUSDT",
+        "holdSide": "long",
+        "cTime": "1000",
+        "total": "0.01",
+        "posMode": "one_way_mode",
+        "marginMode": "isolated",
+    }
     assert fallback._owned_quantity([position], entry) == Decimal("0.01")
     assert fallback._owned_quantity([{**position, "cTime": "2000"}], entry) is None
 
@@ -164,7 +172,16 @@ async def test_loaded_identity_close_requires_exact_environment_and_epoch(
         calls = 0
 
         async def get_single_position(self, symbol):
-            return [{"symbol": "BTCUSDT", "holdSide": "long", "cTime": epoch, "total": "0.01"}]
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "holdSide": "long",
+                    "cTime": epoch,
+                    "total": "0.01",
+                    "posMode": "one_way_mode",
+                    "marginMode": "isolated",
+                }
+            ]
 
         async def place_market_close(self, **kwargs):
             with database() as conn:
@@ -570,7 +587,14 @@ def test_owned_position_identity_requires_matching_epoch_and_entry(database, ent
     # Explicit fixture identity; registration round-trip is proven separately.
     entry["provider_position_epoch"] = "1000"
     entry["environment"] = "DEMO"
-    position = {"symbol": "BTCUSDT", "holdSide": "long", "cTime": "1000", "total": "0.01"}
+    position = {
+        "symbol": "BTCUSDT",
+        "holdSide": "long",
+        "cTime": "1000",
+        "total": "0.01",
+        "posMode": "one_way_mode",
+        "marginMode": "isolated",
+    }
     assert fallback._owned_quantity([position], entry) == Decimal("0.01")
     for change in (
         {"cTime": "2000"},

@@ -22,6 +22,7 @@ from fatty_trader.exchanges.bitget.protection_contract import (
 BASE_URL = "https://api.bitget.com"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_GET_RETRIES = 2
+_UNKNOWN_MUTATION_CODES = {"40010", "40725", "45001"}
 
 _SENSITIVE_TOKENS = ("ACCESS-KEY", "ACCESS-SIGN", "ACCESS-PASSPHRASE", "ACCESS-TIMESTAMP")
 
@@ -219,6 +220,13 @@ class BitgetRestClient:
                         )
                     code = str(error_payload.get("code", ""))
                     msg = str(error_payload.get("msg", ""))
+                    if not retryable and code in _UNKNOWN_MUTATION_CODES:
+                        raise BitgetUnknownResultError(
+                            f"Bitget {method.upper()} {path} result unknown: {code} {msg}",
+                            code=code,
+                            provider_msg=msg,
+                            http_status=response.status_code,
+                        )
                     if code or msg:
                         raise BitgetApiError(
                             f"Bitget {method.upper()} {path} HTTP {response.status_code}: "
@@ -250,6 +258,19 @@ class BitgetRestClient:
             ):
                 raise BitgetUnknownResultError(
                     f"Bitget POST {path} result unknown: malformed acknowledgement"
+                )
+            if (
+                not retryable
+                and isinstance(envelope, dict)
+                and envelope.get("code") in _UNKNOWN_MUTATION_CODES
+            ):
+                code = envelope["code"]
+                msg = str(envelope.get("msg", ""))
+                raise BitgetUnknownResultError(
+                    f"Bitget {method.upper()} {path} result unknown: {code} {msg}",
+                    code=code,
+                    provider_msg=msg,
+                    http_status=response.status_code,
                 )
             return _envelope_data(envelope)
         raise BitgetApiError(f"Bitget GET {path} transport failure") from last_error
@@ -381,6 +402,49 @@ class BitgetRestClient:
         )
         if not isinstance(data, dict):
             raise BitgetApiError("Bitget cancel-order response is invalid")
+        return data
+
+    async def cancel_entry_order(self, *, symbol: str, client_oid: str) -> dict[str, Any]:
+        """Cancel one persisted opening child; never cancel-all or a plan order."""
+        if not client_oid:
+            raise ValueError("Bitget entry client OID is required")
+        data = await self._post(
+            "/api/v2/mix/order/cancel-order",
+            {
+                "symbol": symbol.upper(),
+                "productType": "USDT-FUTURES",
+                "marginCoin": "USDT",
+                "clientOid": client_oid,
+            },
+        )
+        if not isinstance(data, dict):
+            raise BitgetUnknownResultError("Bitget cancel result unknown: invalid acknowledgement")
+        return data
+
+    async def modify_position_stop_loss(
+        self, *, symbol: str, order_id: str, client_oid: str, trigger_price: str
+    ) -> dict[str, Any]:
+        """Modify the exact existing position SL; never create a replacement plan."""
+        if not symbol or not order_id or not client_oid:
+            raise ValueError("Bitget existing SL identity is required")
+        data = await self._post(
+            "/api/v2/mix/order/modify-tpsl-order",
+            {
+                "symbol": symbol.upper(),
+                "orderId": order_id,
+                "clientOid": client_oid,
+                "productType": "USDT-FUTURES",
+                "marginCoin": "USDT",
+                "triggerPrice": trigger_price,
+                "triggerType": "mark_price",
+                "executePrice": "0",
+                "size": "",
+            },
+        )
+        if not isinstance(data, dict):
+            raise BitgetUnknownResultError(
+                "Bitget SL modification unknown: invalid acknowledgement"
+            )
         return data
 
     async def cancel_all_orders(
@@ -529,7 +593,7 @@ class BitgetRestClient:
             payload["force"] = "gtc"
         data = await self._post("/api/v2/mix/order/place-order", payload)
         if not isinstance(data, dict):
-            raise BitgetApiError("Bitget entry response is invalid")
+            raise BitgetUnknownResultError("Bitget entry result unknown: invalid acknowledgement")
         return data
 
     async def place_market_close(
@@ -563,7 +627,7 @@ class BitgetRestClient:
             payload["tradeSide"] = trade_side
         data = await self._post("/api/v2/mix/order/place-order", payload)
         if not isinstance(data, dict):
-            raise BitgetApiError("Bitget close response is invalid")
+            raise BitgetUnknownResultError("Bitget close result unknown: invalid acknowledgement")
         return data
 
     async def place_position_tpsl(

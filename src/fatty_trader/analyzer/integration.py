@@ -36,10 +36,10 @@ def analyze_with_fallback(
 ) -> AnalysisResult:
     """Classify with Codex, then fall back to the deterministic parser.
 
-    ``market_price_lookup`` feeds the stop-only scalp format, which has no entry price in
-    the text: the entry becomes the current market. The default is the public Bitget
-    ticker; tests inject a fixed price. A lookup that returns None yields no signal, so a
-    missing price can never turn into an invented entry.
+    ``market_price_lookup`` feeds market-entry formats, including stop-only scalp
+    messages. The entry becomes the current observed market. The default is the
+    public Bitget ticker; tests inject a fixed price. A missing price never permits
+    an invented entry.
     """
     try:
         codex = codex_runner(classifier_prompt(text))

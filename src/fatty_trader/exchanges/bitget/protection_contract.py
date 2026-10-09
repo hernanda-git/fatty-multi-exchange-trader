@@ -207,6 +207,8 @@ def normalize_pending_plan_response(data: Any) -> list[dict[str, Any]]:
         return [dict(row) for row in data]
     if not isinstance(data, dict):
         raise ProtectionContractError("Bitget pending plan response must be an object")
+    if "entrustedList" not in data:
+        raise ProtectionContractError("Bitget pending plan response is missing entrustedList")
     rows = data.get("entrustedList")
     if rows is None:
         return []

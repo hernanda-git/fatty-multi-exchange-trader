@@ -74,6 +74,9 @@ def test_process_received_batch_persists_analysis_and_two_paper_dispatches() -> 
     assert result == 1
     statements = "\n".join(statement for statement, _ in cursor.executed)
     assert "SELECT id, channel_id, message_id" in statements
+    assert "isfinite(tm.received_at)" in statements
+    assert "isfinite(tm.entry_expires_at)" in statements
+    assert "tm.ingestion_origin IN" in statements
     assert statements.count("INSERT INTO dispatches") == 2
     assert "INSERT INTO canonical_signals" in statements
     assert "UPDATE telegram_messages" in statements
@@ -266,3 +269,45 @@ def test_media_message_dispatches_even_with_image_analysis_enabled() -> None:
         params for statement, params in cursor.executed if "INSERT INTO dispatches" in statement
     ]
     assert len(dispatch_params) == 1
+
+
+def test_worker_rechecks_source_eligibility_before_model_or_market_io():
+    from datetime import timedelta
+
+    class ExpiredCursor(Cursor):
+        def __init__(self):
+            super().__init__()
+            self.rows[0] = (
+                *self.rows[0],
+                False,
+                None,
+                None,
+                None,
+                None,
+                "realtime",
+                datetime.now(UTC) + timedelta(minutes=5),
+                None,
+            )
+
+        def fetchone(self):
+            return None
+
+    cursor = ExpiredCursor()
+    connection = Connection(cursor)
+    model_calls = []
+    assert (
+        process_received_batch(
+            lambda: connection,
+            runner=lambda prompt: model_calls.append(prompt),
+            exchanges=("bitget",),
+        )
+        == 1
+    )
+    assert model_calls == []
+    statements = "\n".join(statement for statement, _ in cursor.executed)
+    assert "SELECT 1 FROM telegram_messages tm" in statements
+    assert "intake_state='EXPIRED'" in statements
+    assert "COALESCE(entry_rejection_reason" in statements
+    assert "INSERT INTO canonical_signals" not in statements
+    assert "INSERT INTO dispatches" not in statements
+    assert connection.commits == 1

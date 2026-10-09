@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable, Mapping
@@ -13,6 +14,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from fatty_trader.config.notifications import TelegramNotificationSettings
+from fatty_trader.telegram_html import bounded_html
 
 _SECRET_KEY = re.compile(
     r"(?:token|secret|password|api[_-]?key|authorization|session|cookie|passphrase)", re.I
@@ -22,6 +24,8 @@ _INLINE_SECRET = re.compile(
     r"\s*[=:]\s*[^\s<]+"
 )
 _BOT_TOKEN = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{20,}\b")
+_DELIVERY_TIMEOUT_SECONDS = 10.0
+_MIN_LEASE_SECONDS = 15
 
 
 @dataclass(frozen=True)
@@ -34,9 +38,9 @@ class OutboxNotification:
 
 class NotificationOutbox(Protocol):
     def claim(self, worker_id: str, lease_seconds: int) -> OutboxNotification | None: ...
-    def mark_sent(self, notification_id: UUID, worker_id: str) -> None: ...
-    def mark_retry(self, notification_id: UUID, worker_id: str, delay_seconds: int) -> None: ...
-    def mark_failed(self, notification_id: UUID, worker_id: str) -> None: ...
+    def mark_sent(self, notification_id: UUID, worker_id: str) -> bool: ...
+    def mark_retry(self, notification_id: UUID, worker_id: str, delay_seconds: int) -> bool: ...
+    def mark_failed(self, notification_id: UUID, worker_id: str) -> bool: ...
 
 
 class NotificationSender(Protocol):
@@ -49,6 +53,10 @@ class NotificationDeliveryError(Exception):
     def __init__(self, *, retryable: bool) -> None:
         super().__init__("notification delivery failed")
         self.retryable = retryable
+
+
+class NotificationPayloadError(ValueError):
+    """The claimed malformed payload was durably retired, not delivered."""
 
 
 class TelegramBotSender:
@@ -70,14 +78,15 @@ class TelegramBotSender:
                         "disable_web_page_preview": True,
                     },
                 )
-        except httpx.HTTPError as exc:
-            raise NotificationDeliveryError(retryable=True) from exc
+        except httpx.HTTPError:
+            raise NotificationDeliveryError(retryable=True) from None
         if response.status_code == 429 or response.status_code >= 500:
             raise NotificationDeliveryError(retryable=True)
         if response.status_code >= 400:
             raise NotificationDeliveryError(retryable=False)
         try:
-            delivered = bool(response.json().get("ok"))
+            body = response.json()
+            delivered = isinstance(body, Mapping) and body.get("ok") is True
         except (TypeError, ValueError):
             delivered = False
         if not delivered:
@@ -85,7 +94,7 @@ class TelegramBotSender:
 
 
 class PostgresNotificationOutbox:
-    """Lease-safe PostgreSQL queue boundary for Telegram notifications."""
+    """Token-fenced PostgreSQL queue boundary for Telegram notifications."""
 
     def __init__(self, connection_factory: Callable[[], Any]) -> None:
         self._connection_factory = connection_factory
@@ -97,6 +106,7 @@ class PostgresNotificationOutbox:
             raise ValueError("lease_seconds must be positive")
         claim_token = f"{worker_id}:{uuid4()}"
         connection = self._connection_factory()
+        invalid_payload = False
         try:
             cursor = connection.cursor()
             cursor.execute(
@@ -123,24 +133,35 @@ class PostgresNotificationOutbox:
                 (claim_token, lease_seconds),
             )
             row = cursor.fetchone()
+            if row is not None:
+                payload = row["payload"] if isinstance(row, dict) else row[1]
+                if not isinstance(payload, Mapping):
+                    cursor.execute(
+                        "UPDATE notifications_outbox SET failed_at=now(), claimed_by=NULL, "
+                        "lease_until=NULL WHERE id=%s AND claimed_by=%s",
+                        (row["id"] if isinstance(row, dict) else row[0], claim_token),
+                    )
+                    invalid_payload = True
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
+        if invalid_payload:
+            raise NotificationPayloadError("notification payload must be an object")
         if row is None:
             return None
         values = (
             row if isinstance(row, dict) else {"id": row[0], "payload": row[1], "attempts": row[2]}
         )
         payload = values["payload"]
-        if not isinstance(payload, Mapping):
-            raise ValueError("notification payload must be an object")
         return OutboxNotification(
             UUID(str(values["id"])), payload, int(values["attempts"]), claim_token
         )
 
-    def mark_sent(self, notification_id: UUID, worker_id: str) -> None:
-        self._update_claimed(
+    def mark_sent(self, notification_id: UUID, worker_id: str) -> bool:
+        return self._update_claimed(
             """UPDATE notifications_outbox
                SET sent_at = now(), claimed_by = NULL, lease_until = NULL
                WHERE id = %s AND claimed_by = %s AND sent_at IS NULL AND failed_at IS NULL""",
@@ -148,8 +169,8 @@ class PostgresNotificationOutbox:
             worker_id,
         )
 
-    def mark_retry(self, notification_id: UUID, worker_id: str, delay_seconds: int) -> None:
-        self._update_claimed(
+    def mark_retry(self, notification_id: UUID, worker_id: str, delay_seconds: int) -> bool:
+        return self._update_claimed(
             """UPDATE notifications_outbox
                SET claimed_by = NULL, lease_until = NULL,
                    next_attempt_at = now() + (%s * interval '1 second')
@@ -159,8 +180,8 @@ class PostgresNotificationOutbox:
             delay_seconds,
         )
 
-    def mark_failed(self, notification_id: UUID, worker_id: str) -> None:
-        self._update_claimed(
+    def mark_failed(self, notification_id: UUID, worker_id: str) -> bool:
+        return self._update_claimed(
             """UPDATE notifications_outbox
                SET failed_at = now(), claimed_by = NULL, lease_until = NULL
                WHERE id = %s AND claimed_by = %s AND sent_at IS NULL AND failed_at IS NULL""",
@@ -170,15 +191,19 @@ class PostgresNotificationOutbox:
 
     def _update_claimed(
         self, statement: str, notification_id: UUID, worker_id: str, *extra: int
-    ) -> None:
+    ) -> bool:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
             cursor.execute(statement, (*extra, notification_id, worker_id))
+            updated = cursor.rowcount == 1
             connection.commit()
+            return bool(updated)
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
 
 
 def enqueue_notification(
@@ -200,6 +225,8 @@ def enqueue_notification(
     except Exception:
         connection.rollback()
         raise
+    finally:
+        connection.close()
 
 
 class NotificationWorker:
@@ -223,42 +250,51 @@ class NotificationWorker:
         self._retry_seconds = retry_seconds
 
     async def run_once(self, worker_id: str, lease_seconds: int) -> str:
-        notification = self._outbox.claim(worker_id, lease_seconds)
+        if lease_seconds < _MIN_LEASE_SECONDS:
+            raise ValueError(f"notification lease must be at least {_MIN_LEASE_SECONDS} seconds")
+        try:
+            notification = self._outbox.claim(worker_id, lease_seconds)
+        except NotificationPayloadError:
+            return "failed"
         if notification is None:
             return "idle"
         claim_token = notification.claim_token or worker_id
         try:
-            await self._sender.send(format_notification_html(notification.payload))
+            try:
+                async with asyncio.timeout(_DELIVERY_TIMEOUT_SECONDS):
+                    await self._sender.send(format_notification_html(notification.payload))
+            except TimeoutError:
+                raise NotificationDeliveryError(retryable=True) from None
         except NotificationDeliveryError as exc:
             if not exc.retryable or notification.attempts >= self._max_attempts:
-                self._outbox.mark_failed(notification.id, claim_token)
-                return "failed"
-            self._outbox.mark_retry(
+                owned = self._outbox.mark_failed(notification.id, claim_token)
+                return "failed" if owned else "claim-lost"
+            owned = self._outbox.mark_retry(
                 notification.id,
                 claim_token,
                 self._retry_seconds * min(notification.attempts, self._max_attempts),
             )
-            return "retry"
-        self._outbox.mark_sent(notification.id, claim_token)
-        return "sent"
+            return "retry" if owned else "claim-lost"
+        owned = self._outbox.mark_sent(notification.id, claim_token)
+        return "sent" if owned else "claim-lost"
 
 
 def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
     if payload.get("kind") == "kaka-paper-digest":
-        return _format_kaka_digest_html(payload)
+        return bounded_html(_format_kaka_digest_html(payload))
     if payload.get("kind") == "heartbeat":
-        return _format_heartbeat_html(payload)
+        return bounded_html(_format_heartbeat_html(payload))
     if payload.get("kind") == "source-forward":
         return format_source_forward_html(payload)
     if payload.get("kind") == "signal-analysis":
-        return _format_signal_analysis_html(payload)
+        return bounded_html(_format_signal_analysis_html(payload))
     if payload.get("kind") == "execution-event":
-        return _format_execution_event_html(payload)
+        return bounded_html(_format_execution_event_html(payload))
     if payload.get("kind") == "execution-alert":
-        return _format_execution_alert_html(payload)
+        return bounded_html(_format_execution_alert_html(payload))
     if payload.get("kind") == "system-event":
-        return _format_system_event_html(payload)
+        return bounded_html(_format_system_event_html(payload))
     title = _safe_text(payload.get("kind", "Operator alert"), limit=100)
     lines = [f"<b>Fatty Trader: {escape(title)}</b>"]
     for key in sorted(payload):
@@ -266,7 +302,7 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
             continue
         value = "[redacted]" if _SECRET_KEY.search(str(key)) else _safe_value(payload[key])
         lines.append(f"<b>{escape(str(key).replace('_', ' ').title())}:</b> {escape(value)}")
-    return "\n".join(lines)[:4000]
+    return bounded_html("\n".join(lines))
 
 
 def format_source_forward_html(payload: Mapping[str, Any]) -> str:
@@ -278,11 +314,11 @@ def format_source_forward_html(payload: Mapping[str, Any]) -> str:
         if payload.get("has_media")
         else ""
     )
-    return (
+    return bounded_html(
         "<b>Pesan sumber diterima</b>\n"
         f"Referensi: <code>#{escape(str(message_id))}</code>\n\n"
         f"{escape(text)}{suffix}"
-    )[:4000]
+    )
 
 
 def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
@@ -292,10 +328,17 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
         management_action = payload.get("management_action")
         management_symbol = escape(_safe_value(payload.get("management_symbol", "")))
         source_text = escape(_safe_text(payload.get("source_text", ""), limit=1000))
-        if management_action == "TP1_BOOKED":
+        if management_action in {"TP1_BOOKED", "TP_BOOKED"}:
             icon = "🟢"
             heading = f"Manajemen Posisi · {management_symbol}"
-            detail = "TP1 booked terdeteksi dari source trader."
+            detail = (
+                "TP1 booked terdeteksi dari source trader."
+                if management_action == "TP1_BOOKED"
+                else (
+                    "TP booking terdeteksi; manajemen masuk antrean untuk membatalkan "
+                    "sisa entry bot saja. Bukan konfirmasi TP filled atau close dieksekusi."
+                )
+            )
         elif management_action == "SL_TO_ENTRY":
             icon = "🟡"
             heading = f"Manajemen Posisi · {management_symbol}"
@@ -343,7 +386,7 @@ def _format_signal_analysis_html(payload: Mapping[str, Any]) -> str:
         "<i>Belum ada konfirmasi order/fill provider pada laporan ini.</i>\n"
         f"ID: <code>#{source_id}</code>\n"
         f"Waktu: <code>{escape(source_received_at)}</code>"
-    )[:4000]
+    )
 
 
 def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
@@ -409,7 +452,7 @@ def _format_system_event_html(payload: Mapping[str, Any]) -> str:
 
 def _format_kaka_digest_html(payload: Mapping[str, Any]) -> str:
     """Render the paper-lane digest. Paper results only: no venue, no live PnL."""
-    body = escape(str(payload.get("text") or ""))
+    body = escape(_safe_text(payload.get("text") or "", limit=4000))
     return f"<b>Fatty Trader</b>  <i>Kaka paper digest</i>\n\n<pre>{body}</pre>"
 
 
@@ -446,7 +489,7 @@ def _format_heartbeat_html(payload: Mapping[str, Any]) -> str:
         f"Eksekusi aktif    {value('execution_enabled')}\n"
         f"Codex             {value('codex')}</pre>"
     )
-    return report[:4000]
+    return report
 
 
 def _safe_value(value: Any) -> str:

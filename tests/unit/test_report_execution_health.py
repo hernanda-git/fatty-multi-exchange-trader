@@ -73,6 +73,42 @@ def test_lifecycle_blocked_overrides_running_container():
     assert "Lifecycle  BLOCKED" in text
 
 
+def test_missing_container_health_never_permits_online_card():
+    services = {
+        "status": "OK",
+        "total": 2,
+        "running": 2,
+        "healthy": 2,
+        "dispatcher_state": "RUNNING",
+        "lifecycle_recovery": "READY",
+    }
+    assert "🟢 ONLINE" in render(services=services)
+    services["healthy"] = 1
+    text = render(services=services)
+    assert "DEGRADED" in text
+    assert "🟢 ONLINE" not in text
+
+
+def test_cron_classifies_running_service_without_health_as_unhealthy(monkeypatch):
+    from types import SimpleNamespace
+
+    from test_live_health_scope import script
+
+    def run(cmd, **kwargs):
+        output = (
+            '{"services": {"source-management": {}}}'
+            if "config" in cmd
+            else "source-management|running|\n"
+        )
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr(script.subprocess, "run", run)
+    services = script.get_service_status()
+    assert services["running"] == 1
+    assert services["healthy"] == 0
+    assert services["unhealthy"] == 1
+
+
 def test_cron_reports_dispatcher_restart_and_exact_recovery_failure(monkeypatch):
     from types import SimpleNamespace
 
@@ -189,3 +225,31 @@ def test_operator_command_loads_stream_latch_through_shared_reader():
     assert "DEGRADED" in text
     assert "bitget-protection-stream: socket-not-connected" in text
     assert "not fill evidence" in text
+
+
+def test_health_card_budget_preserves_entities_and_closing_tags():
+    from html.parser import HTMLParser
+
+    class TagChecker(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.stack = []
+
+        def handle_starttag(self, tag, attrs):
+            self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            assert self.stack.pop() == tag
+
+        def handle_data(self, data):
+            assert "&" not in data
+
+    codex = {
+        key: "🟢&" * 4000 for key in ("status", "plan", "5h", "7d", "reset", "refreshed", "error")
+    }
+    text = format_report([], [], {}, {}, [], {}, {}, {}, codex, {})
+    assert len(text.encode("utf-16-le")) // 2 <= 4000
+    checker = TagChecker()
+    checker.feed(text)
+    checker.close()
+    assert checker.stack == []

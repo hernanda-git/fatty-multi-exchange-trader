@@ -13,6 +13,10 @@ from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
 
+_SOURCE_NUMBER = re.compile(
+    r"(?<![\w.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?(?![\w.])"
+)
+
 
 @dataclass(frozen=True)
 class SignalClassification:
@@ -117,6 +121,36 @@ def _from_mapping(text: str, data: dict[str, Any], message_id: int) -> SignalCla
                 stop_loss=stop,
                 take_profits=take_profits,
             )
+            source_prices = {
+                Decimal(match.group().replace(",", "")) for match in _SOURCE_NUMBER.finditer(text)
+            }
+            source_pair = re.search(
+                rf"(?<![A-Za-z0-9]){re.escape(pair)}(?:USDT)?(?![A-Za-z0-9])",
+                text,
+                flags=re.I,
+            )
+            source_side = re.search(
+                r"\b(?:long|longing|longed|buy|buying)\b"
+                if side == "LONG"
+                else r"\b(?:short|shorting|shorted|sell|selling)\b",
+                text,
+                flags=re.I,
+            )
+            if (
+                source_pair is None
+                or source_side is None
+                or any(price not in source_prices for price in (entry, stop, *take_profits))
+            ):
+                return SignalClassification(
+                    False,
+                    pair,
+                    side,
+                    entry,
+                    stop,
+                    take_profits,
+                    confidence,
+                    "trade values are not explicit in the source text",
+                )
         except ValueError as exc:
             return SignalClassification(
                 False,

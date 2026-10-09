@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from fatty_trader.analyzer.deterministic_parser import parse_explicit_signal
 from fatty_trader.domain.enums import DispatchState, Exchange
 from fatty_trader.execution.fanout import FanoutPlanner
@@ -5,7 +7,11 @@ from fatty_trader.storage.memory import InMemoryDispatchRepository
 
 
 def test_explicit_signal_fans_out_once_per_exchange() -> None:
-    signal = parse_explicit_signal("BTCUSDT LONG MARKET SL 64000 TP 64630", message_id=1842)
+    signal = parse_explicit_signal(
+        "BTCUSDT LONG MARKET SL 64000 TP 64630",
+        message_id=1842,
+        market_price_lookup=lambda _: Decimal("64300"),
+    )
     assert signal is not None
 
     repository = InMemoryDispatchRepository()
@@ -26,7 +32,11 @@ def test_ambiguous_text_cannot_create_a_dispatch() -> None:
 
 
 def test_venue_failure_does_not_change_other_dispatch() -> None:
-    signal = parse_explicit_signal("ETHUSDT SHORT MARKET SL 2200 TP 2100", message_id=7)
+    signal = parse_explicit_signal(
+        "ETHUSDT SHORT MARKET SL 2200 TP 2100",
+        message_id=7,
+        market_price_lookup=lambda _: Decimal("2150"),
+    )
     assert signal is not None
     repository = InMemoryDispatchRepository()
     dispatches = FanoutPlanner(repository).plan(signal)

@@ -21,7 +21,7 @@ def test_static_configuration_never_proves_runtime_readiness():
     assert static["readiness"]["status"] == "unknown"
     assert static["status"] != "ok"
     empty = build_health_report({"TRADER_MODE": "DEMO"})
-    assert empty["configuration"]["status"] != "ok"
+    assert empty["configuration"]["status"] == "ok"
     assert empty["status"] != "ok"
 
 
@@ -53,6 +53,15 @@ def test_invalid_freshness_is_not_ready(age):
     runtime = evidence()
     runtime["analyzer"]["age_seconds"] = age
     assert build_health_report(ENV, runtime_components=runtime)["readiness"]["status"] != "ready"
+
+
+def test_web_reports_provider_mode_independently_of_trader_mode():
+    env = {"SERVICE_NAME": "web", "TRADER_MODE": "LIVE", "BITGET_MODE": "DEMO"}
+    report = build_health_report(env, runtime_components=evidence())
+    assert report["venue_mode"] == "DEMO"
+    assert report["live_execution_enabled"] is False
+    assert report["orders_enabled"] is None
+    assert report["status"] == "ok"
 
 
 async def test_routes_use_runtime_reader_not_environment(monkeypatch):

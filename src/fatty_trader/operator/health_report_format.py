@@ -19,6 +19,8 @@ from decimal import Decimal, InvalidOperation
 from html import escape
 from typing import Any
 
+from fatty_trader.telegram_html import bounded_html
+
 try:
     from datetime import UTC
 except ImportError:  # pragma: no cover - Python < 3.11
@@ -243,6 +245,7 @@ def format_report(
         or _count(services.get("starting")) > 0
         or _count(services.get("unexpected_runtime")) > 0
         or _count(services.get("running")) < _count(services.get("total"))
+        or _count(services.get("healthy")) < _count(services.get("running"))
         or str(services.get("dispatcher_state", "UNKNOWN")).upper() != "RUNNING"
     )
     codex_unhealthy = codex.get("status") in {"AUTH_FAILED", "N/A"}
@@ -564,4 +567,4 @@ def format_report(
                 + marker
                 + "\n<i>Source preview omitted to fit Telegram limit.</i>"
             )
-    return report[:4000]
+    return bounded_html(report)

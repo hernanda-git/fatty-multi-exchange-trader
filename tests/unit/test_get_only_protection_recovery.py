@@ -132,3 +132,117 @@ async def test_current_canonical_quantity_must_equal_proven_owned_fills():
         client, SimpleNamespace(inventory_issues=lambda env: []), environment="DEMO"
     )
     assert (await reader(*evidence())).state is not ProtectionState.VENUE_PROTECTED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", [{"userId": "999"}, {}, {"userId": "NaN"}, None])
+async def test_baseline_account_mismatch_never_reads_owned_inventory(identity):
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    class BoundReads(Reads):
+        async def _get(self, path):
+            return identity
+
+    client = BoundReads()
+    repository = SimpleNamespace(
+        baseline_binding_issues=lambda uid, env: [] if uid == "123" else ["mismatch"],
+        inventory_issues=lambda env: [],
+    )
+    reader = GetOnlyProtectionRecovery(client, repository, environment="LIVE")
+    with pytest.raises(ValueError):
+        await reader.inventory()
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {},
+        {"clientOid": "manual"},
+        {"reduceOnly": "YES"},
+        {"price": "99"},
+        {"size": "4"},
+        {"baseVolume": "NaN"},
+        {"orderId": "other"},
+    ],
+)
+async def test_recovery_accepts_only_exact_owned_waiting_limit(change):
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    client = Reads()
+    client.position = []
+    intent = LiveIntentRecord(
+        "bitget",
+        "owned-limit",
+        "BTCUSDT",
+        "BUY",
+        requested_qty=Decimal("3"),
+        provider_order_id="limit-id",
+        entry_leg="limit",
+        order_type="limit",
+        limit_price=Decimal("100"),
+    )
+    client.pending = [
+        {
+            "clientOid": "owned-limit",
+            "symbol": "BTCUSDT",
+            "side": "buy",
+            "orderType": "limit",
+            "reduceOnly": "NO",
+            "state": "live",
+            "price": "100",
+            "size": "3",
+            "baseVolume": "0",
+            "orderId": "limit-id",
+            **change,
+        }
+    ]
+    reader = GetOnlyProtectionRecovery(
+        client,
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        intent_store=SimpleNamespace(pending_entries=lambda: (intent,)),
+    )
+    issues = await reader.inventory()
+    assert issues == () if not change else "pending-orders-require-reconciliation" in issues
+
+
+@pytest.mark.asyncio
+async def test_recovery_refuses_missing_waiting_order_and_duplicate_provider_rows():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    client = Reads()
+    client.position = []
+    intent = LiveIntentRecord(
+        "bitget",
+        "owned-limit",
+        "BTCUSDT",
+        "BUY",
+        requested_qty=Decimal("3"),
+        provider_order_id="limit-id",
+        entry_leg="limit",
+        order_type="limit",
+        limit_price=Decimal("100"),
+    )
+    reader = GetOnlyProtectionRecovery(
+        client,
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        intent_store=SimpleNamespace(pending_entries=lambda: (intent,)),
+    )
+    assert "owned-pending-entry-inventory-mismatch" in await reader.inventory()
+    row = {
+        "clientOid": "owned-limit",
+        "symbol": "BTCUSDT",
+        "side": "buy",
+        "orderType": "limit",
+        "reduceOnly": "NO",
+        "state": "live",
+        "price": "100",
+        "size": "3",
+        "baseVolume": "0",
+        "orderId": "limit-id",
+    }
+    client.pending = [row, dict(row)]
+    assert "pending-entry-duplicate" in await reader.inventory()

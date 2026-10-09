@@ -11,10 +11,11 @@ def test_metadata_is_resolved_from_requested_contract_fields() -> None:
         {
             "symbol": "BTCUSDT",
             "pricePlace": "2",
-            "priceEndStep": "0.01",
+            "priceEndStep": "1",
             "sizeMultiplier": "0.001",
             "minTradeNum": "0.001",
-            "maxTradeNum": "100",
+            "maxOrderQty": "100",
+            "maxMarketOrderQty": "100",
             "minTradeUSDT": "5",
             "maxLever": "50",
         }
@@ -42,9 +43,10 @@ def test_metadata_accepts_current_bitget_v2_max_order_fields() -> None:
         }
     )
     assert meta.max_order_qty == Decimal("1000")
+    assert meta.max_market_order_qty == Decimal("500")
 
 
-def test_metadata_uses_non_empty_position_limit_when_order_limit_is_blank() -> None:
+def test_metadata_never_uses_position_count_as_quantity_limit() -> None:
     meta = metadata_from_contract(
         {
             "symbol": "BTCUSDT",
@@ -59,7 +61,8 @@ def test_metadata_uses_non_empty_position_limit_when_order_limit_is_blank() -> N
             "maxLever": "125",
         }
     )
-    assert meta.max_order_qty == Decimal("150")
+    assert meta.max_order_qty is None
+    assert meta.max_market_order_qty is None
 
 
 def test_validation_rejects_wrong_symbol_precision_and_notional() -> None:
@@ -67,10 +70,11 @@ def test_validation_rejects_wrong_symbol_precision_and_notional() -> None:
         {
             "symbol": "DOGEUSDT",
             "pricePlace": "5",
-            "priceEndStep": "0.00001",
+            "priceEndStep": "1",
             "sizeMultiplier": "1",
             "minTradeNum": "10",
-            "maxTradeNum": "100000",
+            "maxOrderQty": "100000",
+            "maxMarketOrderQty": "100000",
             "minTradeUSDT": "5",
             "maxLever": "20",
         }
@@ -88,10 +92,11 @@ def test_entry_is_not_reduce_only_but_exit_must_be_reduce_only() -> None:
         {
             "symbol": "BTCUSDT",
             "pricePlace": "2",
-            "priceEndStep": "0.01",
+            "priceEndStep": "1",
             "sizeMultiplier": "0.001",
             "minTradeNum": "0.001",
-            "maxTradeNum": "100",
+            "maxOrderQty": "100",
+            "maxMarketOrderQty": "100",
             "minTradeUSDT": "5",
             "maxLever": "50",
         }
@@ -107,3 +112,28 @@ def test_entry_is_not_reduce_only_but_exit_must_be_reduce_only() -> None:
             reduce_only=False,
             exit_order=True,
         )
+
+
+def test_price_end_step_scales_the_decimal_precision() -> None:
+    meta = metadata_from_contract(
+        {
+            "symbol": "BTCUSDT",
+            "pricePlace": "1",
+            "priceEndStep": "5",
+            "sizeMultiplier": "0.001",
+            "minTradeNum": "0.001",
+            "maxMarketOrderQty": "500",
+            "maxOrderQty": "1000",
+            "minTradeUSDT": "5",
+            "maxLever": "50",
+        }
+    )
+    assert meta.price_tick == Decimal("0.5")
+    with pytest.raises(OrderValidationError, match="price tick"):
+        validate_order("BTCUSDT", "BUY", Decimal("50000.2"), Decimal("0.001"), meta)
+    validate_order("BTCUSDT", "BUY", Decimal("50000.5"), Decimal("0.001"), meta)
+    with pytest.raises(OrderValidationError, match="maximum"):
+        validate_order(
+            "BTCUSDT", "BUY", Decimal("50000"), Decimal("501"), meta, order_type="market"
+        )
+    validate_order("BTCUSDT", "BUY", Decimal("50000"), Decimal("501"), meta, order_type="limit")

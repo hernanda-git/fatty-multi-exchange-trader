@@ -75,6 +75,8 @@ def _submission() -> BitgetEntrySubmission:
         balance_snapshot_id=uuid4(),
         margin_reservation_id=uuid4(),
         observed_at=datetime.now(UTC),
+        planned_stop_loss=Decimal("63000"),
+        planned_take_profits=(Decimal("65000"),),
     )
 
 

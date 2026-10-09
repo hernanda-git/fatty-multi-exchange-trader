@@ -40,7 +40,7 @@ class PostgresVerifiedCloseLifecycle:
             cur = c.cursor()
             cur.execute("SELECT pg_advisory_xact_lock(hashtext('bitget'))")
             cur.execute(
-                """SELECT r.id FROM bitget_margin_reservations r
+                """SELECT r.id,r.client_order_id,x.requested_qty FROM bitget_margin_reservations r
                 JOIN live_order_intents e ON e.exchange=r.exchange
                     AND e.client_order_id=r.client_order_id AND e.margin_reservation_id=r.id
                 JOIN dispatches d ON d.id=r.dispatch_id AND d.source_type='canonical_signal'
@@ -52,7 +52,10 @@ class PostgresVerifiedCloseLifecycle:
                     AND e.symbol=r.symbol AND e.filled_qty>0
                     AND x.role IN ('CLOSE','EMERGENCY_CLOSE','SL','TP')
                     AND x.state='requested' AND x.filled_qty=0
-                    AND x.requested_qty=e.filled_qty
+                    AND x.requested_qty>0
+                    AND NOT EXISTS (SELECT 1 FROM live_order_intents waiting
+                        WHERE waiting.exchange=e.exchange AND waiting.margin_reservation_id=r.id
+                          AND waiting.entry_leg='limit' AND NOT waiting.provider_terminal)
                     AND x.side=CASE e.side WHEN 'BUY' THEN 'SELL' ELSE 'BUY' END
                     AND x.created_at>=e.created_at AND x.created_at>=r.created_at
                     AND NOT EXISTS (SELECT 1 FROM fills f WHERE f.exchange=x.exchange
@@ -62,6 +65,10 @@ class PostgresVerifiedCloseLifecycle:
             )
             rows = cur.fetchall()
             if len(rows) != 1:
+                c.commit()
+                return False
+            remaining = self._store.remaining_owned_quantity(rows[0][1])
+            if rows[0][2] > remaining:
                 c.commit()
                 return False
             cur.execute(

@@ -319,8 +319,9 @@ positions and fallback stops are not disabled.
     --approval-reference <approval-ticket>
   ```
 
-- On LIVE there is no scripted release. Do not clear the row directly in the
-  database; the release path must be added and reviewed first.
+- LIVE flat-baseline recovery is restricted to the exact two old reasons in
+  section 12 below. Every other incident remains blocked; never directly clear
+  database rows or use the DEMO recovery command on LIVE.
 
 ### Missing native plan
 
@@ -362,3 +363,70 @@ The only expected state-changing operations are local image/container replacemen
 additive database migrations, capability/ledger reconciliation writes, and service
 health telemetry. Any provider mutation in logs during this procedure is a rollout
 failure and must stop the deployment.
+
+## 12. Approved LIVE flat-baseline latch recovery
+
+`scripts/recover_bitget_live_latches.py` is an explicit operator-only release,
+not an automatic recovery path. It releases only active `bitget` /
+`clock-skew-exceeded` and `bitget-protection-stream` / `socket-not-connected`.
+Any other active scope (including `global`) or reason refuses the entire operation.
+Historical baselined trades remain unresolved history, not verified closures;
+this procedure does not replay signals, change risk/environment settings, or issue
+provider order, cancel, close, margin, or leverage mutations.
+
+Before either proof or apply:
+
+1. Obtain explicit recovery approval and the applied audited baseline receipt UUID
+   for the expected authenticated Bitget account UID.
+2. Stop **all account mutation consumers** (dispatch/execution workers, manual
+   trading scripts, management/close/cancel consumers and external account writers).
+   Keep them stopped through proof, review and apply. Database locks protect the
+   local ledger only; the command cannot detect or prevent external writers.
+   Observe-only monitor/notification consumers may remain running; a monitor
+   changing a latch during proof causes refusal.
+3. Run in the production environment with `TRADER_MODE=LIVE`, `BITGET_MODE=LIVE`,
+   `BITGET_EXECUTION_ENABLED=1`, `BITGET_PROTECTION_STREAM_ENABLED=1`, stream mode
+   `observe` and stream mutations disabled. Do not alter these settings to make
+   the command pass. Normal credentials and `DATABASE_URL`/libpq `PG*` settings
+   are reused. No secrets belong in the approval reference or command arguments.
+
+```bash
+# Default is dry-run, but explicit --confirm is required even for proof.
+python scripts/recover_bitget_live_latches.py --dry-run --confirm \
+  --approval-reference <recovery-approval> --account-id <authenticated-UID> \
+  --baseline-id <applied-baseline-UUID>
+
+# Review the proof, including exact latch rows, receipt/account binding,
+# ledger_readiness_issues=[], all-products/all-families flat GET inventory,
+# and authenticated CONNECTED V2 stream / both-leg pong / BTCUSDT mark proof.
+# Use precisely the same approval, account and baseline values:
+python scripts/recover_bitget_live_latches.py --apply --confirm \
+  --approval-reference <recovery-approval> --account-id <authenticated-UID> \
+  --baseline-id <applied-baseline-UUID> \
+  --expected-digest <reviewed-recovery_digest>
+```
+
+The command performs fresh authenticated GET inventory for USDT, USDC and COIN
+futures positions, ordinary orders and `normal_plan`, `profit_loss`, `track_plan`;
+unknown responses or any exposure/pending orders refuse. It opens production V2
+public/private sockets, authenticates privately, and requires fresh public BTCUSDT
+marks and actual pongs on both legs (bounded initial proof: 15 seconds). The probe
+uses a one-second diagnostic heartbeat only; it does not change service timing.
+
+Under database write locks it compares every field of the observed active latch
+rows, validates the baseline receipt binding, repeats existing ledger-readiness
+checks and rejects all unbaselined unresolved commitments/open positions/leases.
+It then repeats flat GET evidence with the stream still observed. Apply requires
+the reviewed digest to match the exact latch snapshot/baseline/account/approval.
+Both latch releases and per-scope audited `kill-switch-release` notification
+outbox events commit together. Receipt, prior latch rows, raw provider inventory,
+stream proof and approval are retained in those events. Dry-run rolls back all
+database work; successful output has `applied=false`. Apply must report
+`applied=true` and a `recovery_id`; refusals exit 2 without a release.
+
+After successful apply, preserve the existing risk/stream flags and restart only
+the approved consumers for **future fresh signals**. Confirm notifications and
+current health using the normal operational process. If the monitor re-latches,
+stop and investigate the new evidence; do not retry a release blindly. Any
+refusal leaves execution blocked and requires addressing the stated cause, not
+broadening the allowlist.

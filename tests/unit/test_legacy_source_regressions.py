@@ -121,7 +121,10 @@ def test_management_without_position_is_not_reported_as_reconciled() -> None:
     update = SourceManagementUpdate.new("a" * 64, "ETHFIUSDT", ManagementAction.SL_TO_ENTRY)
     store = InMemorySourceManagementStore([update])
 
-    assert SourceManagementExecutor(store, Gateway()).run_once("worker") == "failed"
+    assert (
+        SourceManagementExecutor(store, Gateway(), mutations_enabled=True).run_once("worker")
+        == "failed"
+    )
     assert store.get(update.id).state == "failed"
 
 

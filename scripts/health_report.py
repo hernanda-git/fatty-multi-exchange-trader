@@ -466,7 +466,8 @@ def get_service_status() -> dict[str, int | str]:
     unhealthy = sum(
         len(row) < 2
         or row[1].lower() != "running"
-        or (len(row) > 2 and row[2].lower() == "unhealthy")
+        or len(row) < 3
+        or row[2].lower() not in {"healthy", "starting"}
         for row in rows
     )
     dispatcher_states = [row[1].upper() for row in rows if row[0] == "dispatcher-bitget"]

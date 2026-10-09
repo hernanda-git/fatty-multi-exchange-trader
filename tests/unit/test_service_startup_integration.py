@@ -18,6 +18,7 @@ async def test_dispatch_loop_waits_for_full_recovery_and_always_closes(monkeypat
 
     class Execution:
         recovery_ready = False
+        recovery_issues = ("historical-unresolved",)
 
         async def recover_entry_lifecycles(self):
             events.append("recover")
@@ -43,6 +44,10 @@ async def test_dispatch_loop_waits_for_full_recovery_and_always_closes(monkeypat
             events.append("dispatch")
             raise Stop
 
+    async def stop_sleep(_interval):
+        raise Stop
+
+    monkeypatch.setattr(service.asyncio, "sleep", stop_sleep)
     monkeypatch.setattr(
         service,
         "build_bitget_execution_runtime",
@@ -50,9 +55,56 @@ async def test_dispatch_loop_waits_for_full_recovery_and_always_closes(monkeypat
     )
     monkeypatch.setattr(service, "build_bitget_protection_admission", lambda _: None)
     monkeypatch.setattr(module, "BitgetDispatcher", Dispatcher)
-    with pytest.raises(Stop if ready else RuntimeError):
+    with pytest.raises(RuntimeError if error else Stop):
         await service.run_bitget_dispatcher({})
     assert events == (["recover", "dispatch", "close"] if ready else ["recover", "close"])
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_keeps_reconciling_pending_fills_without_admitting_when_blocked(
+    monkeypatch,
+):
+    from fatty_trader.execution import bitget_dispatcher as module
+
+    events = []
+
+    class Stop(Exception):
+        pass
+
+    class Execution:
+        recovery_ready = False
+        recovery_issues = ("pending-fill-unconfirmed",)
+
+        async def recover_entry_lifecycles(self):
+            events.append("recover")
+            self.recovery_ready = events.count("recover") == 2
+
+    class Client:
+        async def aclose(self):
+            events.append("close")
+
+    class Dispatcher:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_once(self, *args):
+            events.append("dispatch")
+            raise Stop
+
+    async def next_cycle(_interval):
+        events.append("wait")
+
+    monkeypatch.setattr(
+        service,
+        "build_bitget_execution_runtime",
+        lambda _: SimpleNamespace(execution=Execution(), client=Client(), preflight=lambda _: None),
+    )
+    monkeypatch.setattr(service, "build_bitget_protection_admission", lambda _: None)
+    monkeypatch.setattr(module, "BitgetDispatcher", Dispatcher)
+    monkeypatch.setattr(service.asyncio, "sleep", next_cycle)
+    with pytest.raises(Stop):
+        await service.run_bitget_dispatcher({})
+    assert events == ["recover", "wait", "recover", "dispatch", "close"]
 
 
 @pytest.mark.asyncio

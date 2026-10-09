@@ -56,6 +56,8 @@ def _submission() -> BitgetEntrySubmission:
         UUID(int=1),
         UUID(int=2),
         datetime.now(UTC),
+        Decimal("63000"),
+        (Decimal("65000"),),
     )
 
 

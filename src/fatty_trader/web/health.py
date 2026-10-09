@@ -24,7 +24,7 @@ def build_health_report(
     service = environ.get("SERVICE_NAME", "web")
     mode = environ.get("TRADER_MODE", "DEMO").upper()
     venue_mode = mode
-    if service in {"dispatcher-bitget", "monitor-bitget", "operator-bot"}:
+    if service in {"dispatcher-bitget", "monitor-bitget", "operator-bot", "web"}:
         venue_mode = environ.get("BITGET_MODE", mode).upper()
     components: dict[str, str] = {}
     raw_components = environ.get("SERVICE_COMPONENTS", "")
@@ -37,7 +37,7 @@ def build_health_report(
     config_ok = (
         mode in {"DEMO", "LIVE"}
         and venue_mode in {"DEMO", "LIVE"}
-        and bool(components)
+        and (service == "web" or bool(components))
         and all(state in _READY_STATES for state in components.values())
     )
     runtime: dict[str, str] = {}

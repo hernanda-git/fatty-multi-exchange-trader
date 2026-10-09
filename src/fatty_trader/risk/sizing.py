@@ -88,6 +88,7 @@ class SymbolMetadata(BaseModel):
     size_step: Decimal = Field(gt=0)
     min_order_qty: Decimal = Field(gt=0)
     max_order_qty: Decimal | None = Field(default=None, gt=0)
+    max_market_order_qty: Decimal | None = Field(default=None, gt=0)
     contract_value: Decimal = Field(default=Decimal("1"), gt=0)
     # Venue-reported maximum, not our trading leverage. Bitget now advertises
     # maxLever up to 150 on some contracts, so a 125 ceiling would reject the

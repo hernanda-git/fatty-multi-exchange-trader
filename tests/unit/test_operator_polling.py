@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import traceback
 from typing import Any, cast
 
 import httpx
+import pytest
 
 from fatty_trader.operator.live_commands import OperatorCommandService
 from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
@@ -89,6 +91,30 @@ def test_bot_api_long_polls_and_replies_without_parse_mode() -> None:
     api.send_reply(1, "BALANCE available=10")
     assert len(seen) == 2
     client.close()
+
+
+@pytest.mark.parametrize("failure", ["http", "transport", "json"])
+def test_bot_api_error_traceback_never_discloses_bot_token(failure) -> None:
+    token = "123456:private-bot-credential"
+
+    def handler(request):
+        if failure == "http":
+            return httpx.Response(503, text="unavailable")
+        if failure == "transport":
+            raise httpx.ConnectError(f"failed request to {request.url}", request=request)
+        return httpx.Response(200, text="invalid JSON")
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://api.telegram.org"
+    ) as client:
+        api = TelegramBotApi(token, client=client)
+        with pytest.raises(RuntimeError, match="Telegram Bot API request failed") as raised:
+            api.set_my_commands()
+        rendered = "".join(traceback.format_exception(raised.value))
+    assert token not in rendered
+    assert "api.telegram.org/bot" not in rendered
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__ is True
 
 
 def test_bot_api_splits_long_reply_without_dropping_tail() -> None:
@@ -214,6 +240,46 @@ def test_poller_does_not_reexecute_claimed_mutation_after_restart() -> None:
     assert restarted.offset == 43
     assert restarted.run_once() == 1
     assert restarted_service.calls == []
+
+
+def test_poller_does_not_advance_past_a_failed_durable_receipt_claim() -> None:
+    class FailingReceiptStore(InMemoryUpdateReceiptStore):
+        def __init__(self):
+            super().__init__()
+            self.fail = True
+
+        def claim(self, update_id):
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("database unavailable")
+            return super().claim(update_id)
+
+    store = FailingReceiptStore()
+    service = FakeCommandService()
+    requested_offsets = []
+    sent = []
+
+    def fetch_updates(offset):
+        requested_offsets.append(offset)
+        return [_update(update_id=42, text="/setsl WLDUSDT 0.47")]
+
+    poller = TelegramCommandPoller(
+        command_service=service,
+        fetch_updates=fetch_updates,
+        send_reply=lambda chat_id, text: sent.append((chat_id, text)),
+        receipt_store=store,
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        poller.run_once()
+    assert poller.offset is None
+    assert store.claimed == set()
+    assert service.calls == []
+    assert sent == []
+    assert poller.run_once() == 1
+    assert requested_offsets == [None, None]
+    assert poller.offset == 43
+    assert store.claimed == {42}
+    assert len(service.calls) == 1
 
 
 def test_start_with_bot_mention_reaches_service_and_returns_readable_reply() -> None:

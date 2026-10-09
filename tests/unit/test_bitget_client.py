@@ -606,3 +606,34 @@ async def test_explicit_params_and_all_methods() -> None:
     # set-leverage body carries explicit symbol param
     leverage_req = seen[3]
     assert json.loads(leverage_req.content.decode())["symbol"] == "BTCUSDT"
+
+
+@pytest.mark.parametrize("operation", ["entry", "close"])
+async def test_invalid_success_order_data_remains_unknown_and_is_not_reposted(operation) -> None:
+    client, seen = make_client(
+        lambda _: httpx.Response(200, json={"code": "00000", "msg": "success", "data": None})
+    )
+    place = client.place_entry_order if operation == "entry" else client.place_market_close
+    with pytest.raises(BitgetUnknownResultError, match="invalid acknowledgement"):
+        await place(symbol="BTCUSDT", side="BUY", quantity="0.001", client_oid="durable-oid")
+    assert len(seen) == 1
+    await client.aclose()
+
+
+@pytest.mark.parametrize("code", ["40010", "40725", "45001"])
+@pytest.mark.parametrize("http_status", [200, 400])
+async def test_provider_timeout_or_unknown_error_is_not_a_definitive_rejection(
+    code: str, http_status: int
+) -> None:
+    client, seen = make_client(
+        lambda _: httpx.Response(
+            http_status, json={"code": code, "msg": "provider processing outcome unknown"}
+        )
+    )
+    with pytest.raises(BitgetUnknownResultError) as raised:
+        await client.place_entry_order(
+            symbol="BTCUSDT", side="BUY", quantity="0.001", client_oid="durable-oid"
+        )
+    assert raised.value.code == code
+    assert len(seen) == 1
+    await client.aclose()

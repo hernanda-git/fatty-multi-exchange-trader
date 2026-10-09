@@ -146,6 +146,19 @@ class LiveIntentRecord:
     margin_mode: str | None = None
     balance_snapshot_id: UUID | None = None
     margin_reservation_id: UUID | None = None
+    planned_stop_loss: Decimal | None = None
+    planned_take_profits: tuple[Decimal, ...] | None = None
+    dispatch_id: UUID | None = None
+    entry_leg: str | None = None
+    order_type: str = "market"
+    limit_price: Decimal | None = None
+    cancel_requested_by: UUID | None = None
+    provider_terminal: bool = False
+    cancel_post_claimed: bool = False
+    active_stop_loss_price: Decimal | None = None
+    stop_mutation_root_oid: str | None = None
+    stop_mutation_take_profit_id: str | None = None
+    protection_root_oid: str | None = None
 
     def __post_init__(self) -> None:
         if self.role != "ENTRY":
@@ -167,6 +180,22 @@ class LiveIntentRecord:
             raise ValueError("ENTRY planned margin must be positive")
         if self.margin_mode is not None and self.margin_mode.upper() != "ISOLATED":
             raise ValueError("ENTRY margin mode must be ISOLATED")
+        if (self.planned_stop_loss is None) != (self.planned_take_profits is None):
+            raise ValueError("ENTRY intent protection plan must be complete")
+        if self.planned_stop_loss is not None and (
+            not self.planned_take_profits
+            or any(
+                not price.is_finite() or price <= 0
+                for price in (self.planned_stop_loss, *self.planned_take_profits)
+            )
+        ):
+            raise ValueError("ENTRY planned protection prices must be finite positive")
+        if self.order_type not in {"market", "limit"}:
+            raise ValueError("ENTRY order type must be market or limit")
+        if self.order_type == "limit" and (
+            self.limit_price is None or not self.limit_price.is_finite() or self.limit_price <= 0
+        ):
+            raise ValueError("ENTRY limit price must be finite positive")
 
 
 class LiveIntentStoreProtocol(Protocol):
@@ -176,6 +205,17 @@ class LiveIntentStoreProtocol(Protocol):
     def get(self, client_oid: str) -> LiveIntentRecord | None: ...
     def update(self, record: LiveIntentRecord) -> None: ...
     def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None: ...
+    def claim_split(self, market: LiveIntentRecord, limit: LiveIntentRecord) -> bool: ...
+    def claim_entry_post(self, client_oid: str) -> bool: ...
+    def pending_entries(
+        self, symbol: str | None = None, management_id: UUID | None = None
+    ) -> tuple[LiveIntentRecord, ...]: ...
+    def claim_cancel(self, client_oid: str, management_id: UUID) -> bool: ...
+    def claim_cancel_post(self, client_oid: str) -> bool: ...
+    def update_active_stop(
+        self, symbol: str, root_oid: str, stop: Decimal, management_id: str
+    ) -> None: ...
+    def remaining_owned_quantity(self, root_oid: str) -> Decimal: ...
 
 
 class InMemoryLiveIntentStore:
@@ -187,6 +227,7 @@ class InMemoryLiveIntentStore:
         self._fill_keys: set[tuple[str, str]] = set()
         self.provider_events: list[dict[str, str]] = []
         self._provider_event_keys: set[tuple[str, str]] = set()
+        self.close_bindings: dict[str, str] = {}
 
     def save(self, record: LiveIntentRecord) -> None:
         existing = self._records.get(record.client_oid)
@@ -214,6 +255,134 @@ class InMemoryLiveIntentStore:
         record = self._records.get(client_oid)
         return replace(record) if record is not None else None
 
+    def claim_split(self, market: LiveIntentRecord, limit: LiveIntentRecord) -> bool:
+        if market.client_oid in self._records:
+            return False
+        if limit.client_oid in self._records:
+            raise ValueError("split child exists without root")
+        self._records[market.client_oid] = replace(market)
+        self._records[limit.client_oid] = replace(limit)
+        return True
+
+    def claim_entry_post(self, client_oid: str) -> bool:
+        record = self._records[client_oid]
+        if record.state != "staged" or record.cancel_requested_by is not None:
+            return False
+        record.state = "requested"
+        return True
+
+    def pending_entries(
+        self, symbol: str | None = None, management_id: UUID | None = None
+    ) -> tuple[LiveIntentRecord, ...]:
+        return tuple(
+            replace(record)
+            for record in self._records.values()
+            if record.exchange == "bitget"
+            and record.role == "ENTRY"
+            and record.entry_leg == "limit"
+            and (
+                not record.provider_terminal
+                or record.cancel_requested_by == management_id
+                and management_id is not None
+            )
+            and (symbol is None or record.symbol == symbol)
+        )
+
+    def claim_cancel(self, client_oid: str, management_id: UUID) -> bool:
+        record = self._records[client_oid]
+        if record.role != "ENTRY" or record.entry_leg != "limit":
+            raise ValueError("cancellation requires owned entry limit")
+        if record.cancel_requested_by is not None or record.provider_terminal:
+            return False
+        record.cancel_requested_by = management_id
+        if record.state == "staged":
+            record.state = "cancelled"
+            record.provider_terminal = True
+        return True
+
+    def claim_cancel_post(self, client_oid: str) -> bool:
+        record = self._records[client_oid]
+        if (
+            record.cancel_requested_by is None
+            or record.cancel_post_claimed
+            or record.provider_terminal
+        ):
+            return False
+        record.cancel_post_claimed = True
+        return True
+
+    def claim_protection(self, records: tuple[LiveIntentRecord, ...]) -> bool:
+        if any(record.client_oid in self._records for record in records):
+            return False
+        for record in records:
+            self._records[record.client_oid] = replace(record)
+        return True
+
+    def protection_intents(self, root_oid: str) -> tuple[LiveIntentRecord, ...]:
+        return tuple(
+            replace(r)
+            for r in self._records.values()
+            if r.protection_root_oid == root_oid and r.role in {"SL", "TP"}
+        )
+
+    def remaining_owned_quantity(self, root_oid: str) -> Decimal:
+        root = self._records[root_oid]
+        child = self._records.get(root_oid + "-limit")
+        total = root.filled_qty + (child.filled_qty if child is not None else Decimal("0"))
+        for close_oid, owner in self.close_bindings.items():
+            if owner != root_oid:
+                continue
+            close = self._records[close_oid]
+            if close.filled_qty <= 0:
+                continue
+            ledger = [normalize_fill(f) for oid, f in self.fills if oid == close_oid]
+            quantity, _, _, ids = summarize_fills(ledger)
+            if (
+                close.symbol != root.symbol
+                or close.side == root.side
+                or not close.provider_order_id
+                or quantity != close.filled_qty
+                or set(ids) != set(close.provider_fill_ids)
+                or any(fid.startswith("status-derived:") for fid in ids)
+            ):
+                raise ValueError("bound close lacks exact real provider fill evidence")
+            total -= quantity
+        if total < 0:
+            raise ValueError("bound closes exceed owned entry fills")
+        return total
+
+    def update_active_stop(
+        self, symbol: str, root_oid: str, stop: Decimal, management_id: str
+    ) -> None:
+        root = self._records[root_oid]
+        management = self._records[management_id]
+        if (
+            root.symbol != symbol
+            or management.role != "SL"
+            or management.stop_mutation_root_oid != root_oid
+            or management.planned_stop_loss != stop
+        ):
+            raise ValueError("active stop management ownership mismatch")
+        root.active_stop_loss_price = stop
+        child = self._records.get(root_oid + "-limit")
+        if child is not None:
+            child.active_stop_loss_price = stop
+
+    def bind_native_close(
+        self, root_oid: str, close_oid: str, plan_oid: str, executed_order_id: str
+    ) -> None:
+        root, plan, close = (self._records[oid] for oid in (root_oid, plan_oid, close_oid))
+        if (
+            plan.protection_root_oid != root_oid
+            or not plan.provider_order_id
+            or close.role != "CLOSE"
+            or close.provider_order_id != executed_order_id
+            or close.symbol != root.symbol
+            or close.side == root.side
+        ):
+            raise ValueError("native close ownership mismatch")
+        self.close_bindings[close_oid] = root_oid
+
     def update(self, record: LiveIntentRecord) -> None:
         existing = self._records.get(record.client_oid)
         if existing is None:
@@ -226,6 +395,9 @@ class InMemoryLiveIntentStore:
             and existing.provider_order_id != record.provider_order_id
         ):
             raise ValueError("live intent provider order id conflict")
+        record.cancel_requested_by = existing.cancel_requested_by
+        record.provider_terminal = record.provider_terminal or existing.provider_terminal
+        record.cancel_post_claimed = existing.cancel_post_claimed
         self._records[record.client_oid] = replace(record)
         if record.provider_fills:
             self.record_fills(record, record.provider_fills)
@@ -311,7 +483,7 @@ def _to_decimal(value: Any) -> Decimal | None:
         result = Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return None
-    return result
+    return result if result.is_finite() else None
 
 
 def normalize_fill(fill: Mapping[str, Any]) -> dict[str, Any]:
@@ -392,14 +564,13 @@ def classify_live_order(
     detail: Mapping[str, Any], fills: Sequence[Mapping[str, Any]]
 ) -> LiveOrderStatus:
     """Classify an entry from its read-back detail + fills."""
-    raw_status = str(detail.get("status", "")).strip().lower()
-    if raw_status in _REJECTED_STATUSES:
-        return LiveOrderStatus.REJECTED
+    raw_status = str(detail.get("state", detail.get("status", ""))).strip().lower()
     requested = _to_decimal(detail.get("requestedQty", detail.get("size", 0)))
     filled_qty, _, _, _ = summarize_fills(fills)
     detail_filled = _to_decimal(
         detail.get("filledQty", detail.get("filledSize", detail.get("baseVolume", 0)))
     )
+    filled_qty = max(filled_qty, detail_filled or Decimal("0"))
     if raw_status in _FILLED_STATUSES:
         return (
             LiveOrderStatus.FILLED
@@ -414,6 +585,10 @@ def classify_live_order(
         return LiveOrderStatus.FILLED
     if filled_qty > 0:
         return LiveOrderStatus.PARTIAL
+    # Canceling an unfilled remainder does not erase a partial execution. It
+    # still requires protection and must retain the durable margin reservation.
+    if raw_status in _REJECTED_STATUSES:
+        return LiveOrderStatus.REJECTED
     if not raw_status and not fills:
         return LiveOrderStatus.UNKNOWN
     if raw_status in _ACCEPTED_STATUSES or raw_status == "":
@@ -430,6 +605,12 @@ def _persist_readback(
     normalized_fills = tuple(normalize_fill(fill) for fill in fills)
     status = classify_live_order(detail, normalized_fills)
     filled_qty, avg_price, fee, fill_ids = summarize_fills(normalized_fills)
+    detail_qty = _to_decimal(
+        detail.get("filledQty", detail.get("filledSize", detail.get("baseVolume", 0)))
+    )
+    if detail_qty is not None and detail_qty > filled_qty:
+        filled_qty = detail_qty
+        avg_price = _to_decimal(detail.get("priceAvg", detail.get("avgPrice")))
     provider_order_id = detail.get("orderId", detail.get("providerOrderId"))
     # Preserve the submitted provider id: read-back details may omit it.
     if provider_order_id is not None:
@@ -515,9 +696,6 @@ def enter_live_position(
     alert: Callable[[str], None] | None = None,
 ) -> LiveEntryResult:
     """Run the live entry workflow: setup, intent-first POST, read-back, protect."""
-    read_pre_entry_state(client, request.symbol)
-    ensure_isolated_margin_and_leverage(client, request.symbol, request.leverage)
-
     client_oid = request.client_oid or build_live_client_oid(
         request.exchange, request.symbol, request.oid_token
     )
@@ -529,6 +707,9 @@ def enter_live_position(
             client, store, exchange=request.exchange, client_oid=client_oid
         )
         return _maybe_protect(client, store, request, client_oid, result, alert)
+
+    read_pre_entry_state(client, request.symbol)
+    ensure_isolated_margin_and_leverage(client, request.symbol, request.leverage)
 
     record = existing or LiveIntentRecord(
         exchange=request.exchange,

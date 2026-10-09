@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any
 
@@ -153,20 +154,19 @@ class BitgetProtectionWatchdog:
                 if "provider-position-read-failed" not in reasons:
                     reasons.append("provider-position-read-failed")
             else:
-                if not isinstance(positions, list) or not all(
-                    isinstance(position, dict) for position in positions
-                ):
+                if not _valid_position_snapshot(positions, symbol):
                     read_ok = False
                     provider_failure = True
                     if "provider-position-invalid" not in reasons:
                         reasons.append("provider-position-invalid")
-
             capability = self._ensure_capability(symbol)
             native_verified = capability.native_state is NativeProtectionState.VERIFIED
             # A dead socket denies entries even if REST says the capability is
             # verified: without a live stream, protection is not being enforced.
             allow_new_entries[symbol] = (
-                read_ok and socket_ready and (native_verified or stream_fresh)
+                read_ok
+                and socket_ready
+                and (native_verified or (capability.fallback_allowed and stream_fresh))
             )
             if native_verified and read_ok:
                 continue
@@ -299,3 +299,18 @@ class BitgetProtectionWatchdog:
         )
         self._repository.upsert(capability)
         return capability
+
+
+def _valid_position_snapshot(value: Any, symbol: str) -> bool:
+    if not isinstance(value, list):
+        return False
+    for row in value:
+        if not isinstance(row, dict) or row.get("symbol") != symbol:
+            return False
+        try:
+            quantity = Decimal(str(row["total"]))
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return False
+        if not quantity.is_finite() or quantity < 0:
+            return False
+    return True

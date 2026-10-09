@@ -46,11 +46,10 @@ def parse_explicit_signal(
     message_id: int,
     market_price_lookup: Callable[[str], Decimal | None] | None = None,
 ) -> CanonicalSignal | None:
-    """Accept rigid explicit trade syntax without using market data.
+    """Accept explicit trade syntax with source prices or an observed market price.
 
-    ``market_price_lookup`` is consulted only for scalp messages that state a stop but no
-    entry price. It must return the current market price for the pair token, or None; a
-    missing price means no signal, never a guess.
+    ``market_price_lookup`` is required whenever the source says market or states
+    only a stop. Missing market data never permits an invented entry.
     """
     if entry_stands_down(text):
         return None
@@ -76,21 +75,20 @@ def parse_explicit_signal(
         )
         if not match.groupdict().get("entry") and not take_profits:
             return None
-        entry = (
-            Decimal(match["entry"])
-            if match.groupdict().get("entry")
-            else (
-                stop_loss + (take_profits[0] - stop_loss) / 2
-                if direction is Direction.LONG
-                else stop_loss - (stop_loss - take_profits[0]) / 2
-            )
-        )
+        pair_token = (match.groupdict().get("pair2") or match["pair"]).upper().removesuffix("USDT")
+        if match.groupdict().get("entry"):
+            entry = Decimal(match["entry"])
+        else:
+            if market_price_lookup is None:
+                return None
+            lookup_entry = market_price_lookup(pair_token)
+            if lookup_entry is None or not lookup_entry.is_finite() or lookup_entry <= 0:
+                return None
+            entry = lookup_entry
         return CanonicalSignal(
             source_message_id=message_id,
             source_revision=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            pair_token=(
-                (match.groupdict().get("pair2") or match["pair"]).upper().removesuffix("USDT")
-            ),
+            pair_token=pair_token,
             direction=direction,
             entry_price=entry,
             stop_loss=stop_loss,
@@ -118,7 +116,7 @@ def _scalp_market_signal(
         return None
     pair_token = (match.groupdict().get("pair2") or match["pair"]).upper().removesuffix("USDT")
     entry = market_price_lookup(pair_token)
-    if entry is None or entry <= 0:
+    if entry is None or not entry.is_finite() or entry <= 0:
         return None
     try:
         return CanonicalSignal(

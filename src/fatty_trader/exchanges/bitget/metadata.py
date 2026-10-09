@@ -12,17 +12,11 @@ def _decimal(value: Any, field: str, *, positive: bool = True) -> Decimal:
         result = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ValueError(f"invalid {field}") from exc
+    if not result.is_finite():
+        raise ValueError(f"{field} must be finite")
     if positive and result <= 0:
         raise ValueError(f"{field} must be positive")
     return result
-
-
-def _first_present(contract: dict[str, Any], *fields: str) -> Any:
-    for field in fields:
-        value = contract.get(field)
-        if value not in (None, ""):
-            return value
-    return None
 
 
 def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
@@ -31,18 +25,24 @@ def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
     if not symbol:
         raise ValueError("contract symbol is required")
     price_precision = int(contract.get("pricePlace", 0))
-    price_tick = Decimal(1).scaleb(-price_precision)
+    price_tick = _decimal(contract.get("priceEndStep"), "price end step") * Decimal(1).scaleb(
+        -price_precision
+    )
     size_step = _decimal(contract.get("sizeMultiplier"), "size multiplier")
     min_qty = _decimal(contract.get("minTradeNum"), "minimum order quantity")
-    max_qty = _decimal(
-        _first_present(
-            contract,
-            "maxTradeNum",
-            "maxOrderQty",
-            "maxMarketOrderQty",
-            "maxPositionNum",
-        ),
-        "maximum order quantity",
+    # V2 distinguishes single limit/market order quantities. maxPositionNum is
+    # a count of held positions, never a base-coin quantity.
+    raw_max_qty = contract.get("maxOrderQty")
+    max_qty = (
+        _decimal(raw_max_qty, "maximum limit order quantity")
+        if raw_max_qty not in (None, "")
+        else None
+    )
+    raw_max_market_qty = contract.get("maxMarketOrderQty")
+    max_market_qty = (
+        _decimal(raw_max_market_qty, "maximum market order quantity")
+        if raw_max_market_qty not in (None, "")
+        else None
     )
     min_notional = _decimal(contract.get("minTradeUSDT", "0"), "minimum notional", positive=False)
     max_leverage = int(_decimal(contract.get("maxLever"), "maximum leverage"))
@@ -56,6 +56,7 @@ def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
         size_step=size_step,
         min_order_qty=min_qty,
         max_order_qty=max_qty,
+        max_market_order_qty=max_market_qty,
         contract_value=contract_value,
         max_leverage=max_leverage,
         min_notional=min_notional,

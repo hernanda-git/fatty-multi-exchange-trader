@@ -2,7 +2,7 @@
 set -euo pipefail
 
 compose_bin="${COMPOSE_BIN:-docker compose}"
-running_services=(postgres dispatcher-bitget monitor-bitget)
+running_services=(postgres intake analyzer dispatcher-bitget monitor-bitget operator-bot notification-sender source-management web)
 completed_services=(migrate init)
 
 printf 'runtime_sha=%s\n' "$(git rev-parse HEAD)"
@@ -20,8 +20,14 @@ $compose_bin config --quiet
 $compose_bin ps
 
 for service in "${running_services[@]}"; do
-  $compose_bin ps --status running "$service" | grep -q "$service" || {
+  container_id="$($compose_bin ps -q "$service")"
+  test -n "$container_id" || {
     printf 'runtime_blocked=service_not_running service=%s\n' "$service" >&2
+    exit 1
+  }
+  state="$(docker inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_id")"
+  test "$state" = "running:healthy" || {
+    printf 'runtime_blocked=service_unhealthy service=%s state=%s\n' "$service" "$state" >&2
     exit 1
   }
 done
@@ -67,7 +73,8 @@ for path in files:
     h.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes() + b"\0")
 print(h.hexdigest())'
 source_digest="$(python3 -c "$source_probe" "$(pwd)/src")"
-for service in dispatcher-bitget monitor-bitget operator-bot source-management web; do
+for service in "${running_services[@]}"; do
+  test "$service" != postgres || continue
   deployed_digest="$($compose_bin exec -T "$service" /app/.venv/bin/python -c "$source_probe" /app/src)"
   if test "$deployed_digest" != "$source_digest"; then
     printf 'runtime_blocked=source_lineage_mismatch service=%s\n' "$service" >&2

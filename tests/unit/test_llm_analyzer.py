@@ -138,6 +138,30 @@ def test_parser_is_used_only_after_codex_failure() -> None:
     assert result.signal.pair_token == "GIGGLE"
 
 
+def test_rigid_market_entry_uses_observed_price_not_stop_target_midpoint() -> None:
+    requested = []
+    signal = parse_explicit_signal(
+        "BTCUSDT LONG MARKET SL 64000 TP 64630",
+        message_id=1,
+        market_price_lookup=lambda pair: requested.append(pair) or Decimal("64500"),
+    )
+    assert requested == ["BTC"]
+    assert signal is not None
+    assert signal.entry_price == Decimal("64500")
+
+
+def test_rigid_market_entry_requires_a_valid_quote_and_current_geometry() -> None:
+    text = "BTCUSDT LONG MARKET SL 64000 TP 64630"
+    assert parse_explicit_signal(text, message_id=1) is None
+    for quote in (None, Decimal("0"), Decimal("NaN"), Decimal("Infinity"), Decimal("63000")):
+        assert (
+            parse_explicit_signal(
+                text, message_id=1, market_price_lookup=(lambda q=quote: lambda _: q)()
+            )
+            is None
+        )
+
+
 # --- stop-only scalp format ("$ENA longed scalp here / Stoploss below: 0.27845") --------
 #
 # The source stopped publishing an entry price. Entry becomes the market price at

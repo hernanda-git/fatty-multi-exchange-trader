@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -18,6 +19,8 @@ def _retire_stale(cursor: Any) -> None:
         JOIN canonical_signals s ON s.id=d.source_id
         JOIN telegram_messages tm ON tm.id=s.message_id
         WHERE d.exchange='bitget' AND d.state='QUEUED'
+          AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+              WHERE b.record_kind='dispatch' AND b.record_id=d.id)
           AND (d.claimed_by IS NULL OR d.lease_until <= clock_timestamp())
           AND NOT COALESCE(("""
         + SOURCE_ELIGIBLE_SQL.format(alias="tm")
@@ -55,6 +58,7 @@ class BitgetDispatch:
     take_profits: tuple[Decimal, ...]
     source_channel_id: int | None = None
     source_message_id: int | None = None
+    source_received_at: datetime | None = None
 
 
 _CLAIM_SQL = (
@@ -69,6 +73,8 @@ WITH next_dispatch AS (
     + SOURCE_ELIGIBLE_SQL.format(alias="tm")
     + """)
       AND d.state = 'QUEUED'
+      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+          WHERE b.record_kind='dispatch' AND b.record_id=d.id)
       AND (claimed_by IS NULL OR lease_until <= now())
     ORDER BY d.created_at, d.id
     FOR UPDATE SKIP LOCKED
@@ -82,7 +88,7 @@ SET claimed_by = %s,
 FROM next_dispatch n, canonical_signals s, telegram_messages tm
 WHERE d.id = n.id AND s.id = d.source_id AND tm.id = s.message_id
 RETURNING d.id, d.state, d.claimed_by, d.attempts, s.pair_token, s.direction,
-          s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id;
+          s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id, tm.received_at;
 """
 )
 
@@ -94,18 +100,24 @@ WITH canary_lock AS (
     SELECT %s, %s FROM canary_lock
     WHERE (
         SELECT count(*) FROM (
-            SELECT COALESCE(m.dispatch_id::text, 'intent:' || i.client_order_id) AS dispatch_key
+            SELECT COALESCE(
+                i.dispatch_id::text, m.dispatch_id::text, 'intent:' || i.client_order_id
+            ) AS dispatch_key
             FROM live_order_intents i
             LEFT JOIN bitget_margin_reservations m
               ON m.exchange = i.exchange AND m.client_order_id = i.client_order_id
             WHERE i.exchange = %s AND i.role = 'ENTRY'
               AND i.state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled')
+              AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                  WHERE b.record_kind='intent' AND b.record_id=i.id)
             UNION
             SELECT r.dispatch_id::text
             FROM canary_entry_reservations r
             JOIN dispatches d ON d.id = r.dispatch_id
             WHERE r.exchange = %s
               AND d.state NOT IN ('FILLED', 'REJECTED', 'CANCELLED', 'RECONCILED')
+              AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                  WHERE b.record_kind='dispatch' AND b.record_id=d.id)
         ) unique_dispatches
     ) < %s
     ON CONFLICT (dispatch_id) DO NOTHING
@@ -147,7 +159,9 @@ class PostgresBitgetDispatchRepository:
                 "SELECT d.state, COALESCE(("
                 + SOURCE_ELIGIBLE_SQL.format(alias="tm")
                 + "), false) FROM dispatches d JOIN canonical_signals s ON s.id=d.source_id "
-                "JOIN telegram_messages tm ON tm.id=s.message_id WHERE d.id=%s FOR UPDATE OF d",
+                "JOIN telegram_messages tm ON tm.id=s.message_id WHERE d.id=%s "
+                "AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b "
+                "WHERE b.record_kind='dispatch' AND b.record_id=d.id) FOR UPDATE OF d",
                 (dispatch_id,),
             )
             row = cursor.fetchone()
@@ -163,7 +177,8 @@ class PostgresBitgetDispatchRepository:
     def recovery_candidates(self) -> list[tuple[BitgetDispatch, str]]:
         """Load canonical expectations for durable owned ENTRYs, not just active margin.
 
-        Consumed reservations and FILLED dispatches deliberately remain eligible.
+        Consumed reservations and FILLED dispatches remain eligible unless their
+        exact records have an immutable approved historical-baseline receipt.
         A lost canonical source raises rather than silently declaring recovery ready.
         Legacy entries without reservation ownership require a separate migration/
         operator reconciliation; this API never adopts a manual provider position.
@@ -182,6 +197,10 @@ class PostgresBitgetDispatchRepository:
                    LEFT JOIN canonical_signals s ON s.id = d.source_id
                    LEFT JOIN telegram_messages tm ON tm.id = s.message_id
                    WHERE i.exchange = 'bitget' AND i.role = 'ENTRY'
+                     AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                         WHERE (b.record_kind='intent' AND b.record_id=i.id)
+                            OR (b.record_kind='reservation' AND b.record_id=m.id)
+                            OR (b.record_kind='dispatch' AND b.record_id=d.id))
                      AND (i.filled_qty > 0 OR i.state NOT IN
                           ('rejected', 'cancelled', 'reconciled'))
                    ORDER BY d.created_at, d.id"""
@@ -201,14 +220,17 @@ class PostgresBitgetDispatchRepository:
         """Durable account admission veto; independent of optional capability gate.
 
         FILLED is fill truth, never proof of protection. UNPROTECTED is an
-        explicit dispatcher verdict. Only verified recovery can clear either.
+        explicit dispatcher verdict. Verified recovery clears a verdict; an
+        approved exact-record baseline only excludes it as unresolved history.
         """
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
             cursor.execute(
                 """SELECT EXISTS(
-                SELECT 1 FROM dispatches WHERE lower(exchange)='bitget'
+                SELECT 1 FROM dispatches d WHERE lower(d.exchange)='bitget'
+                AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                    WHERE b.record_kind='dispatch' AND b.record_id=d.id)
                 AND (state='UNPROTECTED' OR terminal_reason='missing-protection-escalated'
                      OR terminal_reason LIKE 'recovery-missing-protection:%%'
                      OR terminal_reason LIKE 'recovery-filled-protection-unverified%%')
@@ -235,16 +257,21 @@ class PostgresBitgetDispatchRepository:
                 """SELECT EXISTS (
                     SELECT 1 FROM live_order_intents i
                     LEFT JOIN bitget_margin_reservations m ON m.exchange=i.exchange
-                        AND m.client_order_id=i.client_order_id
+                        AND (m.client_order_id=i.client_order_id OR m.id=i.margin_reservation_id)
                     LEFT JOIN dispatches d ON d.id=m.dispatch_id AND d.exchange=i.exchange
                     WHERE i.exchange='bitget' AND i.role='ENTRY'
+                      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                          WHERE b.record_kind='intent' AND b.record_id=i.id)
                       AND (i.filled_qty>0 OR i.state NOT IN ('rejected','cancelled','reconciled'))
-                      AND (d.id IS NULL OR m.environment IS DISTINCT FROM %s)
+                      AND (d.id IS NULL OR m.environment IS DISTINCT FROM %s
+                           OR (i.dispatch_id IS NOT NULL AND i.dispatch_id <> d.id))
                 ), EXISTS (
                     SELECT 1 FROM bitget_margin_reservations m
                     LEFT JOIN live_order_intents i ON i.exchange=m.exchange
                         AND i.client_order_id=m.client_order_id AND i.role='ENTRY'
                     WHERE m.exchange='bitget' AND m.state IN ('reserved','unknown','consumed')
+                      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                          WHERE b.record_kind='reservation' AND b.record_id=m.id)
                       AND (m.environment=%s OR m.environment IS NULL) AND i.client_order_id IS NULL
                 )""",
                 (environment, environment),
@@ -260,6 +287,23 @@ class PostgresBitgetDispatchRepository:
                 )
                 if active
             ]
+        except Exception:
+            connection.rollback()
+            raise
+
+    def baseline_binding_issues(self, account_id: str | None, environment: str | None) -> list[str]:
+        """Exclusions authorize only the approved authenticated account/environment."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT EXISTS(SELECT 1 FROM bitget_audited_baselines "
+                "WHERE account_id IS DISTINCT FROM %s OR environment IS DISTINCT FROM %s)",
+                (account_id, environment),
+            )
+            blocked = cursor.fetchone()[0]
+            connection.commit()
+            return ["baseline-account-environment-mismatch"] if blocked else []
         except Exception:
             connection.rollback()
             raise
@@ -403,6 +447,7 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
             "take_profits": row[8],
             "source_channel_id": row[9] if len(row) > 9 else None,
             "source_message_id": row[10] if len(row) > 10 else None,
+            "source_received_at": row[11] if len(row) > 11 else None,
         }
     )
     raw_take_profits = values["take_profits"] or []
@@ -428,4 +473,5 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
             if values.get("source_message_id") is not None
             else None
         ),
+        source_received_at=values.get("source_received_at"),
     )

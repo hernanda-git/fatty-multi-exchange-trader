@@ -129,6 +129,8 @@ class BitgetV2WebSocket:
         self._last_mark_event_at: dict[str, float] = {}
         self._last_mark_event_ms: dict[str, int] = {}
         self._last_pong_at: float | None = None
+        self._last_public_pong_at: float | None = None
+        self._last_private_pong_at: float | None = None
         self._last_ping_at: float | None = None
         # Per-leg liveness. The private leg is only "live" once its login has
         # been acknowledged AND it has been heard from within the bound.
@@ -167,6 +169,16 @@ class BitgetV2WebSocket:
         return self._last_pong_at
 
     @property
+    def last_public_pong_at(self) -> float | None:
+        """Actual public pong receipt; unlike last_pong_at, never seeded at login."""
+        return self._last_public_pong_at
+
+    @property
+    def last_private_pong_at(self) -> float | None:
+        """Actual authenticated private pong receipt, not public-leg activity."""
+        return self._last_private_pong_at
+
+    @property
     def private_authenticated(self) -> bool:
         return self._private_authenticated
 
@@ -197,6 +209,8 @@ class BitgetV2WebSocket:
         """Open both legs, authenticate the private one, subscribe both."""
         self._state = V2ConnectionState.CONNECTING
         self._private_authenticated = False
+        self._last_public_pong_at = None
+        self._last_private_pong_at = None
         try:
             self._private_subscription_args()  # fail before opening sockets
             public = await self._transport.connect(self._public_url)
@@ -553,7 +567,10 @@ class BitgetV2WebSocket:
                 if isinstance(raw, str) and raw.strip() == "pong":
                     self._last_pong_at = now
                     if leg == "private":
+                        self._last_private_pong_at = now
                         self._last_private_activity_at = now
+                    else:
+                        self._last_public_pong_at = now
                     # Wake the main receive loop even with no business events;
                     # a pong is the account stream's idle liveness evidence.
                     self._any_event.set()

@@ -492,3 +492,24 @@ def test_extreme_tiny_cap_does_not_crash_the_floor_diagnosis(cap: str) -> None:
     )
     assert decision.accepted is False
     assert decision.reason.startswith("margin-cap:")
+
+
+def test_market_quantity_ceiling_reduces_realized_margin_not_risk_settings() -> None:
+    decision = plan_live_position(
+        make_input(
+            meta=make_meta(max_order_qty=Decimal("1000"), max_market_order_qty=Decimal("2.0005"))
+        )
+    )
+    assert decision.accepted is True
+    assert decision.quantity == Decimal("2.000")
+    assert decision.margin_usdt == Decimal("10")
+    assert decision.notional_usdt == Decimal("200")
+
+
+def test_uncapped_margin_tracks_quantity_flooring() -> None:
+    decision = plan_live_position(make_input(entry=Decimal("101"), stop_loss=Decimal("98")))
+    assert decision.accepted is True
+    assert decision.quantity == Decimal("39.603")
+    assert decision.notional_usdt == Decimal("3999.903")
+    assert decision.margin_usdt == Decimal("199.99515")
+    assert decision.margin_usdt == decision.notional_usdt / decision.leverage

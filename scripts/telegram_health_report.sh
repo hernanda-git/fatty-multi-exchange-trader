@@ -303,15 +303,12 @@ Orders   $total_orders</pre>
 <b>Safety</b> <code>$trader_mode · Bitget $bitget_mode · EXECUTION $execution_enabled · LIVE DISABLED</code>
 <pre>$safety_block</pre>"
 
-# Telegram Bot API text limit is 4096 chars; truncate with notice, never split.
-if [[ "${#report}" -gt 3800 ]]; then
-  report="${report:0:3700}
-<i>... (truncated to fit Telegram 4096-char limit)</i>"
-fi
+# Truncate safely below Telegram's 4096-unit limit, preserving HTML and UTF-16.
+report="$(printf '%s' "$report" | python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from fatty_trader.telegram_html import bounded_html; print(bounded_html(sys.stdin.read()))' "$root/src")"
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-printf '%b\n' "$report" > "$tmp"
+printf '%s\n' "$report" > "$tmp"
 http_code="$(curl --max-time 8 --silent --show-error -o "$tmp.response" -w '%{http_code}' \
   -X POST "https://api.telegram.org/bot${token}/sendMessage" \
   --data-urlencode "chat_id=${chat_id}" \

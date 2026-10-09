@@ -200,6 +200,6 @@ class AsyncBitgetVenue:
             price = Decimal(str(entries[0]["lastPr"]))
         except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             raise ValueError("Bitget ticker response has invalid lastPr") from exc
-        if price <= 0:
-            raise ValueError("Bitget ticker price must be positive")
+        if not price.is_finite() or price <= 0:
+            raise ValueError("Bitget ticker price must be finite and positive")
         return BitgetPreflightSnapshot(account, position, metadata, price)

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -67,6 +68,7 @@ def test_fallback_accepts_explicit_signal_when_codex_fails() -> None:
             stdout="",
             stderr="",
         ),
+        market_price_lookup=lambda _: Decimal("64300"),
     )
     assert result.status is AnalysisStatus.FALLBACK_ACCEPTED
     assert result.signal is not None

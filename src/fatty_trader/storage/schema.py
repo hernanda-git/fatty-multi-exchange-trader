@@ -178,8 +178,8 @@ CREATE TABLE IF NOT EXISTS live_order_intents (
         role IN ('ENTRY', 'SL', 'TP', 'CLOSE', 'EMERGENCY_CLOSE')
     ),
     state TEXT NOT NULL CONSTRAINT live_order_intents_state_check CHECK (state IN (
-        'requested', 'acknowledged', 'submitted', 'partially_filled', 'filled', 'cancelled',
-        'rejected', 'unknown', 'reconciled'
+        'staged', 'requested', 'acknowledged', 'submitted',
+        'partially_filled', 'filled', 'cancelled', 'rejected', 'unknown', 'reconciled'
     )),
     requested_qty NUMERIC NOT NULL CHECK (requested_qty > 0),
     acknowledged_qty NUMERIC CHECK (acknowledged_qty IS NULL OR acknowledged_qty > 0),
@@ -275,9 +275,10 @@ CREATE TABLE IF NOT EXISTS source_management_updates (
     source_message_id UUID NOT NULL REFERENCES telegram_messages(id),
     revision TEXT NOT NULL,
     symbol TEXT NOT NULL,
-    action TEXT NOT NULL CHECK (action IN ('TP1_BOOKED', 'SL_TO_ENTRY', 'CLOSE')),
+    action TEXT NOT NULL CHECK (action IN ('TP1_BOOKED', 'TP_BOOKED', 'SL_TO_ENTRY', 'CLOSE')),
     state TEXT NOT NULL CHECK (state IN (
-        'queued', 'claimed', 'reconciliation-pending', 'failed', 'reconciled'
+        'queued', 'claimed', 'reconciliation-pending', 'failed',
+        'reconciled', 'cancelled-flat', 'entries-cancelled'
     )),
     claimed_by TEXT,
     claimed_at TIMESTAMPTZ,

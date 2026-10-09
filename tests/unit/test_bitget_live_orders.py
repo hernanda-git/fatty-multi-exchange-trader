@@ -331,3 +331,31 @@ def test_filled_detail_without_authoritative_quantity_is_not_marked_filled() -> 
     assert result.status is LiveOrderStatus.UNKNOWN
     assert result.filled_qty == Decimal("0")
     assert client.protection_qty is None
+
+
+def test_canceled_partial_order_still_protects_executed_quantity() -> None:
+    client = FakeLiveClient(
+        detail={"state": "canceled", "size": "0.02", "baseVolume": "0.008", "priceAvg": "50000"},
+        fills=[],
+    )
+    store = InMemoryLiveIntentStore()
+    result = enter_live_position(client, store, _request(quantity=Decimal("0.02")))
+    assert result.status is LiveOrderStatus.PARTIAL
+    assert result.filled_qty == Decimal("0.008")
+    assert client.protection_qty == Decimal("0.008")
+
+
+def test_existing_intent_reconciles_before_fresh_entry_preflight_or_setup() -> None:
+    class ReplayClient(FakeLiveClient):
+        def get_available_balance(self) -> Decimal:
+            raise AssertionError("replay must not run entry admission")
+
+        def set_leverage(self, symbol: str, leverage: str) -> None:
+            raise AssertionError("replay must not mutate leverage")
+
+    client = ReplayClient(detail={"state": "live", "size": "0.01"}, fills=[])
+    store = InMemoryLiveIntentStore()
+    store.save(LiveIntentRecord("bitget", "durable-oid", "BTCUSDT", "BUY", Decimal("0.01")))
+    result = enter_live_position(client, store, _request(client_oid="durable-oid"))
+    assert result.status is LiveOrderStatus.ACCEPTED
+    assert client.post_count == 0

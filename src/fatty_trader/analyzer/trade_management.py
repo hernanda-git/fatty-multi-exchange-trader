@@ -29,6 +29,13 @@ _TP1 = re.compile(
     r"|\b(?:book(?:ed)?|take(?:n)?|hit)\b.*\b(?:tp\s*1|first\s+tp)\b",
     re.I,
 )
+_TP_BOOKED = re.compile(
+    r"\b(?:tp(?:\s*\d+)?|(?:first|second|third|fourth|fifth)\s+tp|take\s*profit(?:\s*\d+)?)\b"
+    r".*\b(?:book(?:ed)?|take(?:n)?|hit)\b"
+    r"|\b(?:book(?:ed)?|take(?:n)?|hit)\b.*"
+    r"\b(?:tp(?:\s*\d+)?|(?:first|second|third|fourth|fifth)\s+tp|take\s*profit(?:\s*\d+)?)\b",
+    re.I,
+)
 _SL_TO_ENTRY = re.compile(r"\b(?:sl|stop\s*loss)\b.*\b(?:to|at)\s+(?:entry|be|breakeven)\b", re.I)
 _CLOSE = re.compile(r"\b(?:close|exit)\b.*\b(?:all|full|position)\b", re.I)
 _NEGATED_CLOSE = re.compile(
@@ -38,6 +45,7 @@ _NEGATED_CLOSE = re.compile(
 
 class ManagementAction(StrEnum):
     TP1_BOOKED = "TP1_BOOKED"
+    TP_BOOKED = "TP_BOOKED"
     SL_TO_ENTRY = "SL_TO_ENTRY"
     CLOSE = "CLOSE"
 
@@ -63,6 +71,8 @@ def parse_source_management(text: str) -> SourceManagement | None:
         return None
     if _TP1.search(text):
         action = ManagementAction.TP1_BOOKED
+    elif _TP_BOOKED.search(text):
+        action = ManagementAction.TP_BOOKED
     elif _SL_TO_ENTRY.search(text):
         action = ManagementAction.SL_TO_ENTRY
     elif _CLOSE.search(text) and not _NEGATED_CLOSE.search(text):
@@ -74,4 +84,8 @@ def parse_source_management(text: str) -> SourceManagement | None:
 
 def _is_symbol_candidate(token: str) -> bool:
     base = token[:-4] if token.endswith("USDT") else token
-    return token not in _RESERVED_SYMBOL_TOKENS and base not in _RESERVED_SYMBOL_TOKENS
+    return (
+        token not in _RESERVED_SYMBOL_TOKENS
+        and base not in _RESERVED_SYMBOL_TOKENS
+        and re.fullmatch(r"TP\d+", base) is None
+    )

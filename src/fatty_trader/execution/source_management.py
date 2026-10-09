@@ -29,13 +29,21 @@ class SourceManagementStore(Protocol):
     def get(self, update_id: UUID) -> SourceManagementUpdate: ...
     def update_state(self, update_id: UUID, state: str) -> None: ...
     def persist_provider_intent(self, update_id: UUID, client_oid: str) -> bool: ...
+    def has_provider_intent(self, update_id: UUID, client_oid: str) -> bool: ...
+    def management_is_eligible(self, update_id: UUID) -> bool: ...
+    def has_claimed_cancellation(self, update_id: UUID) -> bool: ...
 
 
 class SourceManagementGateway(Protocol):
     def get_positions(self, symbol: str) -> list[dict[str, Any]]: ...
+    def cancel_pending_entries(
+        self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
+    ) -> bool: ...
     def close_reduce_only(
         self, *, symbol: str, side: str, quantity: Decimal, client_oid: str
     ) -> None: ...
+    def normalize_tp1_close_quantity(self, symbol: str, quantity: Decimal) -> Decimal: ...
+    def reconcile_stop_loss(self, client_oid: str) -> None: ...
     def replace_stop_loss(
         self,
         *,
@@ -57,12 +65,14 @@ class InMemorySourceManagementStore:
     def __init__(self, updates: list[SourceManagementUpdate] | None = None) -> None:
         self._updates = {update.id: update for update in updates or []}
         self._provider_intents: set[tuple[UUID, str]] = set()
+        self.eligible = True
+        self.claimed_cancellations: set[UUID] = set()
 
     def claim(self, worker_id: str) -> SourceManagementUpdate | None:
         if not worker_id:
             raise ValueError("worker_id is required")
         for update in self._updates.values():
-            if update.state in {"queued", "claimed"}:
+            if update.state in {"queued", "claimed", "reconciliation-pending"}:
                 claimed = replace(update, state="claimed")
                 self._updates[update.id] = claimed
                 return claimed
@@ -72,7 +82,8 @@ class InMemorySourceManagementStore:
         return self._updates[update_id]
 
     def update_state(self, update_id: UUID, state: str) -> None:
-        self._updates[update_id] = replace(self._updates[update_id], state=state)
+        update = self._updates.pop(update_id)
+        self._updates[update_id] = replace(update, state=state)
 
     def persist_provider_intent(self, update_id: UUID, client_oid: str) -> bool:
         key = (update_id, client_oid)
@@ -80,6 +91,15 @@ class InMemorySourceManagementStore:
             return False
         self._provider_intents.add(key)
         return True
+
+    def has_provider_intent(self, update_id: UUID, client_oid: str) -> bool:
+        return (update_id, client_oid) in self._provider_intents
+
+    def management_is_eligible(self, update_id: UUID) -> bool:
+        return self.eligible
+
+    def has_claimed_cancellation(self, update_id: UUID) -> bool:
+        return update_id in self.claimed_cancellations
 
 
 class SourceManagementExecutor:
@@ -101,18 +121,70 @@ class SourceManagementExecutor:
         if update is None:
             return "idle"
         try:
-            positions = self._gateway.get_positions(update.symbol)
-            if not positions:
-                # A management instruction without a live provider position was
-                # not executed. Keep it auditable as failed rather than claiming
-                # reconciliation and losing the operator's intent.
-                self._store.update_state(update.id, "failed")
-                return "failed"
-            position = self._one_position(update.symbol, positions)
             if not self._mutations_enabled:
                 self._store.update_state(update.id, "failed")
                 return "mutations-disabled"
+            sl_oid = f"source-management-{update.id.hex}-sl"
+            if update.action in {
+                ManagementAction.TP1_BOOKED,
+                ManagementAction.SL_TO_ENTRY,
+            } and self._store.has_provider_intent(update.id, sl_oid):
+                # This is GET-only even when the position is now flat. Flat
+                # cannot prove which protection plan a previous POST changed.
+                self._gateway.reconcile_stop_loss(sl_oid)
+                self._store.update_state(update.id, "reconciled")
+                return "reconciled"
+            if not self._store.management_is_eligible(update.id):
+                close_oid = f"source-management-{update.id.hex}-close"
+                if self._store.has_provider_intent(update.id, close_oid):
+                    self._gateway.get_positions(update.symbol)
+                    raise SourceManagementReconciliationPending(
+                        "stale close claim still requires authenticated execution reconciliation"
+                    )
+                if self._store.has_claimed_cancellation(
+                    update.id
+                ) and not self._gateway.cancel_pending_entries(
+                    update.symbol, update.id, reconciliation_only=True
+                ):
+                    raise SourceManagementReconciliationPending(
+                        "stale cancellation claim still requires terminal readback"
+                    )
+                raise ValueError("source management revision is no longer eligible")
+            cancels_entries = update.action in {
+                ManagementAction.CLOSE,
+                ManagementAction.TP1_BOOKED,
+                ManagementAction.TP_BOOKED,
+            }
+            if cancels_entries and not self._gateway.cancel_pending_entries(
+                update.symbol, update.id
+            ):
+                # The entry lifecycle persists each exact owned cancellation claim
+                # before POST. Repeated/ambiguous claims only perform readback.
+                raise SourceManagementReconciliationPending(
+                    "owned pending entries are not proved terminal"
+                )
+            # Cancellation can race a fill: never size management from an earlier
+            # position snapshot, even when the account was flat before cancellation.
+            positions = self._gateway.get_positions(update.symbol)
+            if not positions:
+                if cancels_entries:
+                    close_oid = f"source-management-{update.id.hex}-close"
+                    if self._store.has_provider_intent(update.id, close_oid):
+                        raise SourceManagementReconciliationPending(
+                            "existing close intent requires execution reconciliation"
+                        )
+                    self._store.update_state(update.id, "cancelled-flat")
+                    return "cancelled-flat"
+                self._store.update_state(update.id, "failed")
+                return "failed"
+            if update.action is ManagementAction.TP_BOOKED:
+                # A generic/later booking stops re-entry; it is not authority to
+                # invent an additional position allocation or claim a TP fill.
+                self._store.update_state(update.id, "entries-cancelled")
+                return "entries-cancelled"
+            position = self._one_position(update.symbol, positions)
             if update.action is ManagementAction.CLOSE:
+                self._require_eligible(update)
                 close_oid = f"source-management-{update.id.hex}-close"
                 if not self._store.persist_provider_intent(update.id, close_oid):
                     self._store.update_state(update.id, "reconciliation-pending")
@@ -121,20 +193,30 @@ class SourceManagementExecutor:
                 self._require_flat(update.symbol)
             elif update.action is ManagementAction.TP1_BOOKED:
                 close_oid = f"source-management-{update.id.hex}-close"
+                if self._store.has_provider_intent(update.id, close_oid):
+                    raise SourceManagementReconciliationPending(
+                        "existing TP1 close intent requires execution reconciliation"
+                    )
+                normalizer = getattr(self._gateway, "normalize_tp1_close_quantity", None)
+                quantity = (
+                    normalizer(update.symbol, position["size"])
+                    if callable(normalizer)
+                    else position["size"] / Decimal("2")
+                )
+                self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, close_oid):
-                    self._store.update_state(update.id, "reconciliation-pending")
-                    return "reconciliation-pending"
-                quantity = position["size"] / Decimal("2")
-                if quantity <= 0:
-                    raise ValueError("TP1 close quantity is not positive")
+                    raise SourceManagementReconciliationPending("TP1 close claim was lost")
                 self._close(update, position, quantity, close_oid)
                 remaining = self._one_position(update.symbol)
-                if remaining["size"] >= position["size"]:
-                    raise ValueError("TP1 close was not confirmed by provider position readback")
-                sl_oid = f"source-management-{update.id.hex}-sl"
+                if remaining["size"] != position["size"] - quantity:
+                    raise SourceManagementReconciliationPending(
+                        "TP1 reduction differs from the claimed half close"
+                    )
+                self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, sl_oid):
-                    self._store.update_state(update.id, "reconciliation-pending")
-                    return "reconciliation-pending"
+                    self._gateway.reconcile_stop_loss(sl_oid)
+                    self._store.update_state(update.id, "reconciled")
+                    return "reconciled"
                 self._gateway.replace_stop_loss(
                     symbol=update.symbol,
                     side=remaining["side"],
@@ -144,9 +226,11 @@ class SourceManagementExecutor:
                 )
             elif update.action is ManagementAction.SL_TO_ENTRY:
                 sl_oid = f"source-management-{update.id.hex}-sl"
+                self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, sl_oid):
-                    self._store.update_state(update.id, "reconciliation-pending")
-                    return "reconciliation-pending"
+                    self._gateway.reconcile_stop_loss(sl_oid)
+                    self._store.update_state(update.id, "reconciled")
+                    return "reconciled"
                 self._gateway.replace_stop_loss(
                     symbol=update.symbol,
                     side=position["side"],
@@ -162,6 +246,10 @@ class SourceManagementExecutor:
             return "failed"
         self._store.update_state(update.id, "reconciled")
         return "reconciled"
+
+    def _require_eligible(self, update: SourceManagementUpdate) -> None:
+        if not self._store.management_is_eligible(update.id):
+            raise ValueError("source management revision is no longer eligible")
 
     def _one_position(
         self, symbol: str, positions: list[dict[str, Any]] | None = None

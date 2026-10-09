@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -37,7 +38,14 @@ class AsyncBitgetExecutionClient(Protocol):
     async def get_account(self, symbol: str) -> Any: ...
 
     async def place_entry_order(
-        self, *, symbol: str, side: str, quantity: str, client_oid: str
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: str,
+        client_oid: str,
+        order_type: str = "market",
+        price: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def get_order_detail(self, symbol: str, *, client_oid: str) -> Any: ...
@@ -47,6 +55,8 @@ class AsyncBitgetExecutionClient(Protocol):
     async def get_single_position(self, symbol: str) -> Any: ...
 
     async def get_pending_orders(self, symbol: str) -> Any: ...
+
+    async def cancel_entry_order(self, *, symbol: str, client_oid: str) -> Any: ...
 
     async def get_pending_plan_orders(self, symbol: str) -> Any: ...
 
@@ -90,6 +100,7 @@ class AsyncExecutionResult:
     provider_order_id: str | None
     provider_fill_ids: tuple[str, ...]
     provider_fills: tuple[dict[str, Any], ...] = ()
+    provider_terminal: bool = False
 
 
 @dataclass(frozen=True)
@@ -145,7 +156,7 @@ def _detail_decimal(detail: dict[str, Any], *keys: str) -> Decimal | None:
             value = Decimal(str(raw))
         except (ArithmeticError, TypeError, ValueError):
             continue
-        if value > 0:
+        if value.is_finite() and value > 0:
             return value
     return None
 
@@ -237,18 +248,38 @@ class AsyncBitgetExecution:
             # No await may intervene between this winning-claim check and POST.
             final_entry_check()
         try:
-            submitted = await self._client.place_entry_order(
+            kwargs: dict[str, Any] = dict(
                 symbol=intent.symbol,
                 side=intent.side,
                 quantity=str(intent.requested_qty),
                 client_oid=intent.client_oid,
             )
+            if intent.order_type == "limit":
+                kwargs.update(order_type="limit", price=str(intent.limit_price))
+            submitted = await self._client.place_entry_order(**kwargs)
         except (BitgetUnknownResultError, TimeoutError):
             result = await self.reconcile_intent(intent)
         else:
             result = await self.reconcile_intent(intent, submitted)
         await self._reconcile_post_fill(intent, result)
         return result
+
+    async def cancel_pending_entry(
+        self, intent: LiveIntentRecord, claim_cancel_post: Callable[[], bool]
+    ) -> AsyncExecutionResult:
+        """The caller owns the durable cancel fence; ambiguous POST gets GETs only."""
+        before = await self.reconcile_intent(intent)
+        if before.provider_terminal:
+            return before
+        if before.status is LiveOrderStatus.UNKNOWN:
+            return before
+        if not claim_cancel_post():
+            return before
+        with contextlib.suppress(BitgetUnknownResultError, TimeoutError, BitgetApiError):
+            await self._client.cancel_entry_order(
+                symbol=intent.symbol, client_oid=intent.client_oid
+            )
+        return await self.reconcile_intent(intent)
 
     async def reconcile_post_fill(
         self, intent: LiveIntentRecord, result: AsyncExecutionResult
@@ -262,6 +293,7 @@ class AsyncBitgetExecution:
         if (
             result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}
             or intent.role != "ENTRY"
+            or intent.entry_leg is not None
         ):
             return
         if intent.planned_leverage is None or intent.planned_margin_usdt is None:
@@ -295,6 +327,13 @@ class AsyncBitgetExecution:
                     status, reason = "mismatch", "leverage-or-margin-mode-mismatch"
                 elif position.margin_usdt is None:
                     status, reason = "unavailable", "provider-margin-unavailable"
+                elif intent.dispatch_id is not None and position.quantity != intent.filled_qty:
+                    status, reason = "mismatch", "split-position-quantity-mismatch"
+                elif (
+                    intent.dispatch_id is not None
+                    and position.margin_usdt <= intent.planned_margin_usdt + Decimal("0.01")
+                ):
+                    status, reason = "within_tolerance", "split-filled-margin-within-reserved-cap"
                 elif position.margin_usdt == intent.planned_margin_usdt:
                     status, reason = "matched", None
                 elif abs(position.margin_usdt - intent.planned_margin_usdt) <= Decimal("0.01"):
@@ -428,13 +467,30 @@ class AsyncBitgetExecution:
                 provider_fills=tuple(typed_fills),
             )
         detail_filled_qty = _detail_decimal(detail, "filledQty", "filledSize", "baseVolume")
-        if filled_qty <= 0 and detail_filled_qty is not None:
+        if detail_filled_qty is not None and detail_filled_qty > filled_qty:
             filled_qty = detail_filled_qty
             avg_price = _detail_decimal(detail, "avgPrice", "priceAvg", "averagePrice")
         status = classify_live_order(detail, typed_fills)
-        if status is LiveOrderStatus.ACCEPTED and typed_fills:
-            status = LiveOrderStatus.FILLED
-            filled_qty = intent.requested_qty
+        terminal = str(detail.get("state", detail.get("status", ""))).lower() in {
+            "filled",
+            "full-fill",
+            "full_fill",
+            "cancelled",
+            "canceled",
+            "rejected",
+            "expired",
+        }
+        if intent.entry_leg == "limit" and (
+            str(detail.get("clientOid", "")) != intent.client_oid
+            or str(detail.get("symbol", "")).upper() != intent.symbol
+            or str(detail.get("side", "")).upper() != intent.side
+            or str(detail.get("orderType", "")).lower() != "limit"
+            or str(detail.get("reduceOnly", "")).upper() not in {"NO", "FALSE"}
+            or Decimal(str(detail.get("price", "0"))) != intent.limit_price
+            or Decimal(str(detail.get("size", "0"))) != intent.requested_qty
+            or filled_qty > intent.requested_qty
+        ):
+            raise ValueError("Bitget waiting entry ownership mismatch")
         return AsyncExecutionResult(
             client_oid=intent.client_oid,
             status=status,
@@ -444,6 +500,7 @@ class AsyncBitgetExecution:
             provider_order_id=str(provider_order_id) if provider_order_id is not None else None,
             provider_fill_ids=fill_ids,
             provider_fills=tuple(typed_fills),
+            provider_terminal=terminal,
         )
 
     async def protect_filled_position(

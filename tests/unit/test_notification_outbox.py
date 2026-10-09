@@ -151,6 +151,26 @@ def test_source_tp1_update_is_labeled_as_position_management() -> None:
     assert "Tidak ada order dibuat" not in text
 
 
+def test_generic_booking_relay_reports_cancel_only_queue_not_provider_execution() -> None:
+    text = format_notification_html(
+        {
+            "kind": "signal-analysis",
+            "source_message_id": 16106,
+            "canonical_signal": False,
+            "management_action": "TP_BOOKED",
+            "management_symbol": "WLDUSDT",
+            "source_text": "$WLD TP2 booked",
+        }
+    )
+
+    assert "<b>manajemen posisi · wldusdt</b>" in text.casefold()
+    assert "TP booking terdeteksi" in text
+    assert "masuk antrean" in text
+    assert "membatalkan sisa entry bot saja" in text
+    assert "Bukan konfirmasi TP filled atau close dieksekusi." in text
+    assert "Tidak ada order dibuat" not in text
+
+
 def test_heartbeat_uses_rich_report_layout() -> None:
     text = format_notification_html(
         {
@@ -192,14 +212,17 @@ class FakeOutbox:
         self.calls.append(("claim", (worker_id, lease_seconds)))
         return self.notification
 
-    def mark_sent(self, notification_id: object, worker_id: str) -> None:
+    def mark_sent(self, notification_id: object, worker_id: str) -> bool:
         self.calls.append(("sent", (notification_id, worker_id)))
+        return True
 
-    def mark_retry(self, notification_id: object, worker_id: str, delay_seconds: int) -> None:
+    def mark_retry(self, notification_id: object, worker_id: str, delay_seconds: int) -> bool:
         self.calls.append(("retry", (notification_id, worker_id, delay_seconds)))
+        return True
 
-    def mark_failed(self, notification_id: object, worker_id: str) -> None:
+    def mark_failed(self, notification_id: object, worker_id: str) -> bool:
         self.calls.append(("failed", (notification_id, worker_id)))
+        return True
 
 
 class FakeSender:
@@ -247,6 +270,7 @@ async def test_worker_retries_transient_failures_then_marks_attempt_limit_failed
 def test_postgres_outbox_claim_is_lease_safe_and_updates_are_worker_bound() -> None:
     class Cursor:
         def __init__(self) -> None:
+            self.rowcount = 1
             self.statements: list[tuple[str, tuple[Any, ...]]] = []
             self.rows: list[dict[str, object] | None] = [
                 {"id": str(uuid4()), "payload": {"reason": "x"}, "attempts": 1}
@@ -263,6 +287,7 @@ def test_postgres_outbox_claim_is_lease_safe_and_updates_are_worker_bound() -> N
             self.cursor_value = Cursor()
             self.commits = 0
             self.rollbacks = 0
+            self.closes = 0
 
         def cursor(self) -> Cursor:
             return self.cursor_value
@@ -272,6 +297,9 @@ def test_postgres_outbox_claim_is_lease_safe_and_updates_are_worker_bound() -> N
 
         def rollback(self) -> None:
             self.rollbacks += 1
+
+        def close(self) -> None:
+            self.closes += 1
 
     connection = Connection()
     outbox = PostgresNotificationOutbox(lambda: connection)
@@ -286,12 +314,14 @@ def test_postgres_outbox_claim_is_lease_safe_and_updates_are_worker_bound() -> N
     assert "attempts = attempts + 1" in claim_sql
     assert "claimed_by = %s" in retry_sql
     assert connection.commits == 2
+    assert connection.closes == 2
 
 
 def test_postgres_outbox_uses_unique_claim_tokens_for_overlapping_worker_instances() -> None:
     class Cursor:
         def __init__(self) -> None:
             self.statements: list[tuple[str, tuple[Any, ...]]] = []
+            self.rowcount = 1
             self.rows: list[dict[str, object] | None] = [
                 {"id": str(uuid4()), "payload": {"reason": "first"}, "attempts": 1},
                 {"id": str(uuid4()), "payload": {"reason": "second"}, "attempts": 1},
@@ -316,6 +346,9 @@ def test_postgres_outbox_uses_unique_claim_tokens_for_overlapping_worker_instanc
         def rollback(self) -> None:
             return None
 
+        def close(self) -> None:
+            return None
+
     connection = Connection()
     outbox = PostgresNotificationOutbox(lambda: connection)
     first = outbox.claim("notification-sender", 30)
@@ -328,3 +361,197 @@ def test_postgres_outbox_uses_unique_claim_tokens_for_overlapping_worker_instanc
     sent_params = connection.cursor_value.statements[2][1]
     assert claim_owners == [first.claim_token, second.claim_token]
     assert sent_params[-1] == first.claim_token
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "kaka-paper-digest", "text": "🟢" * 10000},
+        {"kind": "source-forward", "raw_text": "🟢" * 3500},
+        {"kind": "source-forward", "raw_text": "&<>" * 1500, "has_media": True},
+        {"kind": "signal-analysis", "canonical_signal": True, "pair": "&" * 1000},
+    ],
+)
+def test_all_notification_cards_preserve_html_and_utf16_budget(payload):
+    from html.parser import HTMLParser
+
+    class TagChecker(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.stack = []
+
+        def handle_starttag(self, tag, attrs):
+            self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            assert self.stack.pop() == tag
+
+        def handle_data(self, data):
+            assert "&" not in data
+
+    rendered = format_notification_html(payload)
+    assert len(rendered.encode("utf-16-le")) // 2 <= 4000
+    checker = TagChecker()
+    checker.feed(rendered)
+    checker.close()
+    assert checker.stack == []
+
+
+def test_kaka_digest_redacts_inline_secrets():
+    rendered = format_notification_html(
+        {"kind": "kaka-paper-digest", "text": "token=private-secret digest"}
+    )
+    assert "private-secret" not in rendered
+    assert "[redacted]" in rendered
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_lease_shorter_than_bounded_delivery():
+    outbox = FakeOutbox(OutboxNotification(uuid4(), {"reason": "hello"}, attempts=1))
+    sender = FakeSender()
+    with pytest.raises(ValueError, match="lease"):
+        await NotificationWorker(outbox, sender).run_once("worker-a", 1)
+    assert outbox.calls == []
+    assert sender.messages == []
+
+
+@pytest.mark.asyncio
+async def test_worker_reports_stale_claim_instead_of_success():
+    class StaleOutbox(FakeOutbox):
+        def mark_sent(self, notification_id, worker_id):
+            return False
+
+    outbox = StaleOutbox(OutboxNotification(uuid4(), {"reason": "hello"}, attempts=1))
+    assert await NotificationWorker(outbox, FakeSender()).run_once("worker-a", 30) == "claim-lost"
+
+
+@pytest.mark.asyncio
+async def test_worker_bounds_total_delivery_time(monkeypatch):
+    import asyncio
+
+    import fatty_trader.notifications as notifications
+
+    class SlowSender:
+        async def send(self, text):
+            await asyncio.sleep(60)
+
+    monkeypatch.setattr(notifications, "_DELIVERY_TIMEOUT_SECONDS", 0.01)
+    outbox = FakeOutbox(OutboxNotification(uuid4(), {"reason": "hello"}, attempts=1))
+    assert await NotificationWorker(outbox, SlowSender()).run_once("worker-a", 30) == "retry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [[], "unexpected", True, {"ok": "not-a-boolean"}])
+async def test_sender_classifies_malformed_success_body_as_retryable(monkeypatch, body):
+    import httpx
+
+    import fatty_trader.notifications as notifications
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, *args, **kwargs):
+            return httpx.Response(200, json=body)
+
+    monkeypatch.setattr(notifications.httpx, "AsyncClient", Client)
+    sender = notifications.TelegramBotSender(
+        TelegramNotificationSettings(bot_token="private-token", target_chat_id=1)
+    )
+    with pytest.raises(NotificationDeliveryError) as raised:
+        await sender.send("notification")
+    assert raised.value.retryable is True
+
+
+@pytest.mark.parametrize("payload", [[], "bad", True])
+def test_claim_terminally_retires_malformed_payload_and_closes_connection(payload):
+    statements = []
+    notification_id = uuid4()
+
+    class Cursor:
+        def execute(self, statement, params=()):
+            statements.append((statement, params))
+
+        def fetchone(self):
+            return (notification_id, payload, 1)
+
+    class Connection:
+        def __init__(self):
+            self.commits = 0
+            self.closes = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pytest.fail("valid retirement must commit")
+
+        def close(self):
+            self.closes += 1
+
+    connection = Connection()
+    from fatty_trader.notifications import NotificationPayloadError
+
+    with pytest.raises(NotificationPayloadError):
+        PostgresNotificationOutbox(lambda: connection).claim("worker", 30)
+    assert "failed_at=now()" in statements[-1][0]
+    assert statements[-1][1][0] == notification_id
+    assert connection.commits == 1
+    assert connection.closes == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_reports_durably_retired_payload_as_failure_not_idle():
+    from fatty_trader.notifications import NotificationPayloadError
+
+    class InvalidOutbox(FakeOutbox):
+        def claim(self, worker_id, lease_seconds):
+            raise NotificationPayloadError("notification payload must be an object")
+
+    sender = FakeSender()
+    assert await NotificationWorker(InvalidOutbox(None), sender).run_once("worker", 30) == "failed"
+    assert sender.messages == []
+
+
+@pytest.mark.parametrize("operation", ["claim", "mark", "enqueue"])
+def test_outbox_database_failures_rollback_close_and_remain_visible(operation):
+    from fatty_trader.notifications import enqueue_notification
+
+    class Cursor:
+        def execute(self, statement, params=()):
+            raise RuntimeError("database unavailable")
+
+    class Connection:
+        def __init__(self):
+            self.rollbacks = 0
+            self.closes = 0
+
+        def cursor(self):
+            return Cursor()
+
+        def rollback(self):
+            self.rollbacks += 1
+
+        def close(self):
+            self.closes += 1
+
+    connection = Connection()
+    outbox = PostgresNotificationOutbox(lambda: connection)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        if operation == "claim":
+            outbox.claim("worker", 30)
+        elif operation == "mark":
+            outbox.mark_sent(uuid4(), "worker:token")
+        else:
+            enqueue_notification(lambda: connection, dedup_key="test", payload={"kind": "test"})
+    assert connection.rollbacks == 1
+    assert connection.closes == 1

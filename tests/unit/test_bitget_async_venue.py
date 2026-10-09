@@ -65,10 +65,11 @@ class Client:
             {
                 "symbol": "BTCUSDT",
                 "pricePlace": "2",
-                "priceEndStep": "0.01",
+                "priceEndStep": "1",
                 "sizeMultiplier": "0.001",
                 "minTradeNum": "0.001",
-                "maxTradeNum": "100",
+                "maxOrderQty": "100",
+                "maxMarketOrderQty": "100",
                 "minTradeUSDT": "5",
                 "maxLever": "50",
                 "contractValue": "1",
@@ -216,3 +217,14 @@ async def test_all_positions_invalid_evidence_refuses(payload):
 
     with pytest.raises(ValueError):
         await AsyncBitgetVenue(PositionsClient()).active_position_snapshot()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("price", ["NaN", "Infinity", "-Infinity", "0", "-1"])
+async def test_preflight_rejects_nonfinite_or_nonpositive_market_price(price):
+    class InvalidTickerClient(Client):
+        async def get_ticker(self, symbol):
+            return {"lastPr": price}
+
+    with pytest.raises(ValueError, match="finite and positive"):
+        await AsyncBitgetVenue(InvalidTickerClient()).preflight("BTCUSDT")

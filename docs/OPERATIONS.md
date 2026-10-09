@@ -27,6 +27,19 @@ curl http://127.0.0.1:18081/health/telemetry
 The health payload is sanitized. Static mode/configuration, HTTP liveness and
 actual worker/dependency readiness are separate fields. Unknown, missing or
 stale worker evidence is not READY. It never returns environment credentials.
+The dashboard is published on loopback only and has no application login; never
+expose its port through an unauthenticated external proxy. Its container probe
+checks the health JSON readiness verdict, not only HTTP 200.
+
+The runtime verifier requires running, healthy PostgreSQL, intake, analyzer,
+dispatcher, monitor, operator, notification-sender, source-management and web
+containers. Running without a healthcheck is not healthy evidence.
+
+Business-event notifications use token-fenced durable claims, a ten-second total
+send bound, and leases of at least fifteen seconds (default thirty). Delivery is
+at-least-once across a crash after Telegram acceptance; a stale owner cannot
+report a successful database acknowledgement. Terminal failed outbox rows remain
+audit evidence, not proof of delivery.
 
 ## PostgreSQL Backup and Restore
 
@@ -61,9 +74,9 @@ mutation gate, verified owned position epoch/environment, fresh mark evidence,
 atomic close identity and provider fill/readback. Malformed/failed reads cannot
 prove flatness; submission alone cannot prove a filled close.
 
-## Hourly Health Report
+## Six-hour Health Report
 
-A cron job (`Bitget Hourly Health Report`) delivers a rich HTML health card to the operator's Telegram channel every 60 minutes. Includes:
+The `fatty-health-report.timer` systemd unit runs `scripts/health_report.py` every six hours, with a persistent timer and a bounded service timeout. It delivers a provider-first HTML health card directly to the operator's Telegram channel. This periodic direct-send report is separate from the durable trading-event notification outbox. Includes:
 
 - Runtime status (mode, venue, execution enabled)
 - Codex usage (plan, 5h/7d windows, reset time)

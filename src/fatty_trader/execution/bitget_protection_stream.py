@@ -113,6 +113,16 @@ class BitgetFallbackStreamEngine:
                 # Keep the fence set: an unknown close result must be reconciled, not retried.
                 result = StreamCloseResult(fallback_id, False, "close-result-unknown")
             results.append(result)
+            if not result.submitted and result.reason in {
+                "provider-position-read-failed",
+                "provider-position-invalid",
+                "position-ownership-unverified",
+                "position-environment-unverified",
+                "close-quantity-invalid",
+            }:
+                # These outcomes are proven to occur before the durable close claim.
+                # A later fresh mark may retry the read; unknown/claimed POSTs stay fenced.
+                self._pending_fallback_ids.discard(fallback_id)
         return results
 
 
@@ -164,6 +174,10 @@ class BitgetProtectionStreamRuntime:
         reader = asyncio.create_task(self._socket.run(self._on_event, stop_event))
         try:
             while not stop_event.is_set():
+                if reader.done():
+                    # Propagate reader failure so the service supervisor can recover it.
+                    await reader
+                    return
                 await self.sync_active_symbols()
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop_event.wait(), timeout=1.0)
@@ -252,6 +266,7 @@ def _normalize_entry(raw: Mapping[str, Any]) -> dict[str, Any] | None:
         not fallback_id
         or not symbol
         or direction not in {"LONG", "SHORT"}
+        or not all(value.is_finite() for value in (entry_price, stop_loss, quantity, *take_profits))
         or entry_price <= 0
         or stop_loss <= 0
         or quantity <= 0

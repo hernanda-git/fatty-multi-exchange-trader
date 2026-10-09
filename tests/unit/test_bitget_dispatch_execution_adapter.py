@@ -36,6 +36,7 @@ class Execution:
         self.submit_calls: list[str] = []
         self.reconcile_calls: list[str] = []
         self.protect_calls: list[str] = []
+        self.protection_plans: list[ProtectionPlan] = []
 
     async def submit_entry(self, intent: LiveIntentRecord) -> AsyncExecutionResult:
         self.submit_calls.append(intent.client_oid)
@@ -52,6 +53,7 @@ class Execution:
         store: LiveIntentStoreProtocol,
     ) -> AsyncProtectionResult:
         self.protect_calls.append(intent.client_oid)
+        self.protection_plans.append(plan)
         assert plan.quantity == Decimal("0.002")
         assert store is not None
         assert self.protection is not None
@@ -82,6 +84,8 @@ def _submission(*, leverage: int = 20) -> BitgetEntrySubmission:
         balance_snapshot_id=UUID("12345678-1234-5678-1234-567812345678"),
         margin_reservation_id=UUID("87654321-4321-8765-4321-876543218765"),
         observed_at=datetime(2026, 9, 23, tzinfo=UTC),
+        planned_stop_loss=Decimal("63000"),
+        planned_take_profits=(Decimal("65000"),),
     )
 
 
@@ -94,6 +98,8 @@ def test_intent_copies_immutable_sizing_admission() -> None:
     assert intent.margin_mode == "ISOLATED"
     assert intent.balance_snapshot_id == UUID("12345678-1234-5678-1234-567812345678")
     assert intent.margin_reservation_id == UUID("87654321-4321-8765-4321-876543218765")
+    assert intent.planned_stop_loss == Decimal("63000")
+    assert intent.planned_take_profits == (Decimal("65000"),)
 
 
 def test_source_identity_makes_replayed_dispatches_share_client_oid() -> None:
@@ -318,3 +324,48 @@ async def test_acknowledged_entry_returns_without_a_protection_post() -> None:
     assert status == "ACKNOWLEDGED"
     assert execution.submit_calls == ["live-bitget-BTCUSDT-1234567812345678"]
     assert execution.protect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_native_and_restart_get_use_persisted_plan_not_source_or_new_admission():
+    from dataclasses import replace
+
+    dispatch = replace(
+        _dispatch(),
+        stop_loss=Decimal("63000.04"),
+        take_profits=(Decimal("65000.06"),),
+    )
+    submission = replace(
+        _submission(),
+        planned_stop_loss=Decimal("63000.0"),
+        planned_take_profits=(Decimal("65000.1"),),
+    )
+    store = InMemoryLiveIntentStore()
+    execution = Execution(
+        result=_result(),
+        protection=AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, Decimal("0.002")),
+    )
+    assert (
+        await BitgetDispatchExecution(execution, store).submit_entry(dispatch, submission)
+        == "FILLED"
+    )
+    assert execution.protection_plans[0].stop_loss == Decimal("63000.0")
+    assert execution.protection_plans[0].take_profits == (Decimal("65000.1"),)
+    restart_plans = []
+
+    async def read_protection(intent, plan):
+        restart_plans.append(plan)
+        return AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, intent.filled_qty)
+
+    restarted = BitgetDispatchExecution(execution, store, recovery_protection=read_protection)
+    changed_admission = replace(
+        submission,
+        planned_stop_loss=Decimal("62000"),
+        planned_take_profits=(Decimal("66000"),),
+    )
+    assert await restarted.submit_entry(dispatch, changed_admission) == "FILLED"
+    assert restart_plans == execution.protection_plans
+    assert len(execution.submit_calls) == len(execution.protect_calls) == 1
+    assert len(execution.reconcile_calls) == 1
+    assert dispatch.stop_loss == Decimal("63000.04")
+    assert dispatch.take_profits == (Decimal("65000.06"),)

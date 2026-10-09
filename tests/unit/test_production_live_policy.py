@@ -158,11 +158,15 @@ def test_runtime_verifier_rejects_unsafe_runtime_without_provider_probe(
         f"config = {config!r}\n"
         "args = sys.argv[1:]\n"
         "if args[0] == 'inspect':\n"
-        "    print('exited:0')\n"
+        "    print('exited:0' if args[-1] in {'migrate', 'init'} else 'running:healthy')\n"
         "elif args[0] == 'config':\n"
         "    print(config if '--format' in args else '')\n"
         "elif args[0] == 'ps':\n"
-        "    print('postgres dispatcher-bitget monitor-bitget')\n"
+        "    services = ' '.join((\n"
+        "        'postgres', 'intake', 'analyzer', 'dispatcher-bitget', 'monitor-bitget',\n"
+        "        'operator-bot', 'notification-sender', 'source-management', 'web',\n"
+        "    ))\n"
+        "    print(args[-1] if '-q' in args or '-aq' in args else services)\n"
         "elif args[:2] == ['exec', '-T'] and args[2] != 'postgres':\n"
         "    if 'bitget_ledger_readiness.py' in ' '.join(args):\n"
         f"        sys.exit(2 if {kill_state!r} == 'false:ledger' else 0)\n"
@@ -248,3 +252,77 @@ def test_web_reports_configured_live_gate_without_claiming_order_readiness() -> 
     assert report["configuration"]["execution_enabled"] is True
     assert report["orders_enabled"] is None
     assert report["readiness"]["status"] == "unknown"
+    environment = json.loads(rendered.stdout)["services"]["web"]["environment"]
+    runtime = {
+        name: {"state": "ready", "age_seconds": 1}
+        for name in ("postgres", "intake", "analyzer", "notification")
+    }
+    ready = build_health_report(environment, runtime_components=runtime)
+    assert ready["configuration"]["status"] == "ok"
+    assert ready["status"] == "ok"
+    assert ready["orders_enabled"] is None
+
+
+@pytest.mark.parametrize(
+    "service,state",
+    [
+        ("intake", "missing"),
+        ("analyzer", "exited"),
+        ("notification-sender", "unhealthy"),
+        ("monitor-bitget", "unhealthy"),
+        ("source-management", "no-healthcheck"),
+    ],
+)
+def test_runtime_verifier_checks_complete_pipeline_health_before_provider(tmp_path, service, state):
+    import json
+    import os
+    import subprocess
+    from pathlib import Path
+
+    from fatty_trader.production_policy import PRODUCTION_BITGET_SERVICES, PRODUCTION_VALUES
+
+    config = json.dumps(
+        {
+            "services": {
+                name: {"environment": PRODUCTION_VALUES} for name in PRODUCTION_BITGET_SERVICES
+            }
+        }
+    )
+    fake = tmp_path / "docker"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        f"config = {config!r}\n"
+        f"broken_service = {service!r}\nbroken_state = {state!r}\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == 'config':\n"
+        "    print(config if '--format' in args else '')\n"
+        "elif args[0] == 'ps':\n"
+        "    missing = args[-1] == broken_service and broken_state == 'missing'\n"
+        "    print('' if missing else args[-1])\n"
+        "elif args[0] == 'inspect':\n"
+        "    statuses = {\n"
+        "        'exited': 'exited:healthy',\n"
+        "        'unhealthy': 'running:unhealthy',\n"
+        "        'no-healthcheck': 'running:missing',\n"
+        "    }\n"
+        "    matched = args[-1] == broken_service\n"
+        "    status = statuses.get(broken_state, '') if matched else 'running:healthy'\n"
+        "    print(status)\n"
+        "elif args[:2] == ['exec', '-T'] and 'sh' in args:\n"
+        "    print('LIVE|LIVE|1')\n"
+        "else:\n"
+        "    sys.exit('unexpected DB/provider probe before pipeline health')\n"
+    )
+    fake.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "scripts/verify_bitget_runtime.sh"],
+        cwd=Path(__file__).parents[2],
+        env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "COMPOSE_BIN": str(fake)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert f"service={service}" in result.stderr
+    assert "runtime_blocked=service_" in result.stderr
+    assert "unexpected DB/provider" not in result.stderr
+    assert "runtime_check=PASS" not in result.stdout

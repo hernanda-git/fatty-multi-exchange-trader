@@ -155,3 +155,8 @@ def test_contract_normalizers_reject_wrong_shapes() -> None:
 def test_empty_pending_plan_list_is_a_known_empty_read() -> None:
     assert normalize_pending_plan_response({"entrustedList": None}) == []
     assert normalize_pending_plan_response({"entrustedList": []}) == []
+
+
+def test_missing_pending_list_is_not_a_successful_empty_inventory() -> None:
+    with pytest.raises(ProtectionContractError, match="missing entrustedList"):
+        normalize_pending_plan_response({"endId": "123"})

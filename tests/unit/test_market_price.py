@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from decimal import Decimal
 
 import pytest
@@ -37,10 +38,17 @@ def _stub(monkeypatch: pytest.MonkeyPatch, payload: object) -> list[str]:
     return calls
 
 
+def ticker(symbol: str, price: str) -> dict:
+    return {
+        "code": "00000",
+        "data": [{"symbol": symbol, "lastPr": price, "ts": str(int(time.time() * 1000))}],
+    }
+
+
 def test_reads_last_price_from_the_public_ticker(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stub(
         monkeypatch,
-        {"code": "00000", "data": [{"symbol": "ENAUSDT", "lastPr": "0.27217"}]},
+        ticker("ENAUSDT", "0.27217"),
     )
 
     price = market_price.public_last_price("ena")
@@ -52,7 +60,7 @@ def test_reads_last_price_from_the_public_ticker(monkeypatch: pytest.MonkeyPatch
 
 
 def test_price_is_cached_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _stub(monkeypatch, {"data": {"lastPr": "0.5"}})
+    calls = _stub(monkeypatch, ticker("SOLUSDT", "0.5"))
 
     assert market_price.public_last_price("SOL") == Decimal("0.5")
     assert market_price.public_last_price("SOL") == Decimal("0.5")
@@ -60,7 +68,7 @@ def test_price_is_cached_between_calls(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cache_expires(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _stub(monkeypatch, {"data": {"lastPr": "0.5"}})
+    calls = _stub(monkeypatch, ticker("SOLUSDT", "0.5"))
 
     market_price.public_last_price("SOL", now=1_000.0)
     market_price.public_last_price("SOL", now=1_000.0 + market_price._CACHE_TTL_SECONDS + 1)
@@ -92,3 +100,27 @@ def test_network_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(market_price, "_cache", {})
 
     assert market_price.public_last_price("ENA") is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["wrong_symbol", "provider_error", "missing_timestamp", "stale", "future", "infinite", "nan"],
+)
+def test_quote_requires_success_exact_symbol_and_fresh_finite_data(monkeypatch, mutation):
+    payload = ticker("ENAUSDT", "0.3")
+    row = payload["data"][0]
+    if mutation == "wrong_symbol":
+        row["symbol"] = "BTCUSDT"
+    elif mutation == "provider_error":
+        payload["code"] = "40034"
+    elif mutation == "missing_timestamp":
+        del row["ts"]
+    elif mutation == "stale":
+        row["ts"] = str(int((time.time() - 31) * 1000))
+    elif mutation == "future":
+        row["ts"] = str(int((time.time() + 31) * 1000))
+    else:
+        row["lastPr"] = "Infinity" if mutation == "infinite" else "NaN"
+    _stub(monkeypatch, payload)
+    assert market_price.public_last_price("ENA") is None
+    assert market_price._cache == {}

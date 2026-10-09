@@ -376,8 +376,10 @@ def build_bitget_execution_runtime(
     dispatch_repository = PostgresBitgetDispatchRepository(psycopg.connect)
     from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
 
+    intent_store = cast(LiveIntentStoreProtocol, intent_store_factory())
+
     recovery_reader = GetOnlyProtectionRecovery(
-        client, dispatch_repository, environment=config.venue_mode
+        client, dispatch_repository, environment=config.venue_mode, intent_store=intent_store
     )
     execution = BitgetDispatchExecution(
         AsyncBitgetExecution(
@@ -388,7 +390,7 @@ def build_bitget_execution_runtime(
             fallback_protection_enabled=_bitget_fallback_mutations_enabled(environ),
             environment=config.venue_mode,
         ),
-        cast(LiveIntentStoreProtocol, intent_store_factory()),
+        intent_store,
         reservation_repository=reservation_repository,
         dispatch_repository=dispatch_repository,
         kill_switch=PostgresReconciliationRepository(psycopg.connect),
@@ -538,10 +540,47 @@ def _bitget_dispatch_preflight(
             )
         observed_at = account.observed_at
         validate_observed_at(observed_at, "balance")
-        from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
+        from fatty_trader.execution.bitget_admission import (
+            BitgetEntrySubmission,
+            normalized_protection_prices,
+        )
         from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
         from fatty_trader.execution.bitget_dispatcher import BitgetAdmission
+        from fatty_trader.execution.entry_routing import EntryMode, EntryRoute, route_entry
         from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
+        from fatty_trader.risk.sizing import round_price_to_tick
+
+        normalized_entry = round_price_to_tick(dispatch.entry_price, metadata.price_tick)
+        source_time = getattr(dispatch, "source_received_at", None)
+        recent_window = int(environ.get("BITGET_JUST_DEPARTED_WINDOW_SECONDS", "60"))
+        late_threshold = Decimal(environ.get("BITGET_LATE_ENTRY_THRESHOLD_PCT", "0.005"))
+
+        def routed(quantity: Decimal) -> EntryRoute:
+            if source_time is None:
+                return EntryRoute(EntryMode.FULL_MARKET, quantity, Decimal("0"), None)
+            return route_entry(
+                direction=Direction(dispatch.direction),
+                signal_entry=normalized_entry,
+                market_price=snapshot.current_price,
+                total_quantity=quantity,
+                late_threshold_pct=late_threshold,
+                source_received_at=source_time,
+                recent_window_seconds=recent_window,
+            )
+
+        split = routed(Decimal("4")).limit_quantity > 0
+        sizing_price = (
+            max(snapshot.current_price, normalized_entry) if split else snapshot.current_price
+        )
+
+        planned_stop, planned_targets = normalized_protection_prices(
+            direction=Direction(dispatch.direction),
+            entry=snapshot.current_price,
+            canonical_entry=dispatch.entry_price,
+            stop_loss=dispatch.stop_loss,
+            take_profits=dispatch.take_profits,
+            price_tick=metadata.price_tick,
+        )
 
         risk = BitgetLiveRiskConfig(
             min_leverage=min_leverage,
@@ -571,10 +610,10 @@ def _bitget_dispatch_preflight(
                 meta=metadata,
                 risk=risk,
                 available_usdt=available_balance,
-                entry=snapshot.current_price,
+                entry=sizing_price,
                 direction=Direction(dispatch.direction),
                 active_positions=active_positions,
-                stop_loss=dispatch.stop_loss,
+                stop_loss=planned_stop,
             )
         )
         if (
@@ -585,6 +624,20 @@ def _bitget_dispatch_preflight(
             or decision.notional_usdt is None
         ):
             raise ValueError(f"Bitget live sizing rejected: {decision.reason}")
+        entry_route = routed(decision.quantity)
+        if entry_route.limit_quantity > 0:
+            for quantity, price in (
+                (entry_route.market_quantity, snapshot.current_price),
+                (entry_route.limit_quantity, normalized_entry),
+            ):
+                if quantity % metadata.size_step != 0:
+                    raise ValueError(
+                        "Bitget split rejected: exact 25/75 is not quantity-step aligned"
+                    )
+                if quantity < metadata.min_order_qty:
+                    raise ValueError("Bitget split rejected: child quantity below venue minimum")
+                if quantity * price * metadata.contract_value < metadata.min_notional:
+                    raise ValueError("Bitget split rejected: child notional below venue minimum")
         client_order_id = BitgetDispatchExecution.client_oid(dispatch)
         admission = reservation_repository.reserve(
             exchange="bitget",
@@ -626,12 +679,16 @@ def _bitget_dispatch_preflight(
                 balance_snapshot_id=admission.snapshot_id,
                 margin_reservation_id=admission.reservation_id,
                 observed_at=observed_at,
+                planned_stop_loss=planned_stop,
+                planned_take_profits=planned_targets,
+                entry_route=entry_route,
             )
         )
 
     return preflight
 
 
+@owned_worker_health("dispatcher-bitget")
 async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     """Run the durable dispatcher; its REST execution graph remains closed by default."""
     from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
@@ -666,12 +723,20 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
     try:
-        if runtime is not None:
-            await runtime.execution.recover_entry_lifecycles()  # type: ignore[attr-defined]
-            if runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
-                raise RuntimeError("Bitget lifecycle recovery is not ready")
         while True:
+            if runtime is not None:
+                await runtime.execution.recover_entry_lifecycles()  # type: ignore[attr-defined]
+                if runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
+                    issues = runtime.execution.recovery_issues  # type: ignore[attr-defined]
+                    print(
+                        "service=dispatcher-bitget state=recovery-blocked "
+                        f"issues={','.join(issues) or 'unconfirmed'}",
+                        flush=True,
+                    )
+                    await asyncio.sleep(interval)
+                    continue
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
+            worker_progress()
             print(
                 f"service=dispatcher-bitget mode={config.mode} venue_mode={config.venue_mode} "
                 f"state={cycle_state}",
@@ -1228,6 +1293,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     await asyncio.to_thread(listen)
 
 
+@owned_worker_health("source-management")
 async def run_source_management(environ: Mapping[str, str]) -> None:
     """Execute durable source-management updates (TP1 booked, SL to entry, close)."""
     import psycopg
@@ -1239,13 +1305,22 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     from fatty_trader.storage.source_management import PostgresSourceManagementStore
 
     mode = environ.get("BITGET_MODE", "DEMO").upper()
-    client = BitgetRestClient(
-        environ["BITGET_API_KEY"],
-        environ["BITGET_API_SECRET"],
-        environ["BITGET_API_PASSPHRASE"],
-        mode=mode,
+    runtime = build_bitget_execution_runtime(environ)
+    client = (
+        runtime.client
+        if runtime is not None
+        else BitgetRestClient(
+            environ["BITGET_API_KEY"],
+            environ["BITGET_API_SECRET"],
+            environ["BITGET_API_PASSPHRASE"],
+            mode=mode,
+        )
     )
-    gateway = BitgetOperatorGateway(client, PostgresLiveIntentStore(psycopg.connect))
+    gateway = BitgetOperatorGateway(
+        cast(Any, client),
+        PostgresLiveIntentStore(psycopg.connect),
+        entry_execution=cast(Any, runtime.execution) if runtime is not None else None,
+    )
     mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
     if mutations_raw not in {"0", "1"}:
         raise ValueError("BITGET_OPERATOR_MUTATIONS_ENABLED must be 0 or 1")
@@ -1255,10 +1330,14 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
         mutations_enabled=mutations_raw == "1",
     )
     interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "30"))
-    while True:
-        state = await asyncio.to_thread(executor.run_once, "source-management")
-        print(f"service=source-management mode={mode} state={state}", flush=True)
-        await asyncio.sleep(interval)
+    try:
+        while True:
+            state = await asyncio.to_thread(executor.run_once, "source-management")
+            worker_progress()
+            print(f"service=source-management mode={mode} state={state}", flush=True)
+            await asyncio.sleep(interval)
+    finally:
+        await asyncio.to_thread(gateway.close)
 
 
 def analyzer_channel_ids(environ: Mapping[str, str]) -> tuple[int, ...]:
@@ -1531,7 +1610,13 @@ def main() -> int:
     if args.service == "web":
         return 0
     if args.check:
-        if args.service in {"intake", "analyzer", "operator-bot"}:
+        if args.service in {
+            "intake",
+            "analyzer",
+            "operator-bot",
+            "source-management",
+            "dispatcher-bitget",
+        }:
             from fatty_trader.worker_health import check_worker_health
 
             return check_worker_health(args.service, os.environ)

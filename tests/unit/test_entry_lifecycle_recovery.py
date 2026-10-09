@@ -131,3 +131,29 @@ async def test_partial_fill_with_registered_fallback_is_not_promoted_to_full_fil
     )
     adapter = BitgetDispatchExecution(execution, InMemoryLiveIntentStore())
     assert await adapter.submit_entry(_dispatch(), _submission()) == "PARTIAL_UNPROTECTED"
+
+
+@pytest.mark.asyncio
+async def test_historical_missing_validated_plan_stays_unresolved_without_reader_guess():
+    dispatch = replace(_dispatch(), state="FILLED")
+    intent = BitgetDispatchExecution._intent(dispatch, _submission())
+    intent.planned_stop_loss = None
+    intent.planned_take_profits = None
+    store = InMemoryLiveIntentStore()
+    store.save(intent)
+    execution = Execution(result=_result())
+    repo = Repository(dispatch, intent.client_oid)
+
+    async def reader(entry, plan):
+        raise AssertionError("historical source prices are not a validated execution plan")
+
+    adapter = BitgetDispatchExecution(
+        execution, store, dispatch_repository=repo, recovery_protection=reader
+    )
+    assert await adapter.recover_entry_lifecycles() == 1
+    assert adapter.recovery_ready is False
+    assert (
+        repo.events[-1]["reason"] == "recovery-missing-protection:recovery-validated-plan-missing"
+    )
+    assert store.get(intent.client_oid).state == "filled"
+    assert execution.submit_calls == execution.protect_calls == []

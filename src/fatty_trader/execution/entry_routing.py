@@ -64,6 +64,8 @@ def route_entry(
     limit_context: LimitEntryContext | None = None,
     near_limit_threshold_pct: Decimal | None = None,
     now: datetime | None = None,
+    source_received_at: datetime | None = None,
+    recent_window_seconds: int = 60,
 ) -> EntryRoute:
     """Route entry while requiring lifecycle evidence for near-limit splitting.
 
@@ -78,6 +80,29 @@ def route_entry(
     near_threshold = near_limit_threshold_pct or late_threshold_pct
     if not Decimal("0") < near_threshold < Decimal("1"):
         raise ValueError("near-limit threshold must be between zero and one")
+    if source_received_at is not None:
+        if source_received_at.tzinfo is None or recent_window_seconds <= 0:
+            raise ValueError("recent signal route requires aware source time and positive window")
+        age = ((now or datetime.now(UTC)) - source_received_at).total_seconds()
+        passed = (
+            market_price > signal_entry
+            if direction is Direction.LONG
+            else market_price < signal_entry
+        )
+        if passed and 0 <= age <= recent_window_seconds:
+            return _split(
+                total_quantity,
+                mode=EntryMode.SPLIT_MARKET_LIMIT,
+                limit_price=signal_entry,
+                reason="recent-source-passed-entry",
+            )
+        return EntryRoute(
+            EntryMode.FULL_MARKET,
+            total_quantity,
+            Decimal("0"),
+            None,
+            "not-recently-passed-entry",
+        )
 
     if limit_context is not None:
         if limit_context.departure_window_seconds <= 0:

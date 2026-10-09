@@ -123,8 +123,10 @@ class PostgresReconciliationRepository:
         cursor.execute(
             """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
                       filled_qty, filled_price, fee, provider_order_id, provider_fill_ids
-               FROM live_order_intents
+               FROM live_order_intents i
                WHERE exchange = %s
+                 AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                     WHERE b.record_kind='intent' AND b.record_id=i.id)
                  AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')""",
             (exchange,),
         )
@@ -134,8 +136,10 @@ class PostgresReconciliationRepository:
         connection = self._connection_factory()
         cursor = connection.cursor()
         cursor.execute(
-            """SELECT DISTINCT symbol FROM live_order_intents
-               WHERE exchange = %s AND state NOT IN ('rejected', 'cancelled')""",
+            """SELECT DISTINCT symbol FROM live_order_intents i
+               WHERE exchange = %s AND state NOT IN ('rejected', 'cancelled')
+                 AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                     WHERE b.record_kind='intent' AND b.record_id=i.id)""",
             (exchange,),
         )
         return {

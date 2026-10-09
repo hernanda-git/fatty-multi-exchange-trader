@@ -9,6 +9,7 @@ from uuid import UUID
 
 from fatty_trader.analyzer.trade_management import ManagementAction
 from fatty_trader.execution.source_management import SourceManagementUpdate
+from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL
 
 
 class PostgresSourceManagementStore:
@@ -20,11 +21,25 @@ class PostgresSourceManagementStore:
             raise ValueError("worker_id is required")
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
             cursor.execute(
+                """UPDATE source_management_updates u SET state='failed',
+                    updated_at=clock_timestamp()
+                FROM telegram_messages tm
+                WHERE tm.id=u.source_message_id
+                  AND u.state IN ('queued','claimed','reconciliation-pending')
+                  AND NOT COALESCE(("""
+                + SOURCE_ELIGIBLE_SQL.format(alias="tm")
+                + """),false)
+                  AND NOT EXISTS (SELECT 1 FROM source_management_provider_intents p
+                      WHERE p.management_update_id=u.id)
+                  AND NOT EXISTS (SELECT 1 FROM live_order_intents i
+                      WHERE i.cancel_requested_by=u.id)"""
+            )
+            cursor.execute(
                 """
                 WITH candidate AS (
                   SELECT id FROM source_management_updates
-                  WHERE state IN ('queued', 'claimed')
-                  ORDER BY created_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+                  WHERE state IN ('queued', 'claimed', 'reconciliation-pending')
+                  ORDER BY updated_at, id FOR UPDATE SKIP LOCKED LIMIT 1
                 )
                 UPDATE source_management_updates u SET state = 'claimed', claimed_by = %s,
                   claimed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
@@ -69,6 +84,40 @@ class PostgresSourceManagementStore:
             inserted = cursor.fetchone() is not None
             connection.commit()
         return inserted
+
+    def has_provider_intent(self, update_id: UUID, client_oid: str) -> bool:
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT 1 FROM source_management_provider_intents
+                   WHERE management_update_id = %s AND client_order_id = %s""",
+                (update_id, client_oid),
+            )
+            return cursor.fetchone() is not None
+
+    def management_is_eligible(self, update_id: UUID) -> bool:
+        """Recheck source time under the update lock before a NEW mutation."""
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COALESCE(("
+                + SOURCE_ELIGIBLE_SQL.format(alias="tm")
+                + "),false) AND tm.revision_hash=u.revision "
+                "FROM source_management_updates u "
+                "JOIN telegram_messages tm ON tm.id=u.source_message_id "
+                "WHERE u.id=%s FOR UPDATE OF u",
+                (update_id,),
+            )
+            row = cursor.fetchone()
+            connection.commit()
+            return row is not None and bool(row[0])
+
+    def has_claimed_cancellation(self, update_id: UUID) -> bool:
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT EXISTS(SELECT 1 FROM live_order_intents "
+                "WHERE exchange='bitget' AND role='ENTRY' AND cancel_requested_by=%s)",
+                (update_id,),
+            )
+            return bool(cursor.fetchone()[0])
 
     @staticmethod
     def _row(row: Any) -> SourceManagementUpdate:
