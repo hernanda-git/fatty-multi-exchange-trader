@@ -1305,21 +1305,15 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     from fatty_trader.storage.source_management import PostgresSourceManagementStore
 
     mode = environ.get("BITGET_MODE", "DEMO").upper()
-    runtime = build_bitget_execution_runtime(environ)
-    client = (
-        runtime.client
-        if runtime is not None
-        else BitgetRestClient(
-            environ["BITGET_API_KEY"],
-            environ["BITGET_API_SECRET"],
-            environ["BITGET_API_PASSPHRASE"],
-            mode=mode,
-        )
+    client = BitgetRestClient(
+        environ["BITGET_API_KEY"],
+        environ["BITGET_API_SECRET"],
+        environ["BITGET_API_PASSPHRASE"],
+        mode=mode,
     )
     gateway = BitgetOperatorGateway(
         cast(Any, client),
         PostgresLiveIntentStore(psycopg.connect),
-        entry_execution=cast(Any, runtime.execution) if runtime is not None else None,
     )
     mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
     if mutations_raw not in {"0", "1"}:
