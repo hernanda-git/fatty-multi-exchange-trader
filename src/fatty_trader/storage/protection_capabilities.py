@@ -22,6 +22,7 @@ class Connection(Protocol):
     def cursor(self) -> Cursor: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
+    def close(self) -> None: ...
 
 
 class ProtectionCapabilityRepository(Protocol):
@@ -101,19 +102,22 @@ class PostgresProtectionCapabilityRepository:
         self, exchange: str, environment: str, symbol: str
     ) -> BitgetProtectionCapability | None:
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT exchange, environment, symbol, position_mode, margin_mode,
-                   native_state, fallback_allowed, payload_profile, last_verified_at,
-                   last_error, stream_state, last_stream_at
-            FROM bitget_protection_capabilities
-            WHERE exchange = %s AND environment = %s AND symbol = %s
-            """,
-            _key(exchange, environment, symbol),
-        )
-        row = cursor.fetchone()
-        return _capability_from_row(row) if row is not None else None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT exchange, environment, symbol, position_mode, margin_mode,
+                       native_state, fallback_allowed, payload_profile, last_verified_at,
+                       last_error, stream_state, last_stream_at
+                FROM bitget_protection_capabilities
+                WHERE exchange = %s AND environment = %s AND symbol = %s
+                """,
+                _key(exchange, environment, symbol),
+            )
+            row = cursor.fetchone()
+            return _capability_from_row(row) if row is not None else None
+        finally:
+            connection.close()
 
     def upsert(self, capability: BitgetProtectionCapability) -> None:
         connection = self._connection_factory()
@@ -157,6 +161,8 @@ class PostgresProtectionCapabilityRepository:
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
 
     def update_stream(
         self,
@@ -191,6 +197,8 @@ class PostgresProtectionCapabilityRepository:
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
 
 
 def _row_value(row: Any, values: list[Any], field: str, index: int) -> Any:

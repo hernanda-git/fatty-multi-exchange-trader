@@ -103,6 +103,8 @@ Contract metadata is resolved before symbol account/position reads and margin pr
 
 Clock offset uses a single-attempt request midpoint, with monotonic duration checks. A sample requires RTT at most 1000 ms and wall/monotonic elapsed disagreement at most 50 ms. Slow, failed, invalid, or wall-clock-jump samples are unavailable evidence, never zero skew or fabricated clock drift. General GET retries and POST ambiguity rules are unchanged. Existing monitor/preflight clock limits remain unchanged.
 
+The protection stream's synchronous symbol lookup (including lazy iteration) and ordered capability persistence run off the shared asyncio loop. Database work must not postpone socket heartbeat handling or an in-flight clock response. Each standalone PostgreSQL capability read/write closes its owned connection on success and failure. Active fallback reads rely on the supported migration prerequisite instead of repeatedly running schema DDL. These scheduling/resource changes do not widen clock bounds, weaken native/fallback identity checks, or clear admission latches automatically.
+
 ## Approved flat-baseline latch recovery
 
 Use `scripts/recover_bitget_live_latches.py` only under its existing scoped approval and flat-baseline contract. All account mutation consumers must remain stopped throughout proof and apply; a venue admission latch alone does not prove fallback/source/operator mutations are stopped. Do not stop exposure protection to run a flat-account recovery on a nonflat account.

@@ -191,13 +191,7 @@ class BitgetProtectionStreamRuntime:
         if self._active_symbol_source is None:
             return (), ()
         try:
-            active_symbols = tuple(
-                dict.fromkeys(
-                    symbol.strip().upper()
-                    for symbol in self._active_symbol_source()
-                    if str(symbol).strip()
-                )
-            )
+            active_symbols = await asyncio.to_thread(self._read_active_symbols)
         except Exception as exc:
             logger.warning(
                 "Bitget protection stream active-symbol read failed: %s",
@@ -211,6 +205,16 @@ class BitgetProtectionStreamRuntime:
         unsubscribed = await self._socket.unsubscribe_symbols(stale)
         return subscribed, unsubscribed
 
+    def _read_active_symbols(self) -> tuple[str, ...]:
+        assert self._active_symbol_source is not None
+        return tuple(
+            dict.fromkeys(
+                symbol.strip().upper()
+                for symbol in self._active_symbol_source()
+                if str(symbol).strip()
+            )
+        )
+
     async def _on_event(self, event: BitgetWebSocketEvent) -> None:
         if event.kind != "mark_price":
             return
@@ -223,6 +227,10 @@ class BitgetProtectionStreamRuntime:
         if not callable(check) or not check(event.symbol):
             return
         self._last_event_ms[event.symbol] = event.event_time_ms
+        await asyncio.to_thread(self._record_event, event)
+
+    def _record_event(self, event: BitgetWebSocketEvent) -> None:
+        """Keep synchronous store calls ordered without blocking socket/clock I/O."""
         get_capability = getattr(self._repository, "get", None)
         upsert_capability = getattr(self._repository, "upsert", None)
         if (

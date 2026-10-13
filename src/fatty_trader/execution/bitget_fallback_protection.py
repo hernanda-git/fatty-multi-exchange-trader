@@ -165,7 +165,6 @@ def register_fallback(
 
 def load_active() -> list[dict[str, Any]]:
     """Load fallback entries that still need provider reconciliation."""
-    ensure_schema()
     rows = _db_query(
         """
         SELECT id, exchange, symbol, direction, entry_price, stop_loss,

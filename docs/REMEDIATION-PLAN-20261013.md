@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: reliability release deployed LIVE. Owner accepted current readiness with Codex as an unavailable fallback and explicitly approved admission activation as-is. Fresh evidence-led recovery of the current clock/stream latches is in progress; ongoing safety/risk gates remain enabled.
+Status: owner-approved scoped recovery applied, but resumed monitoring raised a fresh clock-unavailable latch. The shared-loop storage-stall fix passed local acceptance (2105 tests plus real PostgreSQL smoke); redeployment and fresh evidence-led reactivation are in progress. Codex remains an accepted unavailable fallback.
 
 Workstation repository: `C:/Users/it26/AppData/Local/Temp/bitget-audit-20261009-7c92`
 
@@ -533,6 +533,28 @@ New owner instruction: “codex just a fallback, I approve the readiness as is, 
 At 16:24 UTC, fresh authenticated USDT open-state reads were flat, ledger readiness returned ready with no issues, and the active exact reasons were `bitget/clock-skew-unavailable` and `bitget-protection-stream/socket-not-connected`. A new approved backup `backups/fatty_trader_20261013T162917Z.dump` passed the existing integrity gate, size 1751278 bytes; retention deletion stayed disabled.
 
 The recovery default remains narrow. New explicit `--clock-latch-reason clock-skew-unavailable` selection is required on both proof/apply and additionally proves a current bounded midpoint clock sample within the unchanged production clock limit. Selection/limit are included in the reviewed digest, and current clock evidence in the release audit. Unknown/global reasons, changed rows/binding/digest, nonflat inventory, unresolved ledger evidence, unavailable/skewed current clock, or unauthenticated/stale streams continue to refuse recovery.
+
+Scoped release `40ba3e8` was committed/pushed to GitHub main and built for all eight application services. Verification: Ruff lint passed, 289 files formatted, mypy passed 107 source files, and the full isolated suite passed **2102 tests in 180.42 seconds** (`artifacts/live-activation-final-20261013.xml`). The first cold database attempt encountered PostgreSQL recovery-state connection failures; after readiness was established, the complete suite passed. The real CLI exposed the explicit recovery option. Disposable verification services were stopped afterward. Current pre-activation application images were retained under `fatty-activation-rollback-<service>:726b71e`.
+
+Containment followed a fresh all-product authenticated flat inventory. The four mutation consumers stayed stopped through fresh dry-run and apply. Dry-run completed inventory at 16:42:56.657 UTC: exact approved clock/stream reasons, correct UID/baseline, no ledger issues, private authentication, both fresh V2 pongs and mark, current bounded clock offset 0 ms within the unchanged actual production limit 5000 ms. Reviewed digest: `e6ea679360f641bce16da47acf65774ae00efc626cc8e4120138e1071c8be27c`.
+
+At 16:44:26 UTC, matching digest-bound apply returned `applied=true`, recovery ID `defd32a5-1bc2-4154-9ff8-d809c218e7cd`, and a fresh bounded offset -2 ms within the same 5000 ms limit. SQL readback proved both exact scopes inactive and two corresponding audit/outbox records with the same recovery ID, approval reference, and clock evidence. Approval reference: `owner-approved-live-activation-fallback-accepted-20261013`. No broader latch, risk threshold, environment, exchange order, intent, reservation, fill, or historical ownership evidence was changed by recovery.
+
+An independent deployment prerequisite was repaired: the failed OAuth refresh had removed host `auth.json`; Docker then created an empty root-owned directory at that missing bind source, preventing analyzer startup. The deployment-created empty directory was removed and replaced with standard empty JSON auth configuration (`{}`, owner-readable mode 0600), explicitly unauthenticated. No credentials or alternate account were fabricated/copied. Analyzer then reported ready, and actual web dependency readiness returned ready/HTTP 200 after startup convergence. An early Compose wait had observed the prior unhealthy web state before that convergence; it is not recorded as an acceptance pass.
+
+Activation proof/apply evidence: `artifact://169` / `artifact://173`. The new source digest is `dacd47b9fab9957bdef44a1487ce7f389ef7e6490c6f7abbf68cb7c8a6fdc5d0`; it matched the host and the recovery image before apply. Monitor resumed first, followed by a fresh inactive-latch prerequisite before normal admission consumers resumed. Full runtime and delivered post-activation health evidence remain to be recorded.
+
+### 8.10 Fresh relatch, reproduced shared-loop stalls, and root fix
+
+After the first audited release/resume, the full verifier observed the stream scope inactive but a new venue `clock-skew-unavailable` latch. The verifier correctly refused PASS; its chained health send did not run, and the report timer was restored independently. No repeated blind latch clearing was performed.
+
+Finite runs of the actual monitor program reproduced `BitgetApiError: Bitget clock sample has unreliable request duration`, with shared-loop scheduling delays reaching 6125.930 ms (`artifact://186`), and a second run reproduced the fault with delays up to 3427.948 ms (`artifact://189`). Individual capability operations did not exceed the profiler's 250 ms logging cutoff; cumulative synchronous callback work can still starve other loop tasks. No network-packet-loss cause was established.
+
+Before the fix, two deterministic eager/lazy symbol-read regressions failed with the same unreliable-clock-duration error while a ready response was held behind a blocking lookup. The fix offloads eager symbol reads/iteration and ordered per-event capability storage using the existing asyncio thread mechanism; socket state and event deduplication stay on the reader loop. PostgreSQL capability operations now close every owned connection, including failed reads/writes. The repeated active-symbol read no longer executes schema DDL; supported migration remains its prerequisite. Clock RTT/wall-jump bounds, the actual 5000 ms skew limit, risk limits, ownership gates, and durable latch behavior are unchanged.
+
+After integration, the complete isolated suite passed **2105 tests in 180.81 seconds** (`artifacts/live-loop-final-20261013.xml`); lint and mypy passed, with the affected files formatted. Added cases cover eager lookup, lazy iterable consumption, and blocked stream persistence without delaying an in-flight clock response. A real disposable PostgreSQL smoke persisted the mark observation while preserving verified native identity/configuration, closed owned connections on success and genuine SQL failure, and acquired an exclusive table lock after those operations. No throwaway source file was created.
+
+The root fix requires matching new production images, a finite real-monitor responsiveness observation, and fresh contained proof/apply before normal admission can be accepted. Historical release digests are not reused. Codex fallback authentication is not a reactivation blocker under the owner's explicit acceptance.
 
 ## 9. Final release definition of done
 

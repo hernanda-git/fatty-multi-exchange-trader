@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
+from fatty_trader.exchanges.bitget.client import BitgetRestClient
 from fatty_trader.exchanges.bitget.protection_capability import NativeProtectionState
 from fatty_trader.exchanges.bitget.ws_models import BitgetWebSocketEvent
 from fatty_trader.execution.bitget_protection_stream import (
@@ -264,6 +267,79 @@ async def test_stream_runtime_syncs_only_active_fallback_symbols() -> None:
     active[:] = ["BTCUSDT"]
     assert await runtime.sync_active_symbols() == (("BTCUSDT",), ("WLDUSDT",))
     assert socket.symbols == ("BTCUSDT",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["symbols", "lazy-symbols", "persistence"])
+async def test_stream_storage_does_not_delay_in_flight_clock_response(monkeypatch, operation):
+    entered = threading.Event()
+    release_source = threading.Event()
+    request_started = asyncio.Event()
+    respond = asyncio.Event()
+
+    def block_store():
+        entered.set()
+        release_source.wait(timeout=2)
+
+    def symbols():
+        if operation != "persistence":
+            block_store()
+        yield "BTCUSDT"
+
+    def read_symbols():
+        return symbols() if operation == "lazy-symbols" else tuple(symbols())
+
+    class Repository(InMemoryProtectionCapabilityRepository):
+        def update_stream(self, *args, **kwargs):
+            block_store()
+            return super().update_stream(*args, **kwargs)
+
+    class Socket:
+        symbols = ("BTCUSDT",)
+
+        def check_freshness(self, symbol):
+            return True
+
+        async def subscribe_symbols(self, symbols):
+            return ()
+
+        async def unsubscribe_symbols(self, symbols):
+            return ()
+
+    async def time_response(*args, **kwargs):
+        request_started.set()
+        await respond.wait()
+        return {"serverTime": int(time.time() * 1000)}
+
+    client = BitgetRestClient("", "", "")
+    monkeypatch.setattr(client, "_request", time_response)
+    runtime = BitgetProtectionStreamRuntime(
+        Socket(),
+        Repository(),
+        environment="LIVE",
+        active_symbol_source=read_symbols,
+    )
+    clock_task = asyncio.create_task(client.get_clock_skew_ms())
+    symbol_task = None
+    try:
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        work = (
+            runtime._on_event(mark("BTCUSDT", "100", int(time.time() * 1000)))
+            if operation == "persistence"
+            else runtime.sync_active_symbols()
+        )
+        symbol_task = asyncio.create_task(work)
+        assert await asyncio.to_thread(entered.wait, 1)
+        respond.set()
+        await asyncio.wait_for(clock_task, timeout=1)
+        assert not symbol_task.done(), "storage must remain blocked without blocking clock I/O"
+    finally:
+        release_source.set()
+        respond.set()
+        await asyncio.gather(
+            clock_task, *([symbol_task] if symbol_task else []), return_exceptions=True
+        )
+        await client.aclose()
 
 
 @pytest.mark.asyncio
