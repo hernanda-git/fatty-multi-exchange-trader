@@ -6,10 +6,12 @@ import base64
 import hashlib
 import hmac
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from fatty_trader.exchanges.bitget import client as client_module
 from fatty_trader.exchanges.bitget.client import (
     BitgetApiError,
     BitgetRestClient,
@@ -130,6 +132,245 @@ async def test_server_time_is_normalized_to_milliseconds() -> None:
     client, _ = make_client(handler)
     assert await client.get_server_time_ms() == 1693830000123
     await client.aclose()
+
+
+class ControlledClock:
+    def __init__(self) -> None:
+        self.wall = 1_700_000_000.0
+        self.monotonic = 100.0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            client_module,
+            "time",
+            SimpleNamespace(time=lambda: self.wall, monotonic=lambda: self.monotonic),
+        )
+
+    def advance(self, milliseconds: int, *, wall_jump_ms: int = 0) -> None:
+        self.wall += (milliseconds + wall_jump_ms) / 1000
+        self.monotonic += milliseconds / 1000
+
+
+@pytest.mark.parametrize("offset_ms", [0, 10_000, -10_000, 30_001, -30_001])
+@pytest.mark.parametrize("delay_ms", [0, 800, 1_000])
+async def test_clock_uses_bounded_request_midpoint_not_preawait_time(
+    monkeypatch: pytest.MonkeyPatch, offset_ms: int, delay_ms: int
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v2/public/time"
+        server_midpoint_ms = round(clock.wall * 1000 + delay_ms / 2 - offset_ms)
+        clock.advance(delay_ms)
+        return httpx.Response(200, json=ok_envelope({"serverTime": str(server_midpoint_ms)}))
+
+    client, seen = make_client(handler)
+    try:
+        assert await client.get_clock_skew_ms() == offset_ms
+        assert len(seen) == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("delay_ms", [1_001, 20_000])
+async def test_slow_synchronized_clock_is_unavailable_not_drift(
+    monkeypatch: pytest.MonkeyPatch, delay_ms: int
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        clock.advance(delay_ms)
+        # Original pre-await subtraction reports -20,000 ms for this delayed
+        # synchronized server, although its actual clock offset remains zero.
+        return httpx.Response(200, json=ok_envelope({"serverTime": str(round(clock.wall * 1000))}))
+
+    client, seen = make_client(handler)
+    try:
+        with pytest.raises(BitgetApiError, match="unreliable request duration"):
+            await client.get_clock_skew_ms()
+        assert len(seen) == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("wall_jump_ms", [-5_000, -51, 51, 5_000])
+async def test_clock_wall_jump_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch, wall_jump_ms: int
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        server_midpoint_ms = round(clock.wall * 1000 + 100)
+        clock.advance(200, wall_jump_ms=wall_jump_ms)
+        return httpx.Response(200, json=ok_envelope({"serverTime": str(server_midpoint_ms)}))
+
+    client, _ = make_client(handler)
+    try:
+        with pytest.raises(BitgetApiError, match="wall-clock jump"):
+            await client.get_clock_skew_ms()
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("wall_jump_ms", [-50, 50])
+async def test_clock_wall_duration_tolerance_boundary(
+    monkeypatch: pytest.MonkeyPatch, wall_jump_ms: int
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        server_midpoint_ms = round(clock.wall * 1000 + 100)
+        clock.advance(200, wall_jump_ms=wall_jump_ms)
+        return httpx.Response(200, json=ok_envelope({"serverTime": str(server_midpoint_ms)}))
+
+    client, _ = make_client(handler)
+    try:
+        assert await client.get_clock_skew_ms() == wall_jump_ms // 2
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "server_time", [None, True, False, {}, [], "", "NaN", "Infinity", "1.5", 1.5, 0, -1, 2**63]
+)
+async def test_invalid_clock_timestamp_is_sanitized_unavailable(
+    monkeypatch: pytest.MonkeyPatch, server_time: object
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=ok_envelope({"serverTime": server_time}))
+
+    client, seen = make_client(handler)
+    try:
+        with pytest.raises(BitgetApiError) as error:
+            await client.get_clock_skew_ms()
+        assert error.value.__cause__ is None
+        assert error.value.provider_msg == ""
+        assert len(seen) == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("failure", ["429", "503", "transport", "provider", "json"])
+async def test_failed_clock_probe_never_retries_or_exposes_raw_failure(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+        clock.advance(round(delay * 1000))
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", sleep)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "transport":
+            raise httpx.ReadTimeout("my-key my-secret my-pass", request=request)
+        if failure == "json":
+            return httpx.Response(200, text="my-key my-secret my-pass")
+        status = 200 if failure == "provider" else int(failure)
+        return httpx.Response(
+            status, json={"code": "40001", "msg": "my-key my-secret my-pass", "data": None}
+        )
+
+    client, seen = make_client(handler, max_get_retries=2)
+    try:
+        with pytest.raises(BitgetApiError) as error:
+            await client.get_clock_skew_ms()
+        assert len(seen) == 1
+        assert delays == []
+        assert error.value.__cause__ is None
+        assert error.value.provider_msg == ""
+        assert not any(secret in str(error.value) for secret in ("my-key", "my-secret", "my-pass"))
+    finally:
+        await client.aclose()
+
+
+async def test_clock_probe_does_not_change_concurrent_get_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+    probe_started = asyncio.Event()
+    ticker_finished = asyncio.Event()
+    ticker_calls = 0
+    probe_calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal ticker_calls, probe_calls
+        if request.url.path == "/api/v2/public/time":
+            probe_calls += 1
+            probe_started.set()
+            await ticker_finished.wait()
+            return httpx.Response(503, json={"code": "500", "msg": "unavailable"})
+        ticker_calls += 1
+        if ticker_calls < 3:
+            return httpx.Response(503, json={"code": "500", "msg": "unavailable"})
+        ticker_finished.set()
+        return httpx.Response(200, json=ok_envelope({"lastPr": "60000"}))
+
+    client = BitgetRestClient("k", "s", "p", transport=httpx.MockTransport(handler))
+    try:
+        probe = asyncio.create_task(client.get_clock_skew_ms())
+        await probe_started.wait()
+        assert await client.get_ticker("BTCUSDT") == {"lastPr": "60000"}
+        with pytest.raises(BitgetApiError):
+            await probe
+        assert ticker_calls == 3
+        assert probe_calls == 1
+    finally:
+        await client.aclose()
+
+
+async def test_public_server_time_read_retains_normal_get_retries() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(503, json={"code": "500", "msg": "unavailable"})
+        return httpx.Response(200, json=ok_envelope({"serverTime": "1693830000123"}))
+
+    client, seen = make_client(handler)
+    try:
+        assert await client.get_server_time_ms() == 1693830000123
+        assert len(seen) == 3
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("clock_fault", ["monotonic-backwards", "nonfinite-wall"])
+async def test_clock_rejects_invalid_local_timing_evidence(
+    monkeypatch: pytest.MonkeyPatch, clock_fault: str
+) -> None:
+    clock = ControlledClock()
+    clock.install(monkeypatch)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        server_time_ms = round(clock.wall * 1000)
+        if clock_fault == "monotonic-backwards":
+            clock.monotonic -= 1
+        else:
+            clock.wall = float("nan")
+        return httpx.Response(200, json=ok_envelope({"serverTime": str(server_time_ms)}))
+
+    client, _ = make_client(handler)
+    try:
+        with pytest.raises(BitgetApiError, match="unreliable request duration"):
+            await client.get_clock_skew_ms()
+    finally:
+        await client.aclose()
 
 
 async def test_pending_orders_normalizes_bitget_envelope_to_a_list() -> None:

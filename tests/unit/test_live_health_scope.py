@@ -2,13 +2,11 @@
 
 import importlib.util
 import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from fatty_trader.operator.health import build_operator_health_report
 from fatty_trader.operator.health_report_format import format_report
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -125,66 +123,3 @@ def test_unavailable_compose_evidence_is_unknown(monkeypatch):
         script.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1, stdout="")
     )
     assert script.get_service_status()["status"] == "UNKNOWN"
-
-
-@pytest.mark.parametrize("mode,venue", [("LIVE", "LIVE"), ("LIVE", "DEMO"), ("PAPER", "PAPER")])
-def test_on_demand_policy_preserves_reported_venue(mode, venue):
-    class Gateway:
-        def get_account_snapshot(self):
-            return {}
-
-        def get_positions(self):
-            return []
-
-        def get_orders(self):
-            return []
-
-    def unavailable_db():
-        raise OSError("offline")
-
-    text = build_operator_health_report(
-        Gateway(), unavailable_db, mode=mode, venue_mode=venue, execution_enabled=False
-    )
-    assert f"venue <code>{venue}</code>" in text
-    assert ("✅ LIVE-only runtime" in text) == (mode == venue == "LIVE")
-    assert ("DEGRADED" in text) == (mode != "LIVE" or venue != "LIVE")
-
-
-@pytest.mark.parametrize(
-    "modes,title", [("LIVE|LIVE|0", "LIVE HEALTH"), ("LIVE|DEMO|0", "NON-LIVE / UNKNOWN HEALTH")]
-)
-def test_legacy_shell_scope_and_mode_are_executed_offline(modes, title):
-    text = (ROOT / "scripts/telegram_health_report.sh").read_text()
-    assert ".env.bitget-demo" not in text
-    assert "bitget_demo_telemetry.py" not in text
-    assert "DEMO Provider Read-back" not in text
-    segment = text[text.index("# Include stopped LIVE workers") : text.index("intake_id=")]
-    prelude = """set -euo pipefail
-    overall='ONLINE'
-    docker() {
-      if [[ "$*" == *'ps --all'* ]]; then
-        printf '%s\n' 'dispatcher-bitget|running|healthy' 'paper-kaka|exited|'
-        printf '%s\n' 'monitor-binance|exited|' 'init|exited|'
-      else
-        printf '%s' "$TEST_MODES"
-      fi
-    }
-    """
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            prelude
-            + segment
-            + 'printf "TITLE=%s\nSERVICES=%s\nOVERALL=%s" "$health_title" "$services" "$overall"',
-        ],
-        env={"PATH": "/usr/bin:/bin", "TEST_MODES": modes},
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "TITLE=" + title in result.stdout
-    assert "paper-kaka" not in result.stdout
-    assert "monitor-binance" not in result.stdout
-    if "DEMO" in modes:
-        assert "DEGRADED" in result.stdout

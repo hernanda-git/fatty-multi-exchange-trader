@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 
 from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
+from fatty_trader.exchanges.bitget.client import BitgetApiError
 from fatty_trader.risk.liquidation import MMTier, select_mmr
 
 # Realistic /market/query-position-lever rows: ordered by size, and note that the
@@ -40,6 +41,7 @@ class Client:
         clock_skew_ms: int = 0,
         position_lever: object = None,
     ) -> None:
+        self.calls: list[str] = []
         self._account = {
             "available": "100",
             "usdtEquity": "100",
@@ -55,12 +57,15 @@ class Client:
         self._position_lever = POSITION_LEVER_ROWS if position_lever is None else position_lever
 
     async def get_account(self, symbol: str):
+        self.calls.append("account")
         return self._account
 
     async def get_single_position(self, symbol: str):
+        self.calls.append("position")
         return self._position
 
     async def get_contracts(self):
+        self.calls.append("contracts")
         return [
             {
                 "symbol": "BTCUSDT",
@@ -77,24 +82,29 @@ class Client:
         ]
 
     async def get_position_lever(self, symbol: str):
+        self.calls.append("position-lever")
         assert symbol == "BTCUSDT"
         return self._position_lever
 
     async def get_ticker(self, symbol: str):
+        self.calls.append("ticker")
         return {"lastPr": "60000"}
 
     async def get_clock_skew_ms(self) -> int:
+        self.calls.append("clock")
         return self._clock_skew_ms
 
 
 @pytest.mark.asyncio
 async def test_preflight_uses_documented_account_position_contract_and_price_reads() -> None:
-    snapshot = await AsyncBitgetVenue(Client()).preflight("BTCUSDT")
+    client = Client()
+    snapshot = await AsyncBitgetVenue(client).preflight("BTCUSDT")
 
     assert snapshot.available_balance == Decimal("100")
     assert snapshot.position is None
     assert snapshot.metadata.symbol == "BTCUSDT"
     assert snapshot.current_price == Decimal("60000")
+    assert client.calls == ["contracts", "account", "position", "clock", "position-lever", "ticker"]
 
 
 @pytest.mark.asyncio
@@ -228,3 +238,128 @@ async def test_preflight_rejects_nonfinite_or_nonpositive_market_price(price):
 
     with pytest.raises(ValueError, match="finite and positive"):
         await AsyncBitgetVenue(InvalidTickerClient()).preflight("BTCUSDT")
+
+
+@pytest.mark.asyncio
+async def test_absent_contract_rejected_before_account_reads_or_preparation() -> None:
+    class PreparingClient(Client):
+        async def set_margin_mode(self, symbol: str, margin_mode: str):
+            self.calls.append("set-margin-mode")
+            self._account["marginMode"] = margin_mode
+            return {"marginMode": margin_mode}
+
+    client = PreparingClient(margin_mode="crossed")
+    with pytest.raises(KeyError, match="unknown Bitget contract: FLOWUSDT"):
+        await AsyncBitgetVenue(client).preflight("FLOWUSDT")
+    assert client.calls == ["contracts"]
+    assert client._account["marginMode"] == "crossed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contracts",
+    [
+        None,
+        {},
+        {"code": "40099", "data": []},
+        "unavailable",
+        [None],
+        [{}],
+        [{"symbol": None}],
+        [{"symbol": " BTCUSDT"}],
+        [{"symbol": "BTCUSDT", "priceEndStep": "untrusted-metadata"}],
+    ],
+)
+async def test_malformed_contract_lookup_is_unavailable_before_account_reads(contracts) -> None:
+    class MalformedClient(Client):
+        async def get_contracts(self):
+            self.calls.append("contracts")
+            return contracts
+
+    client = MalformedClient(margin_mode="crossed")
+    with pytest.raises(BitgetApiError) as error:
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts"]
+    assert client._account["marginMode"] == "crossed"
+    assert "unknown Bitget contract" not in str(error.value)
+    assert "untrusted-metadata" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_contract_provider_failure_is_not_relabelled_unsupported() -> None:
+    failure = BitgetApiError("Bitget contracts unavailable", http_status=503)
+
+    class UnavailableClient(Client):
+        async def get_contracts(self):
+            self.calls.append("contracts")
+            raise failure
+
+    client = UnavailableClient(margin_mode="crossed")
+    with pytest.raises(BitgetApiError) as error:
+        await AsyncBitgetVenue(client).preflight("FLOWUSDT")
+    assert error.value is failure
+    assert client.calls == ["contracts"]
+
+
+@pytest.mark.asyncio
+async def test_empty_valid_contract_lookup_proves_absence_without_account_reads() -> None:
+    class EmptyClient(Client):
+        async def get_contracts(self):
+            self.calls.append("contracts")
+            return []
+
+    client = EmptyClient(margin_mode="crossed")
+    with pytest.raises(KeyError, match="unknown Bitget contract"):
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts"]
+
+
+@pytest.mark.asyncio
+async def test_supported_contract_still_prepares_and_verifies_isolated_margin_mode() -> None:
+    class PreparingClient(Client):
+        async def set_margin_mode(self, symbol: str, margin_mode: str):
+            self.calls.append("set-margin-mode")
+            self._account["marginMode"] = margin_mode
+            return {"marginMode": margin_mode}
+
+    client = PreparingClient(margin_mode="crossed")
+    snapshot = await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert snapshot.account.margin_mode == "isolated"
+    assert snapshot.metadata.mm_tiers
+    assert client.calls == [
+        "contracts",
+        "account",
+        "position",
+        "set-margin-mode",
+        "account",
+        "clock",
+        "position-lever",
+        "ticker",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skew_ms", [-30_000, 30_000])
+async def test_preflight_preserves_inclusive_clock_safety_boundary(skew_ms: int) -> None:
+    snapshot = await AsyncBitgetVenue(Client(clock_skew_ms=skew_ms)).preflight("BTCUSDT")
+    assert snapshot.metadata.symbol == "BTCUSDT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skew_ms", [-30_001, 30_001])
+async def test_preflight_blocks_real_clock_offset_past_boundary(skew_ms: int) -> None:
+    with pytest.raises(ValueError, match="clock skew exceeds"):
+        await AsyncBitgetVenue(Client(clock_skew_ms=skew_ms)).preflight("BTCUSDT")
+
+
+@pytest.mark.asyncio
+async def test_preflight_does_not_turn_unavailable_clock_into_zero() -> None:
+    class UnavailableClockClient(Client):
+        async def get_clock_skew_ms(self):
+            self.calls.append("clock")
+            raise BitgetApiError("Bitget clock sample unavailable")
+
+    client = UnavailableClockClient()
+    with pytest.raises(BitgetApiError, match="clock sample unavailable"):
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts", "account", "position", "clock"]

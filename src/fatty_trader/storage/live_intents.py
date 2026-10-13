@@ -20,6 +20,10 @@ from fatty_trader.exchanges.bitget.live import (
 _FILLED_STATES = {"filled", "reconciled"}
 
 
+class OwnedQuantityEvidenceError(ValueError):
+    """Durable ownership/fills cannot establish a safe remaining quantity."""
+
+
 class Cursor(Protocol):
     def execute(self, statement: str, params: tuple[Any, ...] = ()) -> object: ...
     def fetchone(self) -> Any: ...
@@ -262,15 +266,27 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             connection.rollback()
             raise
 
-    def remaining_owned_quantity(self, entry_root_oid: str) -> Decimal:
-        """Subtract only real fills of pre-bound owned exits; never edit entry fills."""
-        root = self.get(entry_root_oid)
-        if root is None or root.role != "ENTRY" or root.entry_leg == "limit":
-            raise ValueError("remaining quantity requires canonical entry root")
-        child = self.get(entry_root_oid + "-limit")
-        total = root.filled_qty + (child.filled_qty if child is not None else Decimal("0"))
+    def remaining_owned_quantity(
+        self, entry_root_oid: str, *, cursor: Cursor | None = None
+    ) -> Decimal:
+        """Read exact owned residual in the caller's transaction when supplied."""
+        if cursor is not None:
+            return self._remaining_owned_quantity(entry_root_oid, cursor)
         connection = self._connection_factory()
-        cursor = connection.cursor()
+        try:
+            return self._remaining_owned_quantity(entry_root_oid, connection.cursor())
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def _remaining_owned_quantity(self, entry_root_oid: str, cursor: Cursor) -> Decimal:
+        """Subtract only real fills of pre-bound owned exits; never edit entry fills."""
+        root = self._get_with_cursor(entry_root_oid, cursor)
+        if root is None or root.role != "ENTRY" or root.entry_leg == "limit":
+            raise OwnedQuantityEvidenceError("remaining quantity requires canonical entry root")
+        child = self._get_with_cursor(entry_root_oid + "-limit", cursor)
+        total = root.filled_qty + (child.filled_qty if child is not None else Decimal("0"))
         cursor.execute(
             """SELECT c.client_order_id,c.symbol,c.side,c.role,c.provider_order_id,
                       c.filled_qty,c.provider_fill_ids,
@@ -300,10 +316,12 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 or row[8] != len(ids)
                 or any(str(fid).startswith("status-derived:") for fid in ids)
             ):
-                raise ValueError("bound close lacks exact real provider fill evidence")
+                raise OwnedQuantityEvidenceError(
+                    "bound close lacks exact real provider fill evidence"
+                )
             closed += row[7]
         if closed > total:
-            raise ValueError("bound closes exceed owned entry fills")
+            raise OwnedQuantityEvidenceError("bound closes exceed owned entry fills")
         return total - closed
 
     def claim_protection(self, records: tuple[LiveIntentRecord, ...]) -> bool:
@@ -528,7 +546,14 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
 
     def get(self, client_oid: str) -> LiveIntentRecord | None:
         connection = self._connection_factory()
-        cursor = connection.cursor()
+        try:
+            return self._get_with_cursor(client_oid, connection.cursor())
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def _get_with_cursor(self, client_oid: str, cursor: Cursor) -> LiveIntentRecord | None:
         cursor.execute(
             """
             SELECT exchange, client_order_id, symbol, side, role, state,

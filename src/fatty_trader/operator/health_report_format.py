@@ -1,15 +1,8 @@
-"""Canonical health-report formatting, shared by the cron and Telegram /health.
+"""Pure Telegram HTML renderer for cron and on-demand health observations.
 
-This module is the SINGLE renderer for the Fatty health card. It was
-extracted verbatim from scripts/health_report.py so the 6-hourly cron and
-the on-demand /health slash command cannot drift apart.
-
-It is deliberately PURE: no database, no docker, no network. Callers supply
-already-loaded data. That is what makes it usable inside the operator-bot
-container, which has neither a docker socket nor host Codex credentials.
-
-Anything that performs I/O (loaders, probes, send_direct) must stay in
-scripts/health_report.py and must NOT be imported here.
+Core financial/ledger semantics are shared by loaders in operator.health.
+Host-only probes legitimately differ; cards are immutable point-in-time snapshots,
+not byte-identical observations collected at different times.
 """
 
 from __future__ import annotations
@@ -28,20 +21,16 @@ except ImportError:  # pragma: no cover - Python < 3.11
 
 
 def fmt_price(val: Any) -> str:
-    if val is None or val == "N/A":
-        return "N/A"
-    try:
-        d = Decimal(str(val))
-        return f"{d:.8f}".rstrip("0").rstrip(".")
-    except (InvalidOperation, TypeError, ValueError):
-        return str(val)
+    value = _decimal(val)
+    return f"{value:.8f}".rstrip("0").rstrip(".") if value is not None else "UNKNOWN"
 
 
 def _decimal(value: Any) -> Decimal | None:
     if value in (None, "", "N/A", "?"):
         return None
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
+        return parsed if parsed.is_finite() else None
     except (InvalidOperation, TypeError, ValueError):
         return None
 
@@ -49,7 +38,7 @@ def _decimal(value: Any) -> Decimal | None:
 def fmt_amount(value: Any) -> str:
     decimal = _decimal(value)
     if decimal is None:
-        return str(value) if value not in (None, "") else "N/A"
+        return "UNKNOWN"
     return f"{decimal:,.6f}".rstrip("0").rstrip(".") or "0"
 
 
@@ -61,26 +50,29 @@ def fmt_gap(mark: Any, level: Any) -> str:
     return f"{abs(mark_decimal - level_decimal) / abs(mark_decimal) * 100:.2f}%"
 
 
-def fallback_is_active(protection: dict[str, Any]) -> bool:
-    return bool(
-        protection.get("fallback")
-        or protection.get("sl_label") == "MON"
-        or protection.get("tp_label") == "MON"
-    )
+def fallback_is_registered(protection: dict[str, Any]) -> bool:
+    return bool(protection.get("fallback"))
 
 
 def protection_state(protection: dict[str, Any]) -> str:
-    if fallback_is_active(protection):
-        state = str(protection.get("fallback_state", "ACTIVE")).upper()
-        return f"FALLBACK {state}"
     if protection.get("has_sl") and protection.get("has_tp"):
-        return "NATIVE OK"
+        return "NATIVE REGISTERED · enforcement unprobed"
+    if fallback_is_registered(protection):
+        stop = _decimal(protection.get("fallback_sl"))
+        if stop is None or stop <= 0:
+            return "MISSING LOSS STOP · invalid/TP-only fallback"
+        state = str(protection.get("fallback_state", "UNKNOWN")).upper()
+        return f"FALLBACK {state} · registration only"
+    if protection.get("native_sl_id_reported"):
+        return "NATIVE ID REPORTED · stop level UNKNOWN"
     if protection.get("has_sl") or protection.get("has_tp"):
-        return "PARTIAL"
+        return "PARTIAL · enforcement unprobed"
+    if protection.get("fallback_read_status") == "UNKNOWN":
+        return "UNKNOWN · fallback read failed"
     return "MISSING"
 
 
-def _html(value: Any, default: str = "N/A", limit: int = 500) -> str:
+def _html(value: Any, default: str = "UNKNOWN", limit: int = 500) -> str:
     text = default if value is None or value == "" else str(value)
     return escape(text[:limit], quote=False)
 
@@ -90,6 +82,13 @@ def _count(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _known_count(value: Any) -> int | None:
+    parsed = _decimal(value)
+    if parsed is None or parsed < 0 or parsed != parsed.to_integral_value():
+        return None
+    return int(parsed)
 
 
 def _provider_summary(
@@ -102,11 +101,11 @@ def _provider_summary(
 
 
 def _reconciliation_summary(positions: list[dict[str, Any]] | None, metrics: dict[str, Any]) -> str:
-    provider_count = metrics.get("provider_positions", "UNKNOWN")
-    db_count = metrics.get("open_positions", "0")
-    if positions is None:
-        return "UNKNOWN · provider read failed"
-    if str(provider_count) == str(db_count):
+    provider_count = _known_count(metrics.get("provider_positions"))
+    db_count = _known_count(metrics.get("open_positions"))
+    if positions is None or provider_count is None or db_count is None:
+        return "UNKNOWN · provider or ledger read unavailable"
+    if provider_count == db_count:
         return f"OK · provider {provider_count} = DB {db_count}"
     return f"DRIFT · provider {provider_count} vs DB {db_count}"
 
@@ -115,12 +114,12 @@ def _position_range_state(position: dict[str, Any], protection: dict[str, Any]) 
     mark = _decimal(position.get("mark_price"))
     sl = (
         protection.get("fallback_sl")
-        if fallback_is_active(protection)
+        if fallback_is_registered(protection) and not protection.get("has_sl")
         else protection.get("native_sl")
     )
     tp = (
         protection.get("fallback_tp")
-        if fallback_is_active(protection)
+        if fallback_is_registered(protection) and not protection.get("has_tp")
         else protection.get("native_tp")
     )
     if isinstance(tp, str) and "," in tp:
@@ -148,12 +147,12 @@ def _position_risk_lines(position: dict[str, Any], protection: dict[str, Any]) -
     liquidation = position.get("liquidation_price")
     sl = (
         protection.get("fallback_sl")
-        if fallback_is_active(protection)
+        if fallback_is_registered(protection) and not protection.get("has_sl")
         else protection.get("native_sl")
     )
     tp = (
         protection.get("fallback_tp")
-        if fallback_is_active(protection)
+        if fallback_is_registered(protection) and not protection.get("has_tp")
         else protection.get("native_tp")
     )
     if isinstance(tp, str) and "," in tp:
@@ -170,18 +169,15 @@ def _position_risk_lines(position: dict[str, Any], protection: dict[str, Any]) -
 
 
 def fmt_pnl(val: Any) -> tuple[str, str]:
-    if val is None or val == "N/A":
-        return "➖", "N/A"
-    try:
-        d = Decimal(str(val))
-        s = f"{d:,.6f}".rstrip("0").rstrip(".")
-        if d > 0:
-            return "🟢", f"+{s}"
-        if d < 0:
-            return "🔴", s
-        return "➖", s
-    except (InvalidOperation, TypeError, ValueError):
-        return "➖", str(val)
+    value = _decimal(val)
+    if value is None:
+        return "➖", "UNKNOWN"
+    text = f"{value:,.6f}".rstrip("0").rstrip(".")
+    if value > 0:
+        return "🟢", f"+{text}"
+    if value < 0:
+        return "🔴", text
+    return "➖", text
 
 
 def margin_used(
@@ -202,14 +198,14 @@ def margin_used(
         _decimal(account.get("crossed_margin")),
     ]
     known = [value for value in account_values if value is not None]
-    return sum(known, Decimal("0")) if known else None
+    return sum(known, Decimal("0")) if len(known) == len(account_values) else None
 
 
 def _format_timestamp(iso_string: str) -> str:
     if not iso_string:
         return "?"
     try:
-        dt = datetime.fromisoformat(iso_string.replace(" ", "T").replace("+00", "+00:00"))
+        dt = datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
         jakarta_tz = timezone(timedelta(hours=7))
         return dt.astimezone(jakarta_tz).strftime("%d %b %Y, %H:%M WIB")
     except (TypeError, ValueError):
@@ -221,7 +217,7 @@ def format_report(
     pending_orders: list[Any] | None,
     sltp: dict[str, Any],
     pnl: dict[str, Any],
-    messages: list[Any],
+    messages: list[Any] | None,
     metrics: dict[str, Any],
     account: dict[str, Any],
     modes: dict[str, Any],
@@ -248,8 +244,7 @@ def format_report(
         or _count(services.get("healthy")) < _count(services.get("running"))
         or str(services.get("dispatcher_state", "UNKNOWN")).upper() != "RUNNING"
     )
-    codex_unhealthy = codex.get("status") in {"AUTH_FAILED", "N/A"}
-    latch_evidence = metrics.get("active_kill_switches", [])
+    latch_evidence = metrics.get("active_kill_switches", "UNKNOWN")
     active_latches = latch_evidence if isinstance(latch_evidence, list) else []
     kill_unhealthy = (
         not isinstance(latch_evidence, list)
@@ -263,8 +258,8 @@ def format_report(
         if (
             live_runtime
             and provider_known
+            and account.get("read_status") == "OK"
             and not service_unhealthy
-            and not codex_unhealthy
             and not kill_unhealthy
             and execution_ready
             and lifecycle == "READY"
@@ -275,8 +270,8 @@ def format_report(
     execution = {"1": "ENABLED", "0": "DISABLED"}.get(execution_raw, execution_raw)
     provider_count = len(positions) if positions is not None else "UNKNOWN"
     pending_count = len(pending_orders) if pending_orders is not None else "UNKNOWN"
-    db_position_count = metrics.get("open_positions", "0")
-    db_pending_count = metrics.get("pending_orders", "0")
+    db_position_count = metrics.get("open_positions", "UNKNOWN")
+    db_pending_count = metrics.get("pending_orders", "UNKNOWN")
     provider_summary = _provider_summary(positions, pending_orders)
     provider_reconciliation = _reconciliation_summary(
         positions, {**metrics, "provider_positions": provider_count}
@@ -294,10 +289,7 @@ def format_report(
         kill_display = "⚠️ UNKNOWN"
 
     if active_latches:
-        kill_display = "🔴 ACTIVE · " + "; ".join(
-            f"{latch.get('scope', 'UNKNOWN')}: {latch.get('reason', 'UNKNOWN')}"
-            for latch in active_latches
-        )
+        kill_display = f"🔴 ACTIVE · {len(active_latches)} durable latch(es)"
 
     if services.get("status") == "OK":
         service_line = (
@@ -318,7 +310,7 @@ def format_report(
 
     L = [
         f"📡 <b>Fatty Signal Relay</b>  <code>{health_title}</code>",
-        f"<i>{now}</i>",
+        f"<i>Rendered {now} · read-only point-in-time card</i>",
         "━━━━━━━━━━━━━━━━━━━━",
         "",
         f"<b>{overall}  SYSTEM</b>",
@@ -327,37 +319,83 @@ def format_report(
         f"Execution  {_html(execution)} · permission only, not fill evidence\n"
         f"Lifecycle  {_html(lifecycle)}\n"
         f"Dispatcher {_html(services.get('dispatcher_state', 'UNKNOWN'))}\n"
-        f"Host       fspmi-hostinger\n"
-        f"Services   {_html(service_line)}\n"
+        f"Host probes {_html(service_line)}\n"
+        + (
+            f"Reason     {_html(services.get('error'), limit=80)}\n"
+            if services.get("error")
+            else ""
+        )
+        + f"Services   {_html(service_line)}\n"
         f"Provider   {status_mark(provider_summary)} {_html(provider_summary)}\n"
         f"Reconcile  {status_mark(provider_reconciliation)} {_html(provider_reconciliation)}\n"
         f"Kill switch {_html(kill_display)}</pre>",
         "",
-        f"<b>🤖 CODEX QUOTA</b> <code>{_html(codex.get('status', 'N/A'))} · "
-        f"{_html(codex.get('plan', 'N/A'))}</code>",
-        "<pre>5h        "
-        f"{_html(codex.get('5h'))}\n"
-        f"7d        {_html(codex.get('7d'))}\n"
-        f"Reset     {_html(codex.get('reset'))}\n"
-        f"Updated   {_html(codex.get('refreshed'))}"
-        + (f"\nReason    {_html(codex.get('error'))}" if codex.get("error") else "")
-        + "</pre>",
         "",
-        f"<b>💰 ACCOUNT</b> <code>Bitget {_html(modes.get('venue_mode', 'UNKNOWN'))}</code>",
+        "<b>💰 ACCOUNT</b> <code>Bitget "
+        f"{_html(account.get('environment', modes.get('venue_mode', 'UNKNOWN')))}</code>",
     ]
 
-    if account:
-        account_icon, account_upnl = fmt_pnl(account.get("unrealized_pl"))
+    L.append(
+        f"<pre>Scope      {_html(account.get('product_type', 'UNKNOWN'))} · "
+        f"{_html(account.get('margin_coin', 'UNKNOWN'))}\n"
+        f"Source     {_html(account.get('source', 'UNKNOWN'), limit=100)}\n"
+        f"Observed   {_html(account.get('observed_at', 'UNKNOWN'), limit=40)}\n"
+        f"Read       {_html(account.get('read_status', 'UNKNOWN'))}</pre>"
+    )
+    if account and account.get("read_status") == "OK":
+        account_icon, account_upnl = fmt_pnl(account.get("unrealized_pl", "UNKNOWN"))
         L.append(
             "<pre>Equity     "
-            f"{_html(fmt_amount(account.get('equity')))} USDT\n"
-            f"Available  {_html(fmt_amount(account.get('available')))} USDT\n"
+            f"{_html(fmt_amount(account.get('equity', 'UNKNOWN')))} USDT\n"
+            f"Available  {_html(fmt_amount(account.get('available', 'UNKNOWN')))} USDT\n"
             f"Margin used {_html(fmt_amount(committed_margin))} USDT\n"
             f"Open uPnL   {account_icon} {_html(account_upnl)} USDT</pre>"
         )
     else:
-        L.append("<pre>UNKNOWN (provider account read failed)</pre>")
+        L.append(
+            "<pre>UNKNOWN · "
+            f"{_html(account.get('error', 'provider account read failed'), limit=80)}"
+            "</pre>"
+        )
+    L.extend(
+        [
+            "",
+            "<b>🛡 SAFETY EVIDENCE</b>",
+            f"<pre>Monitor    {_html(metrics.get('monitor_condition', 'UNKNOWN'), limit=80)}\n"
+            "Stream now "
+            f"{_html(metrics.get('stream_condition', 'UNKNOWN · not probed'), limit=80)}\n"
+            f"Recovery   {_html(metrics.get('recovery_readiness', 'UNKNOWN'), limit=90)}\n"
+            "Fallback gate "
+            f"{_html(metrics.get('fallback_mutations_enabled', 'UNKNOWN'), limit=16)}\n"
+            "Admission  Bitget/global/stream latches block entries; no release is performed.\n"
+            "Protection Registrations do not prove runtime enforcement.</pre>",
+        ]
+    )
+    for latch in active_latches:
+        L.append(
+            f"<pre>{_html(latch.get('scope', 'UNKNOWN'), limit=40)}: "
+            f"{_html(latch.get('reason', 'UNKNOWN'), limit=80)}\n"
+            f"Latched    {_html(latch.get('latched_at', 'UNKNOWN'), limit=40)}\n"
+            f"Updated    {_html(latch.get('updated_at', 'UNKNOWN'), limit=40)}\n"
+            f"Age        {_html(latch.get('age_seconds', 'UNKNOWN'), limit=24)} sec</pre>"
+        )
+    if not isinstance(latch_evidence, list):
+        L.append("<pre>Durable latches UNKNOWN · ledger read unavailable</pre>")
+    streams = metrics.get("stream_evidence")
+    if streams:
+        for evidence in streams[:1]:
+            L.append(
+                f"<pre>Stored stream {_html(evidence.get('symbol'), limit=24)} "
+                f"{_html(evidence.get('state'), limit=16)}\n"
+                f"Last event {_html(evidence.get('last_stream_at'), limit=40)}\n"
+                f"Recorded   {_html(evidence.get('updated_at'), limit=40)}</pre>"
+            )
+        if len(streams) > 1:
+            L.append(f"<i>{len(streams) - 1} more stored observations · use /protection.</i>")
+    else:
+        L.append("<pre>Stored stream evidence UNKNOWN · no observation loaded</pre>")
     L.append("")
+    detail_start = len(L)
 
     # ── Provider positions ─────────────────────────────────────────────
     L.append(f"<b>📈 OPEN POSITIONS</b> <code>PROVIDER · {provider_count}</code>")
@@ -373,14 +411,18 @@ def format_report(
             protection_label = protection_state(protection)
             protection_icon = (
                 "🟢"
-                if protection_label == "NATIVE OK"
+                if protection.get("has_sl") and protection.get("has_tp")
                 else "🟡"
-                if fallback_is_active(protection)
+                if fallback_is_registered(protection)
                 else "🔴"
             )
             native_sl = protection.get("native_sl") if protection.get("has_sl") else "MISSING"
             native_tp = protection.get("native_tp") if protection.get("has_tp") else "MISSING"
-            if fallback_is_active(protection):
+            if not protection.get("has_sl") and protection.get("native_sl_id_reported"):
+                native_sl = "ID REPORTED · price UNKNOWN"
+            if not protection.get("has_tp") and protection.get("native_tp_id_reported"):
+                native_tp = "ID REPORTED · price UNKNOWN"
+            if fallback_is_registered(protection):
                 fallback_state = _html(protection.get("fallback_state", "UNKNOWN"))
                 fallback_entry = _html(protection.get("fallback_entry"))
                 fallback_quantity = _html(protection.get("fallback_quantity"))
@@ -394,6 +436,13 @@ def format_report(
             else:
                 fallback_levels = "N/A"
                 fallback_line = "none"
+            if fallback_is_registered(protection) and (
+                str(metrics.get("fallback_mutations_enabled")) == "0"
+            ):
+                protection_label += " · CANNOT CLOSE (gated)"
+                protection_icon = "🔴"
+            if protection_label.startswith("MISSING"):
+                protection_icon = "🔴"
             position_lines = [
                 f"<b>{_html(symbol, limit=32)}</b>  <code>"
                 f"{_html(position.get('direction', '?'), limit=12)}</code>",
@@ -439,61 +488,67 @@ def format_report(
             L.append(f"<i>… {len(pending_orders) - 5} more provider orders not shown</i>")
     L.append("")
 
+    detail_end = len(L)
     # ── PnL ────────────────────────────────────────────────────────────
     L.append("<b>📊 PNL</b> <code>Bitget · realized + open</code>")
-    fill_count = str(pnl.get("fill_n", "0")) if pnl else "0"
-    if pnl and fill_count not in {"0", "N/A", ""}:
-        total_realized = _decimal(pnl.get("total_pnl")) or Decimal("0")
-        fees = _decimal(pnl.get("total_fees")) or Decimal("0")
-        net_realized = total_realized - fees
-        net_icon, net_value = fmt_pnl(net_realized)
-        if positions is None:
-            open_upnl = "UNKNOWN"
-        elif not positions:
-            open_upnl = "➖ 0"
-        else:
-            position_values: list[Decimal] = [
-                value
-                for value in (_decimal(p.get("unrealized_pl")) for p in positions)
-                if value is not None
-            ]
-            if position_values:
-                open_icon, open_value = fmt_pnl(sum(position_values, Decimal("0")))
-                open_upnl = f"{open_icon} {open_value}"
-            else:
-                open_upnl = "N/A"
-        L.append(
-            "<pre>Fills        "
-            f"{_html(fill_count)}\n"
-            f"Gross profit {_html(fmt_amount(pnl.get('gross_profit')))} USDT\n"
-            f"Gross loss   {_html(fmt_amount(pnl.get('gross_loss')))} USDT\n"
-            f"Fees paid    {_html(fmt_amount(fees))} USDT\n"
-            f"Net realized {net_icon} {_html(net_value)} USDT\n"
-            f"Open uPnL    {open_upnl} USDT</pre>"
-        )
+    fill_count = _known_count(pnl.get("fill_n")) if pnl else None
+    total_realized = _decimal(pnl.get("total_pnl")) if pnl else None
+    fees = _decimal(pnl.get("total_fees")) if pnl else None
+    shown_fees = fees if fill_count is not None and fees is not None else "UNKNOWN"
+    net_realized = (
+        total_realized - fees
+        if fill_count is not None and total_realized is not None and fees is not None
+        else "UNKNOWN"
+    )
+    net_icon, net_value = fmt_pnl(net_realized)
+    values = [_decimal(p.get("unrealized_pl")) for p in (positions or [])]
+    if positions is None or any(value is None for value in values):
+        open_upnl = "UNKNOWN"
     else:
-        L.append("<pre>0 fills · no realized PNL yet</pre>")
+        open_icon, open_value = fmt_pnl(sum((v for v in values if v is not None), Decimal("0")))
+        open_upnl = f"{open_icon} {open_value}"
+    L.append(
+        "<pre>Fills        "
+        f"{_html(fill_count if fill_count is not None else 'UNKNOWN')}\n"
+        f"Gross profit {_html(fmt_amount(pnl.get('gross_profit', 'UNKNOWN')))} USDT\n"
+        f"Gross loss   {_html(fmt_amount(pnl.get('gross_loss', 'UNKNOWN')))} USDT\n"
+        f"Fees paid    {_html(fmt_amount(shown_fees))} USDT\n"
+        f"Net realized {net_icon} {_html(net_value)} USDT\n"
+        f"Open uPnL    {open_upnl} USDT</pre>"
+    )
     L.append("")
 
     # ── Ledger and reconciliation ──────────────────────────────────────
     provider_pending_value = pending_count
-    position_recon_icon = "✅" if str(provider_count) == str(db_position_count) else "⚠️"
-    pending_recon_icon = "✅" if str(provider_pending_value) == str(db_pending_count) else "⚠️"
+    position_recon_icon = (
+        "✅"
+        if _known_count(provider_count) is not None
+        and _known_count(provider_count) == _known_count(db_position_count)
+        else "⚠️"
+    )
+    pending_recon_icon = (
+        "✅"
+        if _known_count(provider_pending_value) is not None
+        and _known_count(provider_pending_value) == _known_count(db_pending_count)
+        else "⚠️"
+    )
     L.append("<b>🗄 LEDGER &amp; RECONCILIATION</b>")
     L.append(
         "<pre>Messages       "
-        f"{_html(metrics.get('messages', '0'))}\n"
-        f"Signals        {_html(metrics.get('signals', '0'))}\n"
+        f"{_html(metrics.get('messages', 'UNKNOWN'))}\n"
+        f"Signals        {_html(metrics.get('signals', 'UNKNOWN'))}\n"
         f"Positions      DB {_html(db_position_count)} · "
         f"provider {_html(provider_count)} {position_recon_icon}\n"
         f"Pending orders DB {_html(db_pending_count)} · "
         f"provider {_html(provider_pending_value)} {pending_recon_icon}\n"
-        f"Orders total   {_html(metrics.get('total_orders', '0'))}\n"
-        f"Active intents {_html(metrics.get('active_intents', '0'))}\n"
-        f"Reservations    {_html(metrics.get('reservation_totals', '{}'))}\n"
-        f"Snapshot age    {_html(metrics.get('newest_balance_snapshot_age_seconds', 'N/A'))} sec\n"
-        f"Post-fill       {_html(metrics.get('latest_post_fill_reconciliation', 'N/A'))}\n"
-        f"Fallback mon.  {_html(metrics.get('fallback_positions', '0'))} active</pre>"
+        f"Orders total   {_html(metrics.get('total_orders', 'UNKNOWN'))}\n"
+        f"Active intents {_html(metrics.get('active_intents', 'UNKNOWN'))}\n"
+        f"Reservations   {_html(metrics.get('reservation_totals', 'UNKNOWN'))}\n"
+        f"Last admission balance evidence\n"
+        f"Captured       {_html(metrics.get('last_admission_captured_at', 'UNKNOWN'))}\n"
+        f"Age            {_html(metrics.get('last_admission_age_seconds', 'UNKNOWN'))} sec\n"
+        f"Post-fill      {_html(metrics.get('latest_post_fill_reconciliation', 'UNKNOWN'))}\n"
+        f"Fallback rows  {_html(metrics.get('fallback_positions', 'UNKNOWN'))} registered</pre>"
     )
     L.append("<i>Signals/analyzer output are not provider fills; triggers are not execution.</i>")
     L.append("")
@@ -513,18 +568,31 @@ def format_report(
         leverage_values = sorted({str(p.get("leverage", "?")) for p in positions})
         monitored = []
         missing = []
+        unknown_stops = []
         for position in positions:
             protection = sltp.get(position["symbol"], {})
-            if fallback_is_active(protection):
+            if protection.get("has_sl"):
+                continue
+            stop = _decimal(protection.get("fallback_sl"))
+            if fallback_is_registered(protection) and stop is not None and stop > 0:
                 monitored.append(position["symbol"])
-            elif not protection.get("has_sl"):
+            elif (
+                protection.get("native_sl_id_reported")
+                or protection.get("fallback_read_status") == "UNKNOWN"
+            ):
+                unknown_stops.append(position["symbol"])
+            else:
                 missing.append(position["symbol"])
         if missing:
             guard = f"🔴 MISSING {', '.join(missing)}"
+        elif unknown_stops:
+            guard = f"UNKNOWN loss-stop level/registration {', '.join(unknown_stops)}"
         elif monitored:
-            guard = f"🟡 MONITORED {', '.join(monitored)}"
+            guard = f"⚠️ FALLBACK REGISTERED {', '.join(monitored)} · enforcement UNKNOWN"
+            if str(metrics.get("fallback_mutations_enabled")) == "0":
+                guard += " · CANNOT CLOSE (gated)"
         else:
-            guard = "🟢 NATIVE OK"
+            guard = "NATIVE REGISTERED · enforcement unprobed"
         L.append(
             "<pre>Provider read  ✅ OK\n"
             f"Margin         {_html(', '.join(margin_modes))}\n"
@@ -551,20 +619,29 @@ def format_report(
         L.append(f"<b>🛰 LATEST SIGNAL</b> <code>#{msg_id}</code>")
         L.append(f"<i>Received {received}</i>")
         L.append(f"<pre>{_html(preview_text, '(empty)', limit=240)}</pre>")
+    elif messages is None:
+        L.append("<b>🛰 LATEST SIGNAL</b>\n<i>UNKNOWN · message read unavailable.</i>")
     else:
         L.append("<b>🛰 LATEST SIGNAL</b>\n<i>No source message stored yet.</i>")
-
-    report = "\n".join(L)
-    if len(report) > 3900:
-        # The normal position/order caps keep the report below Telegram's
-        # limit. If an unusually long value still exceeds it, omit the
-        # optional source preview while preserving valid HTML structure.
-        marker = "<b>🛰 LATEST SIGNAL</b>"
-        marker_index = report.find(marker)
-        if marker_index >= 0:
-            report = (
-                report[:marker_index]
-                + marker
-                + "\n<i>Source preview omitted to fit Telegram limit.</i>"
-            )
+    L.extend(
+        [
+            "",
+            f"<b>🤖 CODEX QUOTA</b> <code>{_html(codex.get('status', 'UNKNOWN'), limit=24)} · "
+            f"{_html(codex.get('plan', 'UNKNOWN'), limit=24)}</code>",
+            f"<pre>5h {_html(codex.get('5h'), limit=32)} · 7d {_html(codex.get('7d'), limit=32)}\n"
+            f"Reset   {_html(codex.get('reset'), limit=40)}\n"
+            f"Updated {_html(codex.get('refreshed'), limit=40)}\n"
+            f"Reason  {_html(codex.get('error', 'N/A'), limit=80)}</pre>",
+        ]
+    )
+    # Financial/safety summaries and the latest stored message take precedence over
+    # verbose position/order details. Bound optional sections as whole HTML blocks.
+    essentials = L[:detail_start] + L[detail_end:]
+    details = L[detail_start:detail_end]
+    report = "\n".join(essentials + details)
+    if len(report.encode("utf-16-le")) // 2 > 3900:
+        report = "\n".join(essentials) + (
+            f"\n<i>Position/order details omitted · provider {provider_count} positions, "
+            f"{pending_count} orders. Use /positions and /orders.</i>"
+        )
     return bounded_html(report)

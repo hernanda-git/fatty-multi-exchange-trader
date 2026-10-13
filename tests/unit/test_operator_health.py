@@ -1,15 +1,70 @@
-from __future__ import annotations
+"""Actual slash loader/renderer financial, freshness and safety boundaries."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from fatty_trader.operator.health import build_operator_health_report
+import pytest
+from test_health_truthfulness import Connection, Cursor, Gateway, report, snapshot
+
+from fatty_trader.operator.health import normalize_account_snapshot
+from fatty_trader.operator.health_report_format import format_report
+
+LATCH = {
+    "scope": "bitget-protection-stream",
+    "reason": "socket-not-connected",
+    "latched_at": "2026-10-12T06:08:00+00:00",
+    "updated_at": "2026-10-13T06:00:00+00:00",
+    "age_seconds": "86400",
+}
 
 
-class Gateway:
-    def get_account_snapshot(self) -> dict[str, str]:
-        return {"usdtEquity": "8.0", "available": "6.6"}
+class LoadedCursor(Cursor):
+    def fetchone(self):
+        if "canonical_signals" in self.sql:
+            return (440, 100, 0, 0, 30, 2, 1)
+        if "venue_kill_switches" in self.sql:
+            return ("INACTIVE", None, [LATCH])
+        if "bitget_margin_reservations" in self.sql:
+            return ({"reserved": 1, "unknown": 1},)
+        if "balance_snapshots" in self.sql:
+            return ("2026-10-01T07:11:20+00:00", Decimal("1025168.418400"))
+        if "bitget_post_fill_reconciliations" in self.sql:
+            return ("mismatch",)
+        if "FROM fills" in self.sql:
+            return (19, Decimal("-0.4"), Decimal("1.2"), Decimal("-1.6"), Decimal("0.03"))
+        return super().fetchone()
 
-    def get_positions(self) -> list[dict[str, object]]:
+    def fetchall(self):
+        if "FROM telegram_messages" in self.sql:
+            return [(16134, "2026-10-13T08:00:00+00:00", "$WLD latest <source> & update")]
+        if "fallback_protection" in self.sql:
+            return [
+                (
+                    "WLDUSDT",
+                    "SHORT",
+                    "0.3874",
+                    "0.3938",
+                    "[]",
+                    "80",
+                    "active",
+                    "epoch",
+                    "2026-10-12",
+                )
+            ]
+        if "bitget_protection_capabilities" in self.sql:
+            return [
+                ("WLDUSDT", "HEALTHY", "2026-10-13T08:00:00+00:00", "2026-10-13T08:01:00+00:00")
+            ]
+        return super().fetchall()
+
+
+class LoadedConnection(Connection):
+    def cursor(self):
+        return LoadedCursor()
+
+
+class PositionGateway(Gateway):
+    def get_positions(self):
         return [
             {
                 "symbol": "WLDUSDT",
@@ -26,165 +81,128 @@ class Gateway:
             }
         ]
 
-    def get_orders(self) -> list[dict[str, object]]:
-        return []
+
+def test_slash_loads_historical_financials_latest_message_and_admission_age():
+    data = snapshot(Gateway(), LoadedConnection)
+    text = format_report(**data)
+    assert data["pnl"]["fill_n"] == 19
+    assert data["pnl"]["total_fees"] == Decimal("0.03")
+    assert data["metrics"]["total_orders"] == 30
+    assert data["metrics"]["reservation_totals"] == {"reserved": 1, "unknown": 1}
+    assert data["metrics"]["latest_post_fill_reconciliation"] == "mismatch"
+    assert data["messages"][0]["msg_id"] == 16134
+    assert "Net realized 🔴 -0.43" in text
+    assert "Fees paid    0.03" in text
+    assert "Last admission balance evidence" in text
+    assert "2026-10-01T07:11:20+00:00" in text
+    assert data["account"]["observed_at"] != data["metrics"]["last_admission_captured_at"]
+    assert "Bitget authenticated GET" in text
+    assert "USDT-FUTURES · USDT" in text
+    assert "#16134" in text
+    assert "&lt;source&gt; &amp; update" in text
+    assert "Not probed in operator container" in text
 
 
-class Cursor:
-    def execute(self, sql: str) -> None:
-        self.sql = sql
-
-    def fetchone(self):
-        return (
-            42,
-            15,
-            0,
-            0,
-            0,
-            1,
-            True,
-            "historical-latch",
-            16134,
-            "2026-09-15 01:12:14+00",
-            "$WLD invalid",
-        )
-
-    def fetchall(self):
-        return [("WLDUSDT", "SHORT", "0.3874", "0.3938", "[]", "80", "active")]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return None
+def test_stored_healthy_stream_is_not_current_monitor_or_latch_release_evidence():
+    text = report(Gateway(), LoadedConnection)
+    assert "HEALTHY" in text
+    assert "Monitor    UNKNOWN" in text
+    assert "Recovery   UNKNOWN" in text
+    assert "DEGRADED" in text
+    assert "socket-not-connected" in text
+    assert LATCH["latched_at"] in text
+    assert LATCH["updated_at"] in text
+    assert "86400 sec" in text
+    assert "🟢 ONLINE" not in text
 
 
-class Connection:
-    def cursor(self):
-        return Cursor()
+@pytest.mark.parametrize(
+    "scope,reason",
+    [("global", "clock-skew-exceeded"), ("bitget", "new-fault"), ("new-safety-scope", "new-fault")],
+)
+def test_outside_recovery_whitelist_is_reported_refused(scope, reason):
+    class UnsafeCursor(LoadedCursor):
+        def fetchone(self):
+            if "venue_kill_switches" in self.sql:
+                return ("INACTIVE", None, [{**LATCH, "scope": scope, "reason": reason}])
+            return super().fetchone()
 
-    def __enter__(self):
-        return self
+    class UnsafeConnection(LoadedConnection):
+        def cursor(self):
+            return UnsafeCursor()
 
-    def __exit__(self, *_args):
-        return None
-
-
-def test_health_report_explains_drift_protection_and_kill_switch() -> None:
-    calls = iter([Connection(), Connection()])
-    report = build_operator_health_report(
-        Gateway(),
-        lambda: next(calls),
-        mode="LIVE",
-        venue_mode="LIVE",
-        execution_enabled=True,
-    )
-
-    assert "HEALTH" in report
-    assert "WLDUSDT" in report
-    assert "FALLBACK" in report
-    assert "Active blocks new dispatches" in report
-    assert "DRIFT" in report
-    assert "No order dibuat" not in report
+    assert "Recovery   REFUSED" in report(Gateway(), UnsafeConnection)
 
 
-class GatedCursor(Cursor):
-    """A fallback row exists while the fallback mutation gate is OFF."""
+@pytest.mark.parametrize("gate", ["1", "UNKNOWN"])
+def test_fallback_registration_does_not_prove_working_protection(gate):
+    text = report(PositionGateway(), LoadedConnection, fallback_mutations_enabled=gate)
+    assert "DRIFT" in text
+    assert "FALLBACK REGISTERED WLDUSDT" in text
+    assert "enforcement UNKNOWN" in text
+    assert "registered" in text
+    assert "can close" not in text
+    assert "No operator action needed" not in text
 
-    def fetchall(self):
-        return [("WLDUSDT", "SHORT", "0.3874", "0.3938", "[]", "80", "active")]
+
+def test_fallback_disabled_gate_is_distinct_from_missing_protection():
+    text = report(PositionGateway(), LoadedConnection, fallback_mutations_enabled="0")
+    assert "CANNOT CLOSE (gated)" in text
+    assert "MISSING WLDUSDT" not in text
+    missing = report(PositionGateway(), Connection, fallback_mutations_enabled="0")
+    assert "MISSING WLDUSDT" in missing
+    assert "CANNOT CLOSE" not in missing
 
 
-def _report(fallback_mutations_enabled: str, *, kill_active: bool = True) -> str:
-    calls = iter([Connection(), Connection()])
-    if not kill_active:
-
-        class InactiveCursor(Cursor):
-            def fetchone(self):
+def test_entry_latch_does_not_fabricate_shutdown_of_reduce_only_fallback():
+    class ActiveCursor(LoadedCursor):
+        def fetchone(self):
+            if "venue_kill_switches" in self.sql:
                 return (
-                    42,
-                    15,
-                    0,
-                    0,
-                    0,
-                    1,
-                    False,
-                    None,
-                    16134,
-                    "2026-09-15 01:12:14+00",
-                    "$WLD invalid",
+                    "ACTIVE",
+                    "clock-skew-exceeded",
+                    [{**LATCH, "scope": "bitget", "reason": "clock-skew-exceeded"}],
                 )
+            return super().fetchone()
 
-        class InactiveConnection(Connection):
-            def cursor(self):
-                return InactiveCursor()
+    class ActiveConnection(LoadedConnection):
+        def cursor(self):
+            return ActiveCursor()
 
-        calls = iter([InactiveConnection(), Connection()])
-    return build_operator_health_report(
-        Gateway(),
-        lambda: next(calls),
-        mode="LIVE",
-        venue_mode="LIVE",
-        execution_enabled=True,
-        fallback_mutations_enabled=fallback_mutations_enabled,
+    text = report(PositionGateway(), ActiveConnection, fallback_mutations_enabled="1")
+    assert "clock-skew-exceeded" in text
+    assert "FALLBACK REGISTERED WLDUSDT" in text
+    assert "enforcement UNKNOWN" in text
+    assert "CANNOT CLOSE (gated)" not in text
+
+
+@pytest.mark.parametrize("value", ["-1", "NaN", "Infinity", "bad", None])
+def test_account_normalization_preserves_invalid_as_unknown_and_signed_pnl(value):
+    observed = datetime(2026, 10, 13, tzinfo=UTC)
+    account = normalize_account_snapshot(
+        {
+            "accountEquity": value,
+            "available": value,
+            "unrealizedPL": "-0.123",
+            "api_key": "secret",
+            "uid": "private-account",
+            "raw": {"credentials": "hidden"},
+        },
+        environment="LIVE",
+        observed_at=observed,
     )
+    assert account["equity"] is None
+    assert account["available"] is None
+    assert account["unrealized_pl"] == "-0.123"
+    assert account["observed_at"] == observed.isoformat()
+    assert "uid" not in account
+    assert "secret" not in str(account)
 
 
-def test_fallback_row_with_mutation_gate_off_must_not_read_as_protected() -> None:
-    """A registered fallback that cannot mutate is NOT protection.
-
-    The fallback monitor returns early when the mutation gate is off, so the
-    SL/TP levels in the table are inert. Reporting "FALLBACK / active" next to
-    a 30x position implies an auto-close that will never fire.
-    """
-    report = _report("0")
-
-    assert "🟡 FALLBACK" not in report, (
-        "a fallback that cannot mutate must not be presented as protection"
+def test_successful_zero_balance_is_not_unknown():
+    account = normalize_account_snapshot(
+        {"usdtEquity": "0", "availableBalance": "0", "unrealizedPL": "0"}, environment="LIVE"
     )
-    # "CANNOT CLOSE" is the operator-critical fact and must be in the report;
-    # the gate's own name is already shown in the SYSTEM block, so do not
-    # assert a redundant copy of it here.
-    assert "CANNOT CLOSE" in report.upper()
-    assert "🔴 GATED OFF" in report
-
-
-def test_fallback_row_with_mutation_gate_on_reports_fallback() -> None:
-    """With the gate on, the registered fallback genuinely owns the levels."""
-    report = _report("1", kill_active=False)
-
-    assert "🟡 FALLBACK" in report
-    assert "Fallback   active" in report
-
-
-def test_active_kill_switch_blocks_fallback_mutation_even_when_gate_on() -> None:
-    report = _report("1")
-    assert "🔴 GATED OFF" in report
-    assert "CANNOT CLOSE" in report.upper()
-    assert "🟡 FALLBACK" not in report
-
-
-def test_unprotected_position_is_distinguishable_from_gated_fallback() -> None:
-    """A truly unprotected position must NOT say 'CANNOT CLOSE' either.
-
-    Otherwise the report collapses 'no protection at all' into 'protection
-    exists but is disabled', which is a different problem needing a different
-    response.
-    """
-
-    class NoFallbackCursor(Cursor):
-        def fetchall(self):
-            return []
-
-    calls = iter([Connection(), NoFallbackCursor()])
-    report = build_operator_health_report(
-        Gateway(),
-        lambda: next(calls),
-        mode="LIVE",
-        venue_mode="LIVE",
-        execution_enabled=True,
-        fallback_mutations_enabled="0",
-    )
-
-    assert "🔴 MISSING" in report
-    assert "CANNOT CLOSE" not in report.upper()
+    assert account["equity"] == "0"
+    assert account["available"] == "0"
+    assert account["read_status"] == "OK"

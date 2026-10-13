@@ -245,7 +245,6 @@ class PostgresBitgetMarginReservationRepository:
         Caller must attest a fresh authenticated full-symbol read (both hold sides),
         and resolve the close to this entry dispatch, not merely match a symbol.
         Fills must already be durably reconciled; this API never writes economics.
-        No existing operator/monitor caller currently supplies this evidence contract.
         """
         if (
             authenticated is not True
@@ -322,11 +321,6 @@ class PostgresBitgetMarginReservationRepository:
             binding = cursor.fetchone()
             if binding is None or str(binding[0]) != str(reservation_id):
                 return reject("close-intent-not-bound")
-            from fatty_trader.storage.live_intents import PostgresLiveIntentStore
-
-            remaining = PostgresLiveIntentStore(self._connection_factory).remaining_owned_quantity(
-                entry_client_order_id
-            )
             if (
                 entry[1] != symbol
                 or entry[3] != "ENTRY"
@@ -345,7 +339,6 @@ class PostgresBitgetMarginReservationRepository:
                     for q in (entry[6], close_intent[5], close_intent[6])
                 )
                 or close_intent[5] != close_intent[6]
-                or remaining != 0
             ):
                 return reject("close-intent-not-bound")
             cursor.execute(
@@ -391,6 +384,22 @@ class PostgresBitgetMarginReservationRepository:
                 ):
                     return reject("unverified-close-fills")
             if sum((r[3] for r in ledger), Decimal(0)) != close_intent[6]:
+                return reject("incomplete-close-fills")
+            # Compute all bound exits inside these ownership/intent/fill locks.
+            # Evidence contradictions reject capacity release; database failures
+            # still roll back and propagate rather than masquerading as a veto.
+            from fatty_trader.storage.live_intents import (
+                OwnedQuantityEvidenceError,
+                PostgresLiveIntentStore,
+            )
+
+            try:
+                remaining = PostgresLiveIntentStore(
+                    self._connection_factory
+                ).remaining_owned_quantity(entry_client_order_id, cursor=cursor)
+            except OwnedQuantityEvidenceError:
+                return reject("unverified-close-fills")
+            if remaining != 0:
                 return reject("incomplete-close-fills")
             # Row/intent/fill locks can also wait after the initial clock check.
             # Recheck immediately before releasing capacity, never transaction time.

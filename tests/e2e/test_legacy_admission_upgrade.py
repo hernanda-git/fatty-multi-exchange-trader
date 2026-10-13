@@ -70,8 +70,11 @@ def test_exact_legacy_binding_survives_upgrade(postgres_schema):
         before = evidence(c)
         apply_migrations(c.cursor())
         after = evidence(c)
-        assert before[0] == after[0]
         assert before[2] == after[2]
+        # Additive migrations may extend intent rows; historical financial and
+        # provider ownership evidence must remain unchanged.
+        for (old,), (row,) in zip(before[0], after[0], strict=True):
+            assert {key: row[key] for key in old} == old
         for (_,), (row,) in zip(before[1], after[1], strict=False):
             assert row["symbol"] is None
             assert row["legacy_binding_symbol"] == "HBARUSDT"

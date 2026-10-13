@@ -13,6 +13,8 @@ from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
 
 
 class FakeBitgetClient:
+    environment = "LIVE"
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
         self.position_rows: list[dict[str, Any]] = [
@@ -33,7 +35,13 @@ class FakeBitgetClient:
 
     async def get_account(self) -> dict[str, Any]:
         self.calls.append(("get_account", None))
-        return {"available": "99.5", "equity": "100", "apiKey": "must-not-leak"}
+        return {
+            "available": "99.5",
+            "accountEquity": "100",
+            "unrealizedPL": "-0.25",
+            "apiKey": "must-not-leak",
+            "uid": "private-account",
+        }
 
     async def get_all_positions(self) -> list[dict[str, Any]]:
         self.calls.append(("get_all_positions", None))
@@ -91,33 +99,29 @@ def test_read_only_methods_return_sanitized_provider_dtos() -> None:
 
     assert gateway.get_price("BTCUSDT") == Decimal("60001")
     assert gateway.get_balance() == Decimal("99.5")
-    assert gateway.get_positions() == [
-        {
-            "symbol": "BTCUSDT",
-            "side": "LONG",
-            "size": Decimal("0.01"),
-            "entry": Decimal("60000"),
-            "stop_loss": None,
-            "take_profit": None,
-            "mark": None,
-            "unrealized_pl": None,
-            "leverage": None,
-            "margin_mode": "isolated",
-            "liquidation_price": None,
-            "stop_loss_id": None,
-            "take_profit_id": None,
-        }
-    ]
-    assert gateway.get_orders() == [
-        {
-            "symbol": "BTCUSDT",
-            "order_id": "order-1",
-            "side": "BUY",
-            "price": Decimal("50000"),
-            "size": Decimal("0.01"),
-        }
-    ]
-    assert all("must-not-leak" not in str(value) for _, value in client.calls)
+    account = gateway.get_account_snapshot()
+    assert account["equity"] == "100"
+    assert account["available"] == "99.5"
+    assert account["unrealized_pl"] == "-0.25"
+    assert account["read_status"] == "OK"
+    assert account["environment"] == "LIVE"
+    assert account["product_type"] == "USDT-FUTURES"
+    assert account["margin_coin"] == "USDT"
+    assert account["observed_at"]
+    assert "private-account" not in str(account)
+    assert "must-not-leak" not in str(account)
+    positions = gateway.get_positions()
+    assert positions[0]["symbol"] == "BTCUSDT"
+    assert positions[0]["size"] == Decimal("0.01")
+    assert positions[0]["entry"] == Decimal("60000")
+    assert positions[0]["side"] == "LONG"
+    assert "must-not-leak" not in str(positions)
+    orders = gateway.get_orders()
+    assert orders[0]["order_id"] == "order-1"
+    assert orders[0]["side"] == "BUY"
+    assert orders[0]["size"] == Decimal("0.01")
+    assert "must-not-leak" not in str(orders)
+    assert all(name.startswith("get_") for name, _ in client.calls)
 
 
 def test_gateway_reuses_one_event_loop_and_closes_client_on_that_loop() -> None:
@@ -482,3 +486,38 @@ def test_tp1_half_policy_is_lot_safe_and_preserves_residual(quantity, expected) 
             expected
         )
     gateway.close()
+
+
+def test_position_financial_and_native_price_aliases_are_preserved() -> None:
+    gateway, client, _ = make_gateway()
+    client.position_rows[0].update(
+        {
+            "unrealizedPL": "-0.12",
+            "marginSize": "1.2034",
+            "markPrice": "59900",
+            "stopLoss": "58000",
+            "takeProfitPrice": "62000",
+        }
+    )
+    try:
+        position = gateway.get_positions()[0]
+        assert position["unrealized_pl"] == "-0.12"
+        assert position["margin_used"] == "1.2034"
+        assert position["mark"] == "59900"
+        assert position["stop_loss"] == Decimal("58000")
+        assert position["take_profit"] == Decimal("62000")
+        assert all(name.startswith("get_") for name, _ in client.calls)
+    finally:
+        gateway.close()
+
+
+@pytest.mark.parametrize("quantity", [None, "", "NaN", "Infinity", "-1"])
+def test_invalid_position_quantity_is_not_a_flat_provider_observation(quantity) -> None:
+    gateway, client, _ = make_gateway()
+    client.position_rows[0]["total"] = quantity
+    try:
+        with pytest.raises(ValueError):
+            gateway.get_positions()
+        assert all(name.startswith("get_") for name, _ in client.calls)
+    finally:
+        gateway.close()

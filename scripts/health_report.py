@@ -2,8 +2,8 @@
 # ruff: noqa: E501
 """Periodic health report for Fatty Bitget.
 
-Rich Telegram HTML report modeled after the original telegram_health_report.sh format.
-Runs on host, uses docker compose exec for DB + Bitget API access.
+Immutable six-hourly Telegram HTML snapshots, with host-only service/Codex probes.
+Core account/ledger meanings and rendering are shared with on-demand /health.
 """
 
 from __future__ import annotations
@@ -26,18 +26,24 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# The card renderer lives in the package so the Telegram /health slash
-# command produces byte-identical output. This script owns the I/O.
+# The renderer and core ledger loader are shared; host-only probes are not.
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+from fatty_trader.operator.health import (  # noqa: E402
+    ACCOUNT_SOURCE,
+    load_health_ledger,
+    load_health_protection,
+)
 from fatty_trader.operator.health_report_format import (  # noqa: E402
     fmt_price,
     format_report,
 )
 
-# ── Docker exec helpers (matches original shell script pattern) ──────────
+# ── Read-only Docker helpers ────────────────────────────────────────────
 
 
-def query_one(sql: str):
+def query_all(sql: str) -> list[tuple[Any, ...]]:
+    # JSON preserves newlines, pipes, nulls and numeric types in source messages/rows.
+    sql = sql.strip().rstrip(";")
     result = subprocess.run(
         [
             "docker",
@@ -51,60 +57,42 @@ def query_one(sql: str):
             "-d",
             "fatty_trader",
             "-At",
-            "-F",
-            "|",
+            "-v",
+            "ON_ERROR_STOP=1",
             "-c",
-            sql,
+            f"SELECT coalesce(json_agg(r), '[]'::json) FROM ({sql}) r",
         ],
         capture_output=True,
         text=True,
         cwd=str(PROJECT_ROOT),
+        timeout=30,
     )
     if result.returncode != 0:
-        return {}
-    line = result.stdout.strip()
-    if not line:
-        return {}
-    return {f"col{i}": v for i, v in enumerate(line.split("|"))}
+        raise RuntimeError("ledger read failed")
+    rows = json.loads(result.stdout, parse_float=Decimal)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("invalid ledger response")
+    return [tuple(row.values()) for row in rows]
 
 
-def query_all(sql: str):
-    result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "postgres",
-            "psql",
-            "-U",
-            "fatty_app",
-            "-d",
-            "fatty_trader",
-            "-At",
-            "-F",
-            "|",
-            "-c",
-            sql,
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-    )
-    if result.returncode != 0:
-        return []
-    return [line.split("|") for line in result.stdout.strip().split("\n") if line]
+def query_one(sql: str) -> tuple[Any, ...] | None:
+    rows = query_all(sql)
+    return rows[0] if rows else None
 
 
 def docker_exec_bitget(cmd: str) -> str:
     """Run a command inside the dispatcher-bitget container."""
-    result = subprocess.run(
-        ["docker", "compose", "exec", "-T", "dispatcher-bitget", "sh", "-lc", cmd],
-        capture_output=True,
-        text=True,
-        cwd=str(PROJECT_ROOT),
-    )
-    return result.stdout.strip()
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "exec", "-T", "dispatcher-bitget", "sh", "-lc", cmd],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 # ── Runtime ──────────────────────────────────────────────────────────────
@@ -114,7 +102,7 @@ def get_runtime_modes() -> dict:
     raw = docker_exec_bitget(
         'printf "%s|%s|%s" "$TRADER_MODE" "$BITGET_MODE" "$BITGET_EXECUTION_ENABLED"'
     )
-    parts = raw.split("|") if raw else ["UNKNOWN"] * 3
+    parts = [value.strip() or "UNKNOWN" for value in raw.split("|")] if raw else ["UNKNOWN"] * 3
     return {
         "mode": parts[0] if len(parts) > 0 else "UNKNOWN",
         "venue_mode": parts[1] if len(parts) > 1 else "UNKNOWN",
@@ -122,46 +110,24 @@ def get_runtime_modes() -> dict:
     }
 
 
-def get_current_price(symbol: str) -> Decimal | None:
-    try:
-        url = f"""https://api.bitget.com/api/v2/mix/market/ticker?symbol={
-            (symbol)
-        }&productType=USDT-FUTURES"""
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        return Decimal(data["data"][0]["lastPr"])
-    except Exception:
-        return None
-
-
 def get_account() -> dict:
-    raw = docker_exec_bitget("cd /app && . .venv/bin/activate && python3 scripts/_probe_account.py")
-    if not raw or "|" not in raw:
-        return {}
-    parts = raw.split("|")
-    if len(parts) >= 3:
-        return {
-            "equity": parts[0],
-            "available": parts[1],
-            "unrealized_pl": parts[2],
-            "locked": parts[3] if len(parts) > 3 else "N/A",
-            "isolated_margin": parts[4] if len(parts) > 4 else "N/A",
-            "crossed_margin": parts[5] if len(parts) > 5 else "N/A",
-            "margin_mode": parts[6] if len(parts) > 6 else "N/A",
-        }
-    return {}
-
-
-def get_single_position(symbol: str) -> list:
-    raw = docker_exec_bitget(
-        f"cd /app && . .venv/bin/activate && python3 scripts/_probe_position.py {symbol}"
-    )
-    if not raw:
-        return []
     try:
-        return json.loads(raw)
-    except Exception:
-        return []
+        raw = docker_exec_bitget(
+            "cd /app && . .venv/bin/activate && python3 scripts/_probe_account.py"
+        )
+        account = json.loads(raw)
+        if isinstance(account, dict) and account.get("read_status") == "OK":
+            return account
+    except (OSError, TypeError, ValueError):
+        pass
+    return {
+        "read_status": "UNKNOWN",
+        "error": "provider account read failed",
+        "source": ACCOUNT_SOURCE,
+        "observed_at": None,
+        "product_type": "USDT-FUTURES",
+        "margin_coin": "USDT",
+    }
 
 
 def load_provider_state() -> dict[str, Any] | None:
@@ -177,12 +143,9 @@ def load_provider_state() -> dict[str, Any] | None:
         return None
     if not isinstance(state, dict):
         return None
-    if not isinstance(state.get("positions"), list) or not isinstance(
-        state.get("open_orders"), list
-    ):
-        return None
-    if any(isinstance(value, dict) and "error_type" in value for value in state.values()):
-        return None
+    for name in ("positions", "open_orders"):
+        if not isinstance(state.get(name), list):
+            state[name] = None
     return state
 
 
@@ -191,7 +154,8 @@ def _provider_quantity(row: dict[str, Any]) -> Decimal | None:
         if key not in row:
             continue
         try:
-            return abs(Decimal(str(row[key] or "0")))
+            quantity = Decimal(str(row[key]))
+            return quantity if quantity.is_finite() and quantity >= 0 else None
         except (InvalidOperation, TypeError, ValueError):
             continue
     return None
@@ -199,29 +163,36 @@ def _provider_quantity(row: dict[str, Any]) -> Decimal | None:
 
 # ── Data ─────────────────────────────────────────────────────────────────
 
+_NOT_LOADED = object()
 
-def load_positions(provider_state: dict[str, Any] | None = None) -> list[dict] | None:
+
+def load_positions(provider_state: Any = _NOT_LOADED) -> list[dict] | None:
     """Build the open-position view from Bitget, enriching it with local metadata."""
-    state = provider_state if provider_state is not None else load_provider_state()
-    if state is None:
+    state = load_provider_state() if provider_state is _NOT_LOADED else provider_state
+    if state is None or not isinstance(state.get("positions"), list):
         return None
     provider_rows = state["positions"]
-    local_rows = query_all(
-        "SELECT p.exchange, p.symbol, p.direction, p.quantity::text, "
-        "p.protection_state, p.opened_at FROM positions p "
-        "WHERE p.closed_at IS NULL ORDER BY p.opened_at DESC"
-    )
+    try:
+        local_rows = query_all(
+            "SELECT p.exchange, p.symbol, p.direction, p.quantity::text, "
+            "p.protection_state, p.opened_at FROM positions p "
+            "WHERE p.exchange='bitget' AND p.closed_at IS NULL ORDER BY p.opened_at DESC"
+        )
+    except Exception:
+        local_rows = []
     local_by_symbol = {row[1].upper(): row for row in local_rows if len(row) > 1}
     positions: list[dict] = []
     for row in provider_rows:
         if not isinstance(row, dict):
-            continue
+            return None
         quantity = _provider_quantity(row)
-        if quantity is None or quantity <= 0:
+        if quantity is None:
+            return None
+        if quantity == 0:
             continue
         symbol = str(row.get("symbol") or "").upper()
-        if not symbol:
-            continue
+        if not symbol or str(row.get("holdSide", "")).lower() not in {"short", "long"}:
+            return None
         local = local_by_symbol.get(symbol)
         positions.append(
             {
@@ -246,12 +217,20 @@ def load_positions(provider_state: dict[str, Any] | None = None) -> list[dict] |
     return positions
 
 
-def load_pending_orders(provider_state: dict[str, Any] | None = None) -> list[dict] | None:
+def load_pending_orders(provider_state: Any = _NOT_LOADED) -> list[dict] | None:
     """Return provider pending orders; None means the provider read failed."""
-    state = provider_state if provider_state is not None else load_provider_state()
-    if state is None:
+    state = load_provider_state() if provider_state is _NOT_LOADED else provider_state
+    if state is None or not isinstance(state.get("open_orders"), list):
         return None
     orders = state["open_orders"]
+    for row in orders:
+        if (
+            not isinstance(row, dict)
+            or not row.get("symbol")
+            or str(row.get("side", "")).upper() not in {"BUY", "SELL"}
+            or _provider_quantity(row) is None
+        ):
+            return None
     return [
         {
             "exchange": "bitget",
@@ -263,142 +242,34 @@ def load_pending_orders(provider_state: dict[str, Any] | None = None) -> list[di
             "state": str(row.get("status", row.get("state", "?"))).upper(),
         }
         for row in orders
-        if isinstance(row, dict)
     ]
 
 
-def load_sltp_status(provider_state: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-    """Report native protection versus bot-managed fallback protection."""
-    statuses: dict[str, dict[str, Any]] = {}
-    if provider_state is not None:
-        for row in provider_state.get("positions", []):
-            if not isinstance(row, dict) or (_provider_quantity(row) or Decimal("0")) <= 0:
-                continue
-            symbol = str(row.get("symbol", "")).upper()
-            if not symbol:
-                continue
-            native_sl_id = str(row.get("stopLossId") or "")
-            native_tp_id = str(row.get("takeProfitId") or "")
-            native_sl_value = row.get("stopLoss") or row.get("stopLossPrice")
-            native_tp_value = row.get("takeProfit") or row.get("takeProfitPrice")
-            statuses[symbol] = {
-                "has_sl": bool(native_sl_id or native_sl_value),
-                "has_tp": bool(native_tp_id or native_tp_value),
-                "sl_label": "OK" if (native_sl_id or native_sl_value) else "MISS",
-                "tp_label": "OK" if (native_tp_id or native_tp_value) else "MISS",
-                "native_sl": fmt_price(native_sl_value)
-                if native_sl_value
-                else (f"id:{native_sl_id}" if native_sl_id else "N/A"),
-                "native_tp": fmt_price(native_tp_value)
-                if native_tp_value
-                else (f"id:{native_tp_id}" if native_tp_id else "N/A"),
-            }
-    fallback_rows = query_all(
-        "SELECT symbol, direction, entry_price::text, stop_loss::text, "
-        "take_profits::text, quantity::text, state, position_key, updated_at::text "
-        "FROM fallback_protection "
-        "WHERE exchange = 'bitget' AND state IN ('active', 'closing') "
-        "ORDER BY updated_at DESC"
-    )
-    for row in fallback_rows:
-        if not row:
-            continue
-        symbol = str(row[0]).upper()
-        status = statuses.setdefault(symbol, {"has_sl": False, "has_tp": False})
-        take_profits: list[str] = []
-        if len(row) > 4 and row[4]:
-            try:
-                raw_tps = json.loads(row[4])
-                if isinstance(raw_tps, list):
-                    take_profits = [fmt_price(value) for value in raw_tps]
-            except (TypeError, ValueError, InvalidOperation):
-                take_profits = [str(row[4])]
-        status.update(
-            {
-                "fallback": True,
-                "fallback_direction": str(row[1]).upper() if len(row) > 1 else "N/A",
-                "fallback_entry": row[2] if len(row) > 2 else "N/A",
-                "fallback_sl": row[3] if len(row) > 3 else "N/A",
-                "fallback_tp": ", ".join(take_profits) if take_profits else "N/A",
-                "fallback_quantity": row[5] if len(row) > 5 else "N/A",
-                "fallback_state": str(row[6]).upper() if len(row) > 6 else "UNKNOWN",
-                "fallback_position_key": row[7] if len(row) > 7 else "N/A",
-                "fallback_updated_at": row[8] if len(row) > 8 else "N/A",
-            }
-        )
-        if not status.get("has_sl"):
-            status["sl_label"] = "MON"
-        if not status.get("has_tp"):
-            status["tp_label"] = "MON"
-    return statuses
-
-
-def load_pnl() -> dict:
-    row = query_one(
-        "SELECT count(*)::text, "
-        "coalesce(sum(realized_pnl), 0)::text, "
-        "coalesce(sum(CASE WHEN realized_pnl > 0 THEN realized_pnl ELSE 0 END), 0)::text, "
-        "coalesce(sum(CASE WHEN realized_pnl < 0 THEN realized_pnl ELSE 0 END), 0)::text, "
-        "coalesce(sum(fee), 0)::text "
-        "FROM fills WHERE exchange = 'bitget'"
-    )
-    if not row:
-        return {}
-    return {
-        "fill_n": row.get("col0", "0"),
-        "total_pnl": row.get("col1", "0"),
-        "gross_profit": row.get("col2", "0"),
-        "gross_loss": row.get("col3", "0"),
-        "total_fees": row.get("col4", "0"),
-    }
-
-
-def load_latest_messages(n: int = 1) -> list[dict]:
-    raw = query_all(
-        f"SELECT message_id::text, received_at, "
-        f"LEFT(replace(replace(raw_text, chr(13), ' '), chr(10), ' '), 500) "
-        f"FROM telegram_messages ORDER BY received_at DESC, message_id DESC LIMIT {n}"
-    )
-    return [{"msg_id": r[0], "received_at": r[1], "preview": r[2]} for r in raw]
-
-
-def load_db_metrics() -> dict:
-    row = query_one(
-        "SELECT "
-        "(SELECT count(*)::text FROM telegram_messages), "
-        "(SELECT count(*)::text FROM canonical_signals), "
-        "(SELECT count(*)::text FROM positions WHERE closed_at IS NULL), "
-        "(SELECT count(*)::text FROM orders "
-        "WHERE state NOT IN ('FILLED','CANCELLED','REJECTED','CLOSED')), "
-        "(SELECT count(*)::text FROM orders), "
-        "(SELECT count(*)::text FROM live_order_intents WHERE exchange = 'bitget' "
-        " AND state NOT IN ('filled','rejected','cancelled','reconciled')), "
-        "(SELECT count(*)::text FROM fallback_protection WHERE exchange = 'bitget' "
-        " AND state IN ('active','closing')), "
-        "(SELECT CASE WHEN active THEN 'ACTIVE' "
-        " WHEN reason LIKE 'released:%' THEN 'RELEASED' ELSE 'INACTIVE' END "
-        " FROM venue_kill_switches WHERE scope = 'bitget'), "
-        "(SELECT COALESCE(json_object_agg(state, count), '{}'::json) FROM (SELECT state, count(*) FROM bitget_margin_reservations WHERE exchange = 'bitget' GROUP BY state) r), "
-        "(SELECT EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - max(captured_at)))::text FROM balance_snapshots WHERE exchange = 'bitget'), "
-        "(SELECT status FROM bitget_post_fill_reconciliations WHERE exchange = 'bitget' ORDER BY created_at DESC LIMIT 1), "
-        "(SELECT coalesce(json_agg(json_build_object('scope', scope, 'reason', reason) "
-        "ORDER BY scope), '[]'::json) FROM venue_kill_switches "
-        "WHERE active AND scope IN ('global', 'bitget', 'bitget-protection-stream'))"
-    )
-    return {
-        "messages": row.get("col0", "0"),
-        "signals": row.get("col1", "0"),
-        "open_positions": row.get("col2", "0"),
-        "pending_orders": row.get("col3", "0"),
-        "total_orders": row.get("col4", "0"),
-        "active_intents": row.get("col5", "0"),
-        "fallback_positions": row.get("col6", "0"),
-        "kill_switch": row.get("col7", "UNKNOWN"),
-        "active_kill_switches": json.loads(row.get("col11", "[]")),
-        "reservation_totals": row.get("col8", "{}"),
-        "newest_balance_snapshot_age_seconds": row.get("col9", "N/A"),
-        "latest_post_fill_reconciliation": row.get("col10", "N/A"),
-    }
+def load_sltp_status(
+    provider_state: dict[str, Any] | None,
+    fallback_rows: Any,
+) -> dict[str, dict[str, Any]]:
+    """Use shared registration semantics, without claiming fallback enforcement."""
+    positions = [
+        {
+            "symbol": row["symbol"],
+            "stop_loss": row.get("stopLossTriggerPrice")
+            or row.get("presetStopLossPrice")
+            or row.get("stopLoss")
+            or row.get("stopLossPrice"),
+            "take_profit": row.get("stopSurplusTriggerPrice")
+            or row.get("presetStopSurplusPrice")
+            or row.get("takeProfit")
+            or row.get("takeProfitPrice"),
+            "stop_loss_id": row.get("stopLossId"),
+            "take_profit_id": row.get("takeProfitId"),
+        }
+        for row in ((provider_state or {}).get("positions") or [])
+        if isinstance(row, dict)
+        and row.get("symbol")
+        and (_provider_quantity(row) or Decimal("0")) > 0
+    ]
+    return load_health_protection(positions, fallback_rows)
 
 
 def get_service_status() -> dict[str, int | str]:
@@ -509,7 +380,7 @@ def get_service_status() -> dict[str, int | str]:
 
 
 def get_codex_usage() -> dict:
-    """Fetch Codex usage from ChatGPT API (matching original telegram_health_report.sh logic)."""
+    """Fetch the host Codex quota; authentication failure is independent of Bitget."""
     cache_path = Path.home() / ".cache" / "fatty" / "codex_usage.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -645,33 +516,37 @@ def send_direct(html: str) -> bool:
         return False
 
 
-if __name__ == "__main__":
+def load_report_data() -> dict[str, Any]:
+    """Collect an immutable read-only card without Telegram delivery."""
     modes = get_runtime_modes()
-    account = get_account()
+    ledger = load_health_ledger(query_one, query_all, venue_mode=modes["venue_mode"])
     provider_state = load_provider_state()
     positions = load_positions(provider_state)
     pending = load_pending_orders(provider_state)
-    sltp = load_sltp_status(provider_state)
-    pnl = load_pnl()
-    messages = load_latest_messages(1)
-    metrics = load_db_metrics()
-    metrics["provider_positions"] = "UNKNOWN" if positions is None else str(len(positions))
-    metrics["provider_pending_orders"] = "UNKNOWN" if pending is None else str(len(pending))
-    codex = get_codex_usage()
-    services = get_service_status()
+    try:
+        codex = get_codex_usage()
+    except Exception as exc:
+        codex = {"status": "UNKNOWN", "error": type(exc).__name__}
+    try:
+        services = get_service_status()
+    except Exception as exc:
+        services = {"status": "UNKNOWN", "error": type(exc).__name__}
+    return {
+        "positions": positions,
+        "pending_orders": pending,
+        "sltp": load_sltp_status(provider_state, ledger["fallback_rows"]),
+        "pnl": ledger["pnl"],
+        "messages": ledger["messages"],
+        "metrics": ledger["metrics"],
+        "account": get_account(),
+        "modes": modes,
+        "codex": codex,
+        "services": services,
+    }
 
-    report = format_report(
-        positions,
-        pending,
-        sltp,
-        pnl,
-        messages,
-        metrics,
-        account,
-        modes,
-        codex,
-        services,
-    )
+
+if __name__ == "__main__":
+    report = format_report(**load_report_data())
     print(report)
     print("\n---")
 

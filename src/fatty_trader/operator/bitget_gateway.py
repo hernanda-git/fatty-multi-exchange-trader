@@ -22,6 +22,7 @@ from fatty_trader.exchanges.bitget.reconciliation_live import (
     confirm_native_protection,
 )
 from fatty_trader.execution.protection import ProtectionState
+from fatty_trader.operator.health import normalize_account_snapshot
 from fatty_trader.risk.sizing import round_price_to_tick, round_qty_to_step
 
 
@@ -159,7 +160,9 @@ class BitgetOperatorGateway:
         payload = self._run(self._client.get_account())
         if not isinstance(payload, Mapping):
             raise ValueError("Bitget account response is invalid")
-        return dict(payload)
+        return normalize_account_snapshot(
+            payload, environment=str(getattr(self._client, "environment", "UNKNOWN"))
+        )
 
     def get_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
         payload = self._run(self._client.get_all_positions())
@@ -169,8 +172,10 @@ class BitgetOperatorGateway:
             row_symbol = str(row.get("symbol", "")).upper()
             if expected_symbol is not None and row_symbol != expected_symbol:
                 continue
-            size = _decimal(row.get("total", row.get("size", "0")), "position size")
-            if size <= 0:
+            size = _decimal(row.get("total", row.get("size")), "position size")
+            if not size.is_finite() or size < 0 or not row_symbol:
+                raise ValueError("Bitget position quantity/symbol is invalid")
+            if size == 0:
                 continue
             hold_side = str(row.get("holdSide", row.get("side", ""))).lower()
             if hold_side not in {"long", "short"}:
@@ -184,17 +189,24 @@ class BitgetOperatorGateway:
                         row.get("openPriceAvg", row.get("entryPrice", "0")), "position entry"
                     ),
                     "stop_loss": _optional_decimal(
-                        row.get("stopLossTriggerPrice", row.get("presetStopLossPrice")),
+                        row.get("stopLossTriggerPrice")
+                        or row.get("presetStopLossPrice")
+                        or row.get("stopLoss")
+                        or row.get("stopLossPrice"),
                         "position stop loss",
                     ),
                     "take_profit": _optional_decimal(
-                        row.get("stopSurplusTriggerPrice", row.get("presetStopSurplusPrice")),
+                        row.get("stopSurplusTriggerPrice")
+                        or row.get("presetStopSurplusPrice")
+                        or row.get("takeProfit")
+                        or row.get("takeProfitPrice"),
                         "position take profit",
                     ),
                     "mark": row.get("markPrice"),
                     "unrealized_pl": row.get("unrealizedPL"),
                     "leverage": row.get("leverage"),
                     "margin_mode": row.get("marginMode"),
+                    "margin_used": row.get("marginSize", row.get("margin")),
                     "liquidation_price": row.get("liquidationPrice"),
                     "stop_loss_id": row.get("stopLossId"),
                     "take_profit_id": row.get("takeProfitId"),
@@ -216,6 +228,8 @@ class BitgetOperatorGateway:
                     "side": side,
                     "price": _decimal(row.get("price", "0"), "order price"),
                     "size": _decimal(row.get("size", "0"), "order size"),
+                    "role": str(row.get("role", row.get("orderType", "ORDER"))).upper(),
+                    "state": str(row.get("status", row.get("state", "UNKNOWN"))).upper(),
                 }
             )
         return orders

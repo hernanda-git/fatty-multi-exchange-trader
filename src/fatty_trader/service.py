@@ -554,6 +554,9 @@ def _bitget_dispatch_preflight(
         source_time = getattr(dispatch, "source_received_at", None)
         recent_window = int(environ.get("BITGET_JUST_DEPARTED_WINDOW_SECONDS", "60"))
         late_threshold = Decimal(environ.get("BITGET_LATE_ENTRY_THRESHOLD_PCT", "0.005"))
+        # Keep routing and sizing on one observation; later reads must not turn
+        # a split-sized total into a full-market quantity with different limits.
+        route_observed_at = datetime.now(UTC)
 
         def routed(quantity: Decimal) -> EntryRoute:
             if source_time is None:
@@ -566,6 +569,7 @@ def _bitget_dispatch_preflight(
                 late_threshold_pct=late_threshold,
                 source_received_at=source_time,
                 recent_window_seconds=recent_window,
+                now=route_observed_at,
             )
 
         split = routed(Decimal("4")).limit_quantity > 0
@@ -614,6 +618,8 @@ def _bitget_dispatch_preflight(
                 direction=Direction(dispatch.direction),
                 active_positions=active_positions,
                 stop_loss=planned_stop,
+                split_market_price=snapshot.current_price if split else None,
+                split_limit_price=normalized_entry if split else None,
             )
         )
         if (
@@ -626,9 +632,13 @@ def _bitget_dispatch_preflight(
             raise ValueError(f"Bitget live sizing rejected: {decision.reason}")
         entry_route = routed(decision.quantity)
         if entry_route.limit_quantity > 0:
-            for quantity, price in (
-                (entry_route.market_quantity, snapshot.current_price),
-                (entry_route.limit_quantity, normalized_entry),
+            for quantity, price, maximum in (
+                (
+                    entry_route.market_quantity,
+                    snapshot.current_price,
+                    metadata.max_market_order_qty,
+                ),
+                (entry_route.limit_quantity, normalized_entry, metadata.max_order_qty),
             ):
                 if quantity % metadata.size_step != 0:
                     raise ValueError(
@@ -638,6 +648,8 @@ def _bitget_dispatch_preflight(
                     raise ValueError("Bitget split rejected: child quantity below venue minimum")
                 if quantity * price * metadata.contract_value < metadata.min_notional:
                     raise ValueError("Bitget split rejected: child notional below venue minimum")
+                if maximum is not None and quantity > maximum:
+                    raise ValueError("Bitget split rejected: child quantity above venue maximum")
         client_order_id = BitgetDispatchExecution.client_oid(dispatch)
         admission = reservation_repository.reserve(
             exchange="bitget",
@@ -1264,6 +1276,9 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
                 mode=environ.get("TRADER_MODE", "DEMO"),
                 venue_mode=mode,
                 execution_enabled=environ.get("BITGET_EXECUTION_ENABLED", "0") == "1",
+                fallback_mutations_enabled=environ.get(
+                    "BITGET_FALLBACK_MUTATIONS_ENABLED", "UNKNOWN"
+                ),
             )
         ),
         diagnostic_reader=lambda kind: build_operator_diagnostic(kind, gateway, psycopg.connect),
@@ -1298,22 +1313,20 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     """Execute durable source-management updates (TP1 booked, SL to entry, close)."""
     import psycopg
 
-    from fatty_trader.exchanges.bitget.client import BitgetRestClient
     from fatty_trader.execution.source_management import SourceManagementExecutor
     from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
     from fatty_trader.storage.source_management import PostgresSourceManagementStore
 
     mode = environ.get("BITGET_MODE", "DEMO").upper()
-    client = BitgetRestClient(
-        environ["BITGET_API_KEY"],
-        environ["BITGET_API_SECRET"],
-        environ["BITGET_API_PASSPHRASE"],
-        mode=mode,
-    )
+    runtime = build_bitget_execution_runtime(environ)
+    if runtime is None:
+        raise ValueError("source-management requires the enabled owned-entry execution graph")
+    client = runtime.client
     gateway = BitgetOperatorGateway(
         cast(Any, client),
         PostgresLiveIntentStore(psycopg.connect),
+        entry_execution=cast(Any, runtime.execution),
     )
     mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
     if mutations_raw not in {"0", "1"}:

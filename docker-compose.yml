@@ -356,6 +356,9 @@ services:
       BITGET_MODE: ${BITGET_MODE:-LIVE}
       FATTY_PRODUCTION_LIVE_ONLY: "1"
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-1}
+      # Owned-entry cancellation uses the same gated execution factory; no entry
+      # admission is invoked by source management and the fixed cap stays intact.
+      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
       BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
       BITGET_CANARY_MAX_ORDERS: ${BITGET_CANARY_MAX_ORDERS:-5}

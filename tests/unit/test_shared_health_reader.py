@@ -1,51 +1,11 @@
 """Execute the reader contract intended for service.py, with offline loaders."""
 
-from datetime import UTC
-
 from test_health_truthfulness import Connection, FailedGateway, Gateway
 
 from fatty_trader.operator import health
-from fatty_trader.operator import health_report_format as fmt
-from fatty_trader.operator.live_commands import OperatorCommandService
 
 
-def test_service_reader_passes_same_snapshot_to_cron_formatter(monkeypatch):
-    from datetime import datetime
-
-    class FixedClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return datetime(2026, 1, 1, tzinfo=UTC).astimezone(tz)
-
-    monkeypatch.setattr(fmt, "datetime", FixedClock)
-    snapshot = dict(
-        positions=[],
-        pending_orders=[],
-        sltp={},
-        pnl={},
-        messages=[],
-        metrics={"open_positions": 0},
-        account={"equity": "100"},
-        modes={"mode": "DEMO"},
-        codex={},
-        services={},
-    )
-    calls = []
-    real_formatter = fmt.format_report
-
-    def render(**data):
-        calls.append(data)
-        return real_formatter(**data)
-
-    monkeypatch.setattr(fmt, "format_report", render)
-    reader = health.create_shared_health_reader(lambda: snapshot)
-    service = OperatorCommandService(Gateway(), operator_id=42, health_reader=reader)
-    actual = service._on_health()
-    assert calls == [snapshot]
-    assert actual == real_formatter(**snapshot)
-
-
-def test_shared_loader_preserves_unknown_provider_and_database(monkeypatch):
+def test_shared_loader_preserves_unknown_provider_and_database():
     snapshot = health.load_operator_health_snapshot(
         FailedGateway(), Connection, mode="DEMO", venue_mode="DEMO", execution_enabled=False
     )
@@ -82,7 +42,7 @@ def test_shared_loader_maps_tp_only_as_missing_loss_stop():
     text = health.create_shared_health_reader(lambda: snapshot)()
     assert "SL MISSING" in text
     assert "🔴 MISSING BTCUSDT" in text
-    assert "🟢 NATIVE OK" not in text
+    assert "NATIVE REGISTERED" not in text
 
 
 def test_shared_loader_keeps_order_read_failure_unknown():
@@ -124,4 +84,29 @@ def test_shared_loader_maps_valid_native_stop():
     )
     assert snapshot["sltp"]["BTCUSDT"]["has_sl"] is True
     text = health.create_shared_health_reader(lambda: snapshot)()
-    assert "🟢 NATIVE OK" in text
+    assert "NATIVE REGISTERED" in text
+
+
+def test_reported_native_stop_id_does_not_fabricate_a_verified_stop_level():
+    class IdGateway(Gateway):
+        def get_positions(self):
+            return [
+                {
+                    "symbol": "BTCUSDT",
+                    "side": "LONG",
+                    "size": "1",
+                    "stop_loss": None,
+                    "stop_loss_id": "native-plan-id",
+                    "take_profit": None,
+                }
+            ]
+
+    data = health.load_operator_health_snapshot(
+        IdGateway(), Connection, mode="LIVE", venue_mode="LIVE", execution_enabled=True
+    )
+    assert data["sltp"]["BTCUSDT"]["has_sl"] is False
+    assert data["sltp"]["BTCUSDT"]["native_sl_id_reported"] is True
+    text = health.create_shared_health_reader(lambda: data)()
+    assert "UNKNOWN loss-stop level/registration BTCUSDT" in text
+    assert "MISSING BTCUSDT" not in text
+    assert "NATIVE REGISTERED" not in text

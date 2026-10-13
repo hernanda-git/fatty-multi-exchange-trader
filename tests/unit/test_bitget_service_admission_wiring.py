@@ -362,3 +362,102 @@ async def test_stop_rounded_across_liquidation_buffer_is_rejected_before_reserva
             reservation_repository=reservations,
         )(dispatch)
     assert reservations.kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_recent_departed_entry_admits_exact_legal_split_with_actual_risk_values():
+    from dataclasses import replace
+
+    venue = Venue()
+    venue.snapshot.current_price = Decimal("2.34")
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={
+            "size_step": Decimal("0.1"),
+            "min_order_qty": Decimal("0.1"),
+            "min_notional": Decimal("1"),
+        }
+    )
+    dispatch = replace(_dispatch(), source_received_at=datetime.now(UTC))
+    reservations = Reservations()
+    admission = await _bitget_dispatch_preflight(
+        venue,
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+        reservation_repository=reservations,
+    )(dispatch)
+
+    submission = admission.submission
+    assert submission.quantity == Decimal("8.4")
+    assert submission.entry_route.market_quantity == Decimal("2.1")
+    assert submission.entry_route.limit_quantity == Decimal("6.3")
+    assert submission.planned_notional_usdt == Decimal("19.656")
+    assert submission.planned_margin_usdt == Decimal("0.9828")
+    assert reservations.kwargs is not None
+    assert reservations.kwargs["planned_margin_usdt"] == Decimal("0.9828")
+
+
+@pytest.mark.asyncio
+async def test_split_child_minimum_cannot_be_bypassed_by_total_notional_or_reservation():
+    from dataclasses import replace
+
+    venue = Venue()
+    venue.snapshot.current_price = Decimal("2.34")
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={"size_step": Decimal("0.1"), "min_order_qty": Decimal("0.1")}
+    )
+    dispatch = replace(_dispatch(), source_received_at=datetime.now(UTC))
+    reservations = Reservations()
+    with pytest.raises(ValueError, match="split|min-notional"):
+        await _bitget_dispatch_preflight(
+            venue,
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            reservation_repository=reservations,
+        )(dispatch)
+    assert reservations.kwargs is None
+
+
+@pytest.mark.asyncio
+async def test_position_read_crossing_route_window_cannot_expand_market_child(monkeypatch):
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from fatty_trader import service
+    from fatty_trader.execution import entry_routing
+
+    clock = [datetime(2026, 10, 13, tzinfo=UTC)]
+
+    class ObservedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0].astimezone(tz) if tz is not None else clock[0].replace(tzinfo=None)
+
+    clock[0] = ObservedClock(2026, 10, 13, tzinfo=UTC)
+
+    venue = Venue()
+    venue.snapshot.account.observed_at = clock[0]
+    venue.snapshot.current_price = Decimal("2.34")
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={
+            "size_step": Decimal("0.1"),
+            "min_order_qty": Decimal("0.1"),
+            "min_notional": Decimal("1"),
+            "max_market_order_qty": Decimal("2.1"),
+            "max_order_qty": Decimal("6.3"),
+        }
+    )
+
+    async def delayed_position_read():
+        clock[0] += timedelta(seconds=2)
+        return SimpleNamespace(symbols=(), observed_at=clock[0])
+
+    venue.active_position_snapshot = delayed_position_read
+    monkeypatch.setattr(service, "datetime", ObservedClock)
+    monkeypatch.setattr(entry_routing, "datetime", ObservedClock)
+    dispatch = replace(_dispatch(), source_received_at=clock[0] - timedelta(seconds=59))
+    admission = await _bitget_dispatch_preflight(
+        venue,
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+        reservation_repository=Reservations(),
+    )(dispatch)
+    assert admission.submission.entry_route.market_quantity == Decimal("2.1")
+    assert admission.submission.entry_route.limit_quantity == Decimal("6.3")
+    assert admission.submission.quantity == Decimal("8.4")

@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import BitgetLiveRiskConfig
@@ -513,3 +514,320 @@ def test_uncapped_margin_tracks_quantity_flooring() -> None:
     assert decision.notional_usdt == Decimal("3999.903")
     assert decision.margin_usdt == Decimal("199.99515")
     assert decision.margin_usdt == decision.notional_usdt / decision.leverage
+
+
+def make_split_input(**overrides: object) -> LiveSizingInput:
+    base: dict[str, object] = {
+        "meta": make_meta(
+            price_precision=3,
+            price_tick=Decimal("0.001"),
+            size_step=Decimal("0.1"),
+            min_order_qty=Decimal("0.1"),
+            min_notional=Decimal("1"),
+        ),
+        "risk": capped_risk("1"),
+        "entry": Decimal("1"),
+        "stop_loss": Decimal("0.97"),
+        "split_market_price": Decimal("1"),
+        "split_limit_price": Decimal("0.99"),
+    }
+    base.update(overrides)
+    return make_input(**base)
+
+
+@pytest.mark.parametrize("field", ["split_market_price", "split_limit_price"])
+def test_split_prices_must_be_supplied_jointly(field: str) -> None:
+    with pytest.raises(ValidationError, match="supplied together"):
+        make_input(**{field: Decimal("100")})
+
+
+@pytest.mark.parametrize("field", ["split_market_price", "split_limit_price"])
+@pytest.mark.parametrize("value", ["0", "-1", "NaN", "Infinity", "-Infinity"])
+def test_split_prices_must_be_positive_and_finite(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        make_split_input(**{field: Decimal(value)})
+
+
+@pytest.mark.parametrize(
+    ("raw_total", "entry", "expected_total"),
+    [("43.8", "0.4", "43.6"), ("66.5", "0.3", "66.4")],
+)
+def test_split_grid_corrects_observed_totals_without_changing_market_grid(
+    raw_total: str, entry: str, expected_total: str
+) -> None:
+    price = Decimal(entry)
+    available = Decimal(raw_total) * price / Decimal("4")
+    data = make_split_input(
+        entry=price,
+        stop_loss=price * Decimal("0.97"),
+        available_usdt=available,
+        split_market_price=price,
+        split_limit_price=price - Decimal("0.001"),
+    )
+    split = plan_live_position(data)
+    market = plan_live_position(
+        data.model_copy(update={"split_market_price": None, "split_limit_price": None})
+    )
+    assert split.accepted is True
+    assert market.accepted is True
+    assert split.quantity == Decimal(expected_total)
+    assert market.quantity == Decimal(raw_total)
+    assert split.leverage == market.leverage == 20
+    assert split.notional_usdt == split.quantity * price * data.meta.contract_value
+    assert split.margin_usdt == split.notional_usdt / split.leverage
+    assert split.margin_usdt <= Decimal("1")
+    market_qty = split.quantity / 4
+    limit_qty = split.quantity * Decimal("0.75")
+    assert market_qty + limit_qty == split.quantity
+    assert market_qty % data.meta.size_step == limit_qty % data.meta.size_step == 0
+    assert market_qty >= data.meta.min_order_qty
+    assert limit_qty >= data.meta.min_order_qty
+    assert market_qty * data.split_market_price >= data.meta.min_notional
+    assert limit_qty * data.split_limit_price >= data.meta.min_notional
+
+
+@pytest.mark.parametrize(
+    ("budget_qty", "expected_qty"),
+    [("4.399999999999", "4.0"), ("4.4", "4.4"), ("4.400000000001", "4.4")],
+)
+def test_split_total_quantum_decimal_boundary(budget_qty: str, expected_qty: str) -> None:
+    decision = plan_live_position(
+        make_split_input(
+            available_usdt=Decimal(budget_qty) / 4,
+            meta=make_meta(
+                price_tick=Decimal("0.001"),
+                size_step=Decimal("0.1"),
+                min_order_qty=Decimal("0.1"),
+                min_notional=Decimal("0.1"),
+            ),
+        )
+    )
+    assert decision.accepted is True
+    assert decision.quantity == Decimal(expected_qty)
+    assert decision.margin_usdt == decision.quantity / 20
+    assert decision.fallback_used is False
+
+
+@pytest.mark.parametrize(
+    ("market_max", "limit_max", "expected_total"),
+    [("2.25", "50", "8.8"), ("50", "6.59", "8.4"), ("2.25", "6.59", "8.4")],
+)
+def test_split_caps_each_order_type_and_reserves_only_final_quantity(
+    market_max: str, limit_max: str, expected_total: str
+) -> None:
+    data = make_split_input(
+        meta=make_meta(
+            price_tick=Decimal("0.001"),
+            size_step=Decimal("0.1"),
+            min_order_qty=Decimal("0.1"),
+            min_notional=Decimal("1"),
+            max_market_order_qty=Decimal(market_max),
+            max_order_qty=Decimal(limit_max),
+        )
+    )
+    decision = plan_live_position(data)
+    assert decision.accepted is True
+    assert decision.quantity == Decimal(expected_total)
+    assert decision.quantity / 4 <= data.meta.max_market_order_qty
+    assert decision.quantity * Decimal("0.75") <= data.meta.max_order_qty
+    assert decision.notional_usdt == decision.quantity * data.entry
+    assert decision.margin_usdt == decision.notional_usdt / 20
+    assert decision.margin_usdt < Decimal("1")
+    assert decision.leverage == 20
+    assert decision.fallback_used is False
+
+
+def test_full_market_ignores_limit_maximum_and_uses_market_step() -> None:
+    data = make_split_input(
+        meta=make_meta(
+            price_tick=Decimal("0.001"),
+            size_step=Decimal("0.1"),
+            min_order_qty=Decimal("0.1"),
+            min_notional=Decimal("1"),
+            max_market_order_qty=Decimal("2.25"),
+            max_order_qty=Decimal("0.1"),
+        ),
+        split_market_price=None,
+        split_limit_price=None,
+    )
+    decision = plan_live_position(data)
+    assert decision.accepted is True
+    assert decision.quantity == Decimal("2.2")
+    assert decision.notional_usdt == Decimal("2.2")
+    assert decision.margin_usdt == Decimal("0.11")
+
+
+@pytest.mark.parametrize(
+    ("market_price", "limit_price", "accepted", "reason"),
+    [
+        ("100", "100", True, ""),
+        ("99.9999999999", "100", False, "split-market-min-notional"),
+        ("100", "33.3333333333", False, "split-limit-min-notional"),
+        ("100", "33.3333333334", True, ""),
+    ],
+)
+def test_each_child_min_notional_uses_its_actual_planned_price(
+    market_price: str, limit_price: str, accepted: bool, reason: str
+) -> None:
+    decision = plan_live_position(
+        make_input(
+            risk=capped_risk("1"),
+            split_market_price=Decimal(market_price),
+            split_limit_price=Decimal(limit_price),
+        )
+    )
+    assert decision.accepted is accepted
+    if accepted:
+        assert decision.quantity == Decimal("0.2")
+        assert decision.notional_usdt == Decimal("20")
+        assert decision.margin_usdt == Decimal("1")
+    else:
+        assert decision.reason.startswith(reason)
+        assert decision.quantity is None
+        assert decision.margin_usdt is None
+        assert "min_notional=5" in decision.reason
+        assert "price=" in decision.reason
+
+
+@pytest.mark.parametrize(("available", "accepted"), [("1", False), ("1.1", True)])
+def test_split_child_minimum_quantity_is_checked_after_grid_flooring(
+    available: str, accepted: bool
+) -> None:
+    decision = plan_live_position(
+        make_split_input(
+            active_positions=2,
+            available_usdt=Decimal(available),
+            meta=make_meta(
+                price_tick=Decimal("0.001"),
+                size_step=Decimal("0.1"),
+                min_order_qty=Decimal("1.0001"),
+                min_notional=Decimal("0.1"),
+            ),
+        )
+    )
+    assert decision.accepted is accepted
+    assert decision.fallback_used is False
+    if accepted:
+        assert decision.quantity == Decimal("4.4")
+    else:
+        assert decision.reason.startswith("split-market-min-qty")
+        assert "min_qty=1.0001" in decision.reason
+        assert "no all-in fallback" in decision.reason
+
+
+@pytest.mark.parametrize(
+    ("market_max", "limit_max", "reason"),
+    [
+        ("0.09", "100", "split-market-min-qty"),
+        ("100", "0.29", "split-market-min-qty"),
+        ("0.99", "100", "split-market-min-notional"),
+        ("100", "2.99", "split-market-min-notional"),
+    ],
+)
+def test_split_maxima_that_cannot_support_minimum_children_fail_precisely(
+    market_max: str, limit_max: str, reason: str
+) -> None:
+    decision = plan_live_position(
+        make_split_input(
+            meta=make_meta(
+                price_tick=Decimal("0.001"),
+                size_step=Decimal("0.1"),
+                min_order_qty=Decimal("0.1"),
+                min_notional=Decimal("1"),
+                max_market_order_qty=Decimal(market_max),
+                max_order_qty=Decimal(limit_max),
+            )
+        )
+    )
+    assert decision.accepted is False
+    assert decision.reason.startswith(reason)
+    assert f"market max_qty={market_max}" in decision.reason
+    assert f"limit max_qty={limit_max}" in decision.reason
+    assert decision.margin_usdt is None
+    assert decision.notional_usdt is None
+
+
+@pytest.mark.parametrize(("active_positions", "accepted"), [(0, True), (2, False)])
+def test_split_all_in_fallback_retains_zero_active_position_policy(
+    active_positions: int, accepted: bool
+) -> None:
+    decision = plan_live_position(
+        make_split_input(
+            active_positions=active_positions,
+            available_usdt=Decimal("1"),
+            meta=make_meta(
+                price_tick=Decimal("0.001"),
+                size_step=Decimal("0.1"),
+                min_order_qty=Decimal("0.1"),
+                min_notional=Decimal("2"),
+            ),
+        )
+    )
+    assert decision.accepted is accepted
+    assert decision.fallback_used is accepted
+    if accepted:
+        assert decision.quantity == Decimal("20")
+        assert decision.margin_usdt == Decimal("1")
+    else:
+        assert decision.reason.startswith("split-market-min-notional")
+
+
+def test_split_conservative_valuation_keeps_contract_multiplier() -> None:
+    decision = plan_live_position(
+        make_split_input(
+            meta=make_meta(
+                price_tick=Decimal("0.001"),
+                size_step=Decimal("0.1"),
+                min_order_qty=Decimal("0.1"),
+                min_notional=Decimal("1"),
+                contract_value=Decimal("2"),
+            )
+        )
+    )
+    assert decision.accepted is True
+    assert decision.quantity == Decimal("10")
+    assert decision.notional_usdt == Decimal("20")
+    assert decision.margin_usdt == Decimal("1")
+
+
+@pytest.mark.parametrize("floor", [20, 5])
+def test_split_candidate_selection_preserves_liquidation_guard(floor: int) -> None:
+    decision = plan_live_position(
+        make_input(
+            meta=make_meta(mm_tiers=HIGH_MMR_TIERS, min_notional=Decimal("1")),
+            risk=capped_risk("1", floor=floor),
+            stop_loss=Decimal("94"),
+            split_market_price=Decimal("100"),
+            split_limit_price=Decimal("99"),
+        )
+    )
+    if floor == 20:
+        assert decision.accepted is False
+        assert decision.reason.startswith("sl-guard")
+        assert decision.fallback_used is False
+    else:
+        assert decision.accepted is True
+        assert 5 <= decision.leverage < 20
+        assert decision.quantity % Decimal("0.004") == 0
+        assert decision.liquidation_price < decision.stop_loss
+        assert decision.notional_usdt == decision.margin_usdt * decision.leverage
+        assert decision.margin_usdt <= Decimal("1")
+
+
+def test_split_all_in_fallback_cannot_bypass_one_usdt_margin_cap() -> None:
+    decision = plan_live_position(
+        make_split_input(
+            meta=make_meta(
+                price_tick=Decimal("0.001"),
+                size_step=Decimal("0.1"),
+                min_order_qty=Decimal("0.1"),
+                min_notional=Decimal("5.0000000001"),
+            )
+        )
+    )
+    assert decision.accepted is False
+    assert decision.reason.startswith("split-market-min-notional")
+    assert "unmeetable even all-in" in decision.reason
+    assert decision.fallback_used is True
+    assert decision.margin_usdt is None
+    assert decision.notional_usdt is None

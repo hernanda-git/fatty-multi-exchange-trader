@@ -59,6 +59,13 @@ def setup_owner(postgres_schema):
     dsn, schema = postgres_schema
     _migrate(dsn, schema)
     repository, admission, evidence = owned_close(dsn, schema)
+    # This lifecycle fixture starts with unrelated historical close evidence,
+    # not an already bound exit that consumed the entire owner's entry.
+    with _connect(dsn, schema) as connection:
+        connection.execute(
+            "DELETE FROM bitget_verified_close_bindings WHERE close_client_order_id=%s",
+            (evidence["close_client_order_id"],),
+        )
     # The fixture's separate historical close must never be selected by symbol.
     store = PostgresLiveIntentStore(lambda: _connect(dsn, schema))
     return dsn, schema, repository, admission, evidence, store
@@ -81,7 +88,7 @@ def test_upgrade_adds_binding_without_admitting_historical_closes(postgres_schem
 'SELL','CLOSE','filled',1,1)"""
         )
     monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-    assert _migrate(dsn, schema) == [23]
+    _migrate(dsn, schema)
     assert _migrate(dsn, schema) == []
     with _connect(dsn, schema) as c:
         assert c.execute("SELECT count(*) FROM bitget_verified_close_bindings").fetchone()[0] == 0

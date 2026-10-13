@@ -9,8 +9,9 @@ Pipeline (fail-closed, deterministic):
    since rounding can push realized margin back above the ceiling.
 3. Leverage: candidates are walked from ``min(_MAX_LIVE_LEVERAGE, risk.max_leverage,
    meta.max_leverage)`` DOWN to ``max(_MIN_LIVE_LEVERAGE, risk.min_leverage)``. Each
-   candidate must be exchange-legal (step-rounded quantity at or above min-notional
-   and within the margin cap) and must clear ``check_sl_before_liquidation``. The
+   candidate must be exchange-legal (route-rounded quantity with every child at or
+   above its minimum size/notional and within its maximum) and within the margin
+   cap, and must clear ``check_sl_before_liquidation``. The
    highest such leverage wins, so an ordinary signal trades at the pinned ceiling
    (20x) and a wide-stop signal backs off only as far as its own stop geometry
    requires. The ceiling is never exceeded.
@@ -23,13 +24,16 @@ Pipeline (fail-closed, deterministic):
    neither available -> skip. SL must pass ``check_sl_before_liquidation``
    against the estimated liq price, else skip. Missing MM tiers raises
    (hard failure from the liquidation module).
+6. Exact 25/75 routes use a total quantity quantum of ``4 * size_step`` and each
+   child's planned price for its minimum notional. Combined margin/liquidation
+   valuation continues to use the conservative ``entry`` input.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import BitgetLiveRiskConfig
@@ -140,7 +144,11 @@ def _notional_floor_diagnosis(
 
 
 class LiveSizingInput(BaseModel):
-    """Inputs for one live sizing decision."""
+    """Inputs for one live sizing decision.
+
+    Supply both split prices only for the exact 25/75 route; ``entry`` remains
+    the conservative combined reservation and liquidation valuation price.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -153,6 +161,14 @@ class LiveSizingInput(BaseModel):
     stop_loss: Decimal | None = Field(default=None, gt=0)
     atr: Decimal | None = Field(default=None, gt=0)
     taker_fee_rate: Decimal = Field(default=Decimal("0.0006"), ge=0)
+    split_market_price: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    split_limit_price: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def validate_split_prices(self) -> LiveSizingInput:
+        if (self.split_market_price is None) != (self.split_limit_price is None):
+            raise ValueError("split market and limit prices must be supplied together")
+        return self
 
 
 class LiveSizingDecision(BaseModel):
@@ -187,6 +203,35 @@ def _required_notional(meta: SymbolMetadata, rounded_entry: Decimal) -> Decimal:
     return max(meta.min_notional, from_step)
 
 
+def _split_quantity_failure(
+    *,
+    meta: SymbolMetadata,
+    qty: Decimal,
+    market_price: Decimal,
+    limit_price: Decimal,
+) -> str | None:
+    """Explain the first illegal child using its own planned execution price."""
+    for leg, child_qty, price, maximum in (
+        ("market", qty / Decimal("4"), market_price, meta.max_market_order_qty),
+        ("limit", qty * Decimal("0.75"), limit_price, meta.max_order_qty),
+    ):
+        if child_qty < meta.min_order_qty:
+            return (
+                f"split-{leg}-min-qty: child {child_qty} < min_qty={meta.min_order_qty}; "
+                f"market max_qty={meta.max_market_order_qty}, limit max_qty={meta.max_order_qty}"
+            )
+        notional = child_qty * price * meta.contract_value
+        if notional < meta.min_notional:
+            return (
+                f"split-{leg}-min-notional: child {notional} USDT at price={price} "
+                f"< min_notional={meta.min_notional}; "
+                f"market max_qty={meta.max_market_order_qty}, limit max_qty={meta.max_order_qty}"
+            )
+        if maximum is not None and child_qty > maximum:
+            return f"split-{leg}-max-qty: child {child_qty} > max_qty={maximum}"
+    return None
+
+
 def _plan_at_leverage(
     *,
     meta: SymbolMetadata,
@@ -199,6 +244,8 @@ def _plan_at_leverage(
     direction: Direction,
     stop: Decimal,
     taker_fee_rate: Decimal,
+    split_market_price: Decimal | None,
+    split_limit_price: Decimal | None,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal] | str:
     """Plan one leverage: ``(qty, margin, notional, liquidation_price)`` or a tag.
 
@@ -212,11 +259,18 @@ def _plan_at_leverage(
     if per_qty <= 0:
         return _MIN_NOTIONAL_FAILURE
     raw_qty = (margin * leverage) / per_qty
-    qty = round_qty_to_step(raw_qty, meta.size_step)
-    # The production path submits a market order. A limit maximum is not its
-    # quantity limit; floor to the market ceiling before deriving reserved margin.
-    if meta.max_market_order_qty is not None and qty > meta.max_market_order_qty:
-        qty = round_qty_to_step(meta.max_market_order_qty, meta.size_step)
+    quantity_step = meta.size_step * (4 if split_market_price is not None else 1)
+    qty = round_qty_to_step(raw_qty, quantity_step)
+    if meta.max_market_order_qty is not None:
+        market_ceiling = round_qty_to_step(meta.max_market_order_qty, meta.size_step)
+        if split_market_price is not None:
+            market_ceiling *= 4
+        qty = min(qty, market_ceiling)
+    if split_limit_price is not None and meta.max_order_qty is not None:
+        # Floor the LIMIT child on 3s, then derive its matching market child.
+        # This avoids an inexact 4/3 ceiling before total-grid quantization.
+        limit_ceiling = round_qty_to_step(meta.max_order_qty, meta.size_step * 3)
+        qty = min(qty, limit_ceiling / 3 * 4)
     # Re-derive realized margin from the capped quantity before the guard sees it.
     capped = _enforce_margin_cap(
         leverage=leverage,
@@ -224,10 +278,27 @@ def _plan_at_leverage(
         entry=rounded_entry,
         meta=meta,
         cap=cap,
+        quantity_step=quantity_step,
     )
     if capped is None:
+        if split_market_price is not None and split_limit_price is not None:
+            return (
+                _split_quantity_failure(
+                    meta=meta,
+                    qty=qty,
+                    market_price=split_market_price,
+                    limit_price=split_limit_price,
+                )
+                or _CAP_FAILURE
+            )
         return _CAP_FAILURE
     actual_margin, qty = capped
+    if split_market_price is not None and split_limit_price is not None:
+        failure = _split_quantity_failure(
+            meta=meta, qty=qty, market_price=split_market_price, limit_price=split_limit_price
+        )
+        if failure is not None:
+            return failure
     notional = qty * per_qty
     if notional < required:
         return _MIN_NOTIONAL_FAILURE
@@ -269,6 +340,8 @@ def _select_plan(
     taker_fee_rate: Decimal,
     low: int,
     high: int,
+    split_market_price: Decimal | None,
+    split_limit_price: Decimal | None,
 ) -> tuple[_Plan | None, list[str]]:
     """Pick the highest leverage that is legal and safe; return ``(plan, tags)``.
 
@@ -288,6 +361,8 @@ def _select_plan(
             direction=direction,
             stop=stop,
             taker_fee_rate=taker_fee_rate,
+            split_market_price=split_market_price,
+            split_limit_price=split_limit_price,
         )
         if isinstance(attempt, str):
             tags.append(attempt)
@@ -314,6 +389,7 @@ def _enforce_margin_cap(
     entry: Decimal,
     meta: SymbolMetadata,
     cap: Decimal | None,
+    quantity_step: Decimal,
 ) -> tuple[Decimal, Decimal] | None:
     """Return step-rounded quantity and its actual notional/leverage margin.
 
@@ -327,7 +403,7 @@ def _enforce_margin_cap(
     if per_qty <= 0:
         return None
     max_qty = qty if cap is None else (cap * Decimal(leverage)) / per_qty
-    capped_qty = round_qty_to_step(min(qty, max_qty), meta.size_step)
+    capped_qty = round_qty_to_step(min(qty, max_qty), quantity_step)
     if capped_qty < meta.min_order_qty:
         return None
     actual_margin = (capped_qty * per_qty) / Decimal(leverage)
@@ -388,6 +464,8 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
             taker_fee_rate=data.taker_fee_rate,
             low=low,
             high=high,
+            split_market_price=data.split_market_price,
+            split_limit_price=data.split_limit_price,
         )
 
     plan, tags = _attempt(margin)
@@ -411,6 +489,9 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
                 )
             )
         if data.active_positions != 0:
+            split_failure = next((tag for tag in tags if tag.startswith("split-")), None)
+            if split_failure is not None:
+                return _skip(f"{split_failure}; no all-in fallback")
             return _skip("min-notional unmeetable at allocation margin; no all-in fallback")
         fallback_used = True
         # All-in must not bypass the cap: it is still one trade's margin.
@@ -422,6 +503,9 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
                     "sl-guard: stop-loss not safely before liquidation",
                     fallback_used=True,
                 )
+            split_failure = next((tag for tag in tags if tag.startswith("split-")), None)
+            if split_failure is not None:
+                return _skip(f"{split_failure}; unmeetable even all-in", fallback_used=True)
             return _skip(
                 "min-notional unmeetable even all-in"
                 + (

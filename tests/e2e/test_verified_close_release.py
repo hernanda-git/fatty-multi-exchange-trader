@@ -83,8 +83,10 @@ def owned_close(dsn, schema):
         c.execute(
             """INSERT INTO live_order_intents
             (id,exchange,client_order_id,symbol,side,role,state,requested_qty,filled_qty,
-             provider_order_id,margin_reservation_id,balance_snapshot_id,planned_margin_usdt)
-            VALUES (%s,'bitget',%s,'BTCUSDT','BUY','ENTRY','filled',1,1,%s,%s,%s,1)""",
+             provider_order_id,margin_reservation_id,balance_snapshot_id,planned_margin_usdt,
+             leverage,margin_mode)
+            VALUES (%s,'bitget',%s,'BTCUSDT','BUY','ENTRY','filled',1,1,%s,%s,%s,1,
+                    20,'ISOLATED')""",
             (
                 uuid4(),
                 args["client_order_id"],
@@ -113,7 +115,8 @@ def owned_close(dsn, schema):
     )
     with _connect(dsn, schema) as c:
         c.execute(
-            "UPDATE live_order_intents SET state='filled',filled_qty=1 WHERE client_order_id=%s",
+            "UPDATE live_order_intents SET state='filled',filled_qty=1,"
+            "provider_fill_ids='[\"real-close-fill\"]'::jsonb WHERE client_order_id=%s",
             (close_oid,),
         )
         c.execute(
@@ -380,3 +383,158 @@ def test_failed_release_transaction_retains_ownership_and_fill_ledger(postgres_s
         c.execute("DROP TRIGGER injected_release_failure ON bitget_margin_reservations")
     assert repository.reserve(**request(dsn, schema)).reason == "symbol-already-owned"
     assert repository.release_verified_close(**evidence).accepted
+
+
+@pytest.mark.parametrize("outcome", ["present", "missing", "invalid-record", "query-error"])
+def test_intent_read_releases_transaction_on_every_outcome(postgres_schema, outcome):
+    import psycopg
+
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    oid = str(uuid4())
+    if outcome in {"present", "invalid-record"}:
+        with _connect(dsn, schema) as connection:
+            connection.execute(
+                """INSERT INTO live_order_intents
+                (id,exchange,client_order_id,symbol,side,role,state,requested_qty,leverage)
+                VALUES (%s,'bitget',%s,'BTCUSDT','BUY','ENTRY','staged',1,%s)""",
+                (uuid4(), oid, 20 if outcome == "invalid-record" else None),
+            )
+    opened = []
+
+    def connect():
+        connection = _connect(dsn, schema)
+        opened.append(connection)
+        if outcome == "query-error":
+            connection.execute("SET search_path TO nonexistent_read_schema")
+        return connection
+
+    try:
+        store = PostgresLiveIntentStore(connect)
+        if outcome == "invalid-record":
+            with pytest.raises(ValueError, match="admission evidence"):
+                store.get(oid)
+        elif outcome == "query-error":
+            with pytest.raises(psycopg.errors.UndefinedTable):
+                store.get(oid)
+        else:
+            record = store.get(oid)
+            if outcome == "present":
+                assert record.client_oid == oid
+            else:
+                assert record is None
+        released = all(connection.closed for connection in opened)
+    finally:
+        # A failing regression must not itself strand DROP SCHEMA behind locks.
+        for connection in opened:
+            connection.close()
+    assert released
+
+
+@pytest.mark.parametrize("contradictory", [False, True])
+def test_owned_residual_releases_owned_read_transaction(postgres_schema, contradictory):
+    from fatty_trader.storage.live_intents import (
+        OwnedQuantityEvidenceError,
+        PostgresLiveIntentStore,
+    )
+
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    _, _, evidence = owned_close(dsn, schema)
+    if contradictory:
+        with _connect(dsn, schema) as connection:
+            connection.execute("UPDATE live_order_intents SET side='BUY' WHERE role='CLOSE'")
+    opened = []
+
+    def connect():
+        connection = _connect(dsn, schema)
+        opened.append(connection)
+        return connection
+
+    try:
+        store = PostgresLiveIntentStore(connect)
+        if contradictory:
+            with pytest.raises(OwnedQuantityEvidenceError):
+                store.remaining_owned_quantity(evidence["entry_client_order_id"])
+        else:
+            assert store.remaining_owned_quantity(evidence["entry_client_order_id"]) == 0
+        released = all(connection.closed for connection in opened)
+    finally:
+        for connection in opened:
+            connection.close()
+    assert released
+
+
+def test_owned_residual_does_not_commit_or_close_borrowed_transaction(postgres_schema):
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    _, admission, evidence = owned_close(dsn, schema)
+    with _connect(dsn, schema) as connection:
+        connection.execute(
+            "UPDATE bitget_margin_reservations SET resolution_reason='uncommitted-fixture' "
+            "WHERE id=%s",
+            (admission.reservation_id,),
+        )
+        store = PostgresLiveIntentStore(lambda: _connect(dsn, schema))
+        assert (
+            store.remaining_owned_quantity(
+                evidence["entry_client_order_id"], cursor=connection.cursor()
+            )
+            == 0
+        )
+        assert not connection.closed
+        connection.rollback()
+    with _connect(dsn, schema) as connection:
+        assert (
+            connection.execute(
+                "SELECT resolution_reason FROM bitget_margin_reservations WHERE id=%s",
+                (admission.reservation_id,),
+            ).fetchone()[0]
+            != "uncommitted-fixture"
+        )
+
+
+def test_other_contradictory_bound_exit_vetoes_release_and_new_close(postgres_schema):
+    from types import SimpleNamespace
+
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    repository, admission, evidence = owned_close(dsn, schema)
+    bad_oid, new_oid = str(uuid4()), str(uuid4())
+    with _connect(dsn, schema) as connection:
+        connection.execute(
+            """INSERT INTO live_order_intents
+            (id,exchange,client_order_id,symbol,side,role,state,requested_qty,filled_qty,
+             provider_order_id,provider_fill_ids)
+            VALUES (%s,'bitget',%s,'BTCUSDT','BUY','CLOSE','filled',1,1,'bad-close',
+                    '["unproved-close-fill"]'::jsonb),
+                   (%s,'bitget',%s,'BTCUSDT','SELL','CLOSE','requested',1,0,NULL,'[]'::jsonb)""",
+            (uuid4(), bad_oid, uuid4(), new_oid),
+        )
+        connection.execute(
+            "INSERT INTO bitget_verified_close_bindings(close_client_order_id,reservation_id) "
+            "VALUES (%s,%s)",
+            (bad_oid, admission.reservation_id),
+        )
+        before = connection.execute("SELECT * FROM fills ORDER BY id").fetchall()
+    assert repository.release_verified_close(**evidence).reason == "unverified-close-fills"
+    store = PostgresLiveIntentStore(lambda: _connect(dsn, schema))
+    assert not store.verified_close_lifecycle.bind_requested_close(
+        SimpleNamespace(environment="DEMO"), new_oid
+    )
+    with _connect(dsn, schema) as connection:
+        assert connection.execute(
+            "SELECT state FROM bitget_margin_reservations WHERE id=%s",
+            (admission.reservation_id,),
+        ).fetchone() == ("consumed",)
+        assert connection.execute(
+            "SELECT count(*) FROM bitget_verified_close_bindings WHERE close_client_order_id=%s",
+            (new_oid,),
+        ).fetchone() == (0,)
+        assert connection.execute("SELECT * FROM fills ORDER BY id").fetchall() == before

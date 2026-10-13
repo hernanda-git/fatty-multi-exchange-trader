@@ -67,7 +67,13 @@ class PostgresVerifiedCloseLifecycle:
             if len(rows) != 1:
                 c.commit()
                 return False
-            remaining = self._store.remaining_owned_quantity(rows[0][1])
+            from fatty_trader.storage.live_intents import OwnedQuantityEvidenceError
+
+            try:
+                remaining = self._store.remaining_owned_quantity(rows[0][1], cursor=cur)
+            except OwnedQuantityEvidenceError:
+                c.commit()
+                return False
             if rows[0][2] > remaining:
                 c.commit()
                 return False

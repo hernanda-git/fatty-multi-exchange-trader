@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol, cast
 
+from fatty_trader.exchanges.bitget.client import BitgetApiError
 from fatty_trader.exchanges.bitget.metadata import (
     find_contract,
     metadata_from_contract,
@@ -55,7 +56,7 @@ class BitgetActivePositionSnapshot:
 
 
 class AsyncBitgetVenue:
-    """Async, read-only Bitget venue boundary for production worker preflight."""
+    """Async Bitget venue boundary; preflight may prepare isolated margin mode."""
 
     def __init__(self, client: AsyncBitgetClient) -> None:
         self._client = client
@@ -134,6 +135,20 @@ class AsyncBitgetVenue:
         )
 
     async def preflight(self, symbol: str) -> BitgetPreflightSnapshot:
+        contracts = await self._client.get_contracts()
+        if not isinstance(contracts, list) or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("symbol"), str)
+            or not re.fullmatch(r"[A-Za-z0-9]{2,20}", row["symbol"])
+            for row in contracts
+        ):
+            raise BitgetApiError("Bitget contracts response is invalid")
+        # Only a valid lookup with no matching record proves venue ineligibility.
+        contract = find_contract(contracts, symbol)
+        try:
+            metadata = metadata_from_contract(contract)
+        except (TypeError, ValueError, OverflowError):
+            raise BitgetApiError("Bitget contract metadata is invalid") from None
         account = await read_account_state(self._client, symbol)
         position = await read_position_state(self._client, symbol)
         if account.margin_mode != "isolated":
@@ -172,10 +187,6 @@ class AsyncBitgetVenue:
         clock_skew_ms = await self._client.get_clock_skew_ms()
         if abs(clock_skew_ms) > MAX_CLOCK_SKEW_MS:
             raise ValueError("Bitget clock skew exceeds safety limit")
-        contracts = await self._client.get_contracts()
-        if not isinstance(contracts, list):
-            raise ValueError("Bitget contracts response must be a list")
-        metadata = metadata_from_contract(find_contract(contracts, symbol))
         # Maintenance-margin tiers are NOT in /market/contracts; without them the
         # liquidation guard rejects every live signal. Fail closed on a bad payload.
         read_position_lever = cast(

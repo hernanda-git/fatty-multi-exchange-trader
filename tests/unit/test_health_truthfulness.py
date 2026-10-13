@@ -1,8 +1,11 @@
-"""Offline behavioral regressions for unknown provider evidence."""
+"""Offline consumer regressions for failed and independently observed evidence."""
+
+from decimal import Decimal
 
 import pytest
 
-from fatty_trader.operator.health import build_operator_diagnostic, build_operator_health_report
+from fatty_trader.operator.health import build_operator_diagnostic, load_operator_health_snapshot
+from fatty_trader.operator.health_report_format import format_report
 
 
 class Cursor:
@@ -13,13 +16,27 @@ class Cursor:
         pass
 
     def execute(self, sql):
-        pass
+        self.sql = sql
 
     def fetchone(self):
-        return (0, 0, 0, 0, 0, 0, False, None, None, None, None)
+        if "canonical_signals" in self.sql:
+            return (0, 0, 0, 0, 0, 0, 0)
+        if "venue_kill_switches" in self.sql:
+            return ("INACTIVE", None, [])
+        if "bitget_margin_reservations" in self.sql:
+            return ({},)
+        if "balance_snapshots" in self.sql:
+            return (None, None)
+        if "bitget_post_fill_reconciliations" in self.sql:
+            return (None,)
+        if "FROM fills" in self.sql:
+            return (0, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"))
+        raise AssertionError("unexpected fixture query")
 
     def fetchall(self):
-        return [(0, 0, 0)]
+        if "SELECT (SELECT count(*) FROM positions" in self.sql:
+            return [(0, 0, 0)]
+        return []
 
 
 class Connection:
@@ -35,7 +52,7 @@ class Connection:
 
 class Gateway:
     def get_account_snapshot(self):
-        return {"equity": "100"}
+        return {"accountEquity": "100", "available": "99", "unrealizedPL": "0"}
 
     def get_positions(self):
         return []
@@ -49,18 +66,23 @@ class FailedGateway(Gateway):
         raise TimeoutError("offline provider")
 
 
-def report(gateway):
-    return build_operator_health_report(
-        gateway, Connection, mode="DEMO", venue_mode="DEMO", execution_enabled=False
+def snapshot(gateway, connection=Connection, **kwargs):
+    return load_operator_health_snapshot(
+        gateway, connection, mode="LIVE", venue_mode="LIVE", execution_enabled=True, **kwargs
     )
 
 
+def report(gateway, connection=Connection, **kwargs):
+    return format_report(**snapshot(gateway, connection, **kwargs))
+
+
 def test_failed_provider_does_not_match_healthy_empty_database():
-    assert "MATCH" in report(Gateway())
+    assert "OK · provider 0 = DB 0" in report(Gateway())
     failed = report(FailedGateway())
     assert "UNKNOWN" in failed
-    assert "MATCH" not in failed
-    assert "None confirmed by provider" not in failed
+    assert "OK · provider" not in failed
+    assert "OK · flat" not in failed
+    assert "Equity     100" in failed
 
 
 @pytest.mark.parametrize("kind", ["status", "reconcile"])
@@ -79,10 +101,10 @@ def test_tp_only_or_invalid_sl_is_missing_loss_stop(stop):
         def get_positions(self):
             return [{"symbol": "BTCUSDT", "side": "LONG", "stop_loss": stop, "take_profit": "110"}]
 
-    failed = report(TpGateway())
-    assert "MISSING LOSS STOP" in failed
-    assert "🟢 NATIVE" not in failed
-    assert "No operator action needed" not in failed
+    text = report(TpGateway())
+    assert "MISSING BTCUSDT" in text
+    assert "NATIVE REGISTERED" not in text
+    assert "No operator action needed" not in text
 
 
 def test_tp_only_fallback_row_is_not_a_loss_stop():
@@ -92,20 +114,70 @@ def test_tp_only_fallback_row_is_not_a_loss_stop():
 
     class TpCursor(Cursor):
         def fetchall(self):
-            return [("BTCUSDT", "LONG", "100", None, "[110]", "1", "active")]
+            if "fallback_protection" in self.sql:
+                return [("BTCUSDT", "LONG", "100", None, "[110]", "1", "active", "epoch", "now")]
+            return super().fetchall()
 
     class TpConnection(Connection):
         def cursor(self):
             return TpCursor()
 
-    text = build_operator_health_report(
-        TpGateway(),
-        TpConnection,
-        mode="DEMO",
-        venue_mode="DEMO",
-        execution_enabled=False,
-        fallback_mutations_enabled="1",
-    )
-    assert "MISSING LOSS STOP" in text
-    assert "🟡 FALLBACK" not in text
-    assert "(can close)" not in text
+    text = report(TpGateway(), TpConnection, fallback_mutations_enabled="1")
+    assert "MISSING BTCUSDT" in text
+    assert "NATIVE REGISTERED" not in text
+    assert "can close" not in text
+
+
+@pytest.mark.parametrize("failed_table", ["fills", "balance_snapshots", "telegram_messages"])
+def test_section_failure_preserves_successful_account_and_other_ledger_sections(failed_table):
+    class PartialCursor(Cursor):
+        def execute(self, sql):
+            if f"FROM {failed_table}" in sql and "canonical_signals" not in sql:
+                raise TimeoutError("private diagnostic must not leak")
+            super().execute(sql)
+
+    class PartialConnection(Connection):
+        def cursor(self):
+            return PartialCursor()
+
+    data = snapshot(Gateway(), PartialConnection)
+    assert data["account"]["equity"] == "100"
+    assert data["metrics"]["open_positions"] == 0
+    text = format_report(**data)
+    assert "private diagnostic" not in text
+    if failed_table == "fills":
+        assert data["pnl"]["fill_n"] == "UNKNOWN"
+        assert "Fees paid    UNKNOWN" in text
+        assert "Net realized ➖ UNKNOWN" in text
+        assert "no realized PNL yet" not in text
+    elif failed_table == "telegram_messages":
+        assert data["messages"] is None
+        assert "message read unavailable" in text
+        assert "No source message stored" not in text
+    else:
+        assert data["metrics"]["last_admission_captured_at"] == "UNKNOWN"
+        assert data["pnl"]["fill_n"] == 0
+
+
+def test_unknown_provider_and_ledger_counts_never_reconcile_successfully():
+    def missing_db():
+        raise TimeoutError("offline")
+
+    text = report(FailedGateway(), missing_db)
+    assert "provider UNKNOWN ⚠️" in text
+    assert "provider UNKNOWN ✅" not in text
+    assert "OK · provider" not in text
+    assert "Reservations   UNKNOWN" in text
+
+
+def test_partially_missing_open_pnl_is_not_a_partial_total():
+    class Positions(Gateway):
+        def get_positions(self):
+            return [
+                {"symbol": "BTCUSDT", "unrealized_pl": "3"},
+                {"symbol": "ETHUSDT", "unrealized_pl": None},
+            ]
+
+    text = report(Positions())
+    assert "Open uPnL    UNKNOWN" in text
+    assert "Open uPnL    🟢 +3" not in text

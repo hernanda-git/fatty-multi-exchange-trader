@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -22,6 +23,10 @@ from fatty_trader.exchanges.bitget.protection_contract import (
 BASE_URL = "https://api.bitget.com"
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_MAX_GET_RETRIES = 2
+# Bound midpoint network uncertainty to 500 ms: 5% of the tighter 10 s monitor
+# gate. A wall/monotonic disagreement over 50 ms makes the sample unavailable.
+MAX_CLOCK_SAMPLE_RTT_MS = 1_000
+MAX_CLOCK_SAMPLE_WALL_DELTA_MS = 50
 _UNKNOWN_MUTATION_CODES = {"40010", "40725", "45001"}
 
 _SENSITIVE_TOKENS = ("ACCESS-KEY", "ACCESS-SIGN", "ACCESS-PASSPHRASE", "ACCESS-TIMESTAMP")
@@ -163,6 +168,8 @@ class BitgetRestClient:
         path: str,
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
+        *,
+        max_get_retries: int | None = None,
     ) -> Any:
         query = canonical_query_string(params)
         body = compact_body(payload) if method.upper() != "GET" else ""
@@ -170,7 +177,8 @@ class BitgetRestClient:
         content = body.encode("utf-8") if body else None
         retryable = method.upper() == "GET"
 
-        attempts = 1 + (self._max_get_retries if retryable else 0)
+        get_retries = self._max_get_retries if max_get_retries is None else max_get_retries
+        attempts = 1 + (get_retries if retryable else 0)
         last_error: Exception | None = None
         for attempt in range(attempts):
             timestamp = str(int(time.time() * 1000))
@@ -299,15 +307,46 @@ class BitgetRestClient:
     async def get_server_time_ms(self) -> int:
         """Return Bitget server time in milliseconds for clock-skew checks."""
         data = await self._get("/api/v2/public/time")
+        return self._server_time_ms(data)
+
+    @staticmethod
+    def _server_time_ms(data: Any) -> int:
         raw = data.get("serverTime") if isinstance(data, dict) else data
         try:
             return int(str(raw))
-        except (TypeError, ValueError) as exc:
-            raise BitgetApiError("Bitget server time response is invalid") from exc
+        except (TypeError, ValueError):
+            raise BitgetApiError("Bitget server time response is invalid") from None
 
     async def get_clock_skew_ms(self) -> int:
-        """Return local-minus-server clock skew in milliseconds."""
-        return int(time.time() * 1000) - await self.get_server_time_ms()
+        """Estimate local-minus-server offset from one reliable request midpoint.
+
+        Slow requests and local wall-clock jumps are unavailable evidence, not
+        clock drift. General server-time reads retain their ordinary GET retries.
+        """
+        wall_start_ms = time.time() * 1000
+        monotonic_start_ms = time.monotonic() * 1000
+        try:
+            data = await self._request("GET", "/api/v2/public/time", max_get_retries=0)
+            server_time_ms = self._server_time_ms(data)
+        except BitgetApiError as exc:
+            raise BitgetApiError(
+                "Bitget clock sample unavailable", http_status=exc.http_status
+            ) from None
+        monotonic_end_ms = time.monotonic() * 1000
+        wall_end_ms = time.time() * 1000
+        elapsed_ms = monotonic_end_ms - monotonic_start_ms
+        wall_elapsed_ms = wall_end_ms - wall_start_ms
+        if not 0 < server_time_ms <= 2**63 - 1:
+            raise BitgetApiError("Bitget clock sample has invalid server time")
+        if (
+            not all(math.isfinite(value) for value in (wall_start_ms, wall_end_ms, elapsed_ms))
+            or elapsed_ms < 0
+            or elapsed_ms > MAX_CLOCK_SAMPLE_RTT_MS
+        ):
+            raise BitgetApiError("Bitget clock sample has unreliable request duration")
+        if abs(wall_elapsed_ms - elapsed_ms) > MAX_CLOCK_SAMPLE_WALL_DELTA_MS:
+            raise BitgetApiError("Bitget clock sample has a local wall-clock jump")
+        return round((wall_start_ms + wall_end_ms) / 2 - server_time_ms)
 
     async def get_contracts(self, product_type: str = "USDT-FUTURES") -> Any:
         return await self._get("/api/v2/mix/market/contracts", {"productType": product_type})

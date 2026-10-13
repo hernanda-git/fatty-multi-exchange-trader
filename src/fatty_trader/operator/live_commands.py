@@ -193,33 +193,27 @@ class OperatorCommandService:
         return f"Saldo tersedia: {balance}"
 
     def _on_health(self) -> str:
-        # Parity with the periodical cron: the card is rendered by the single
-        # shared formatter (health_report_format), not by a second renderer
-        # that can drift. The caller loads data; this only supplies the
-        # provider-only slice when no health_reader is wired.
+        # The injected reader loads core provider/ledger meanings for both surfaces.
+        # Without DB wiring, report independent provider observations and UNKNOWN ledger.
         if self._health_reader is not None:
             return self._health_reader()
-        from fatty_trader.operator import health_report_format as fmt
-
-        positions = self._gw.get_positions()
-        orders = self._gw.get_orders()
-        account = {}
-        try:
-            account = self._gw.get_account_snapshot()
-        except Exception:
-            account = {}
-        return fmt.format_report(
-            positions if isinstance(positions, list) else None,
-            orders if isinstance(orders, list) else None,
-            {},
-            {},
-            [],
-            {},
-            account,
-            {"mode": "UNKNOWN", "venue_mode": "UNKNOWN", "execution_enabled": "UNKNOWN"},
-            {},
-            {},
+        from fatty_trader.operator.health import (
+            create_shared_health_reader,
+            load_operator_health_snapshot,
         )
+
+        def unavailable_database() -> Any:
+            raise RuntimeError("operator health database reader not configured")
+
+        return create_shared_health_reader(
+            lambda: load_operator_health_snapshot(
+                self._gw,
+                unavailable_database,
+                mode="UNKNOWN",
+                venue_mode="UNKNOWN",
+                execution_enabled=None,
+            )
+        )()
 
     def _on_help(self) -> str:
         return (
