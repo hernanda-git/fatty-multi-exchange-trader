@@ -31,6 +31,7 @@ ALLOWED_REASONS = {
     "bitget": "clock-skew-exceeded",
     "bitget-protection-stream": "socket-not-connected",
 }
+CLOCK_LATCH_REASONS = ("clock-skew-exceeded", "clock-skew-unavailable")
 STREAM_PROOF_TIMEOUT = 15.0
 PONG_MAX_AGE = 5.0
 
@@ -51,14 +52,19 @@ def require_production_settings(environ: Mapping[str, str]) -> None:
         raise BaselineRefused("recovery requires an observe-only protection stream")
 
 
-def validate_latches(rows: list[dict[str, Any]]) -> None:
+def validate_latches(
+    rows: list[dict[str, Any]], *, clock_latch_reason: str = "clock-skew-exceeded"
+) -> None:
+    if clock_latch_reason not in CLOCK_LATCH_REASONS:
+        raise BaselineRefused("unsupported approved clock latch reason")
     if not rows:
         raise BaselineRefused("no approved old latch is active")
     for row in rows:
         if (
             row.get("active") is not True
             or row.get("scope") not in ALLOWED_REASONS
-            or row.get("reason") != ALLOWED_REASONS[row["scope"]]
+            or row.get("reason")
+            != (clock_latch_reason if row["scope"] == "bitget" else ALLOWED_REASONS[row["scope"]])
             or not row.get("latched_at")
         ):
             raise BaselineRefused("unknown/global latch or unsafe reason; refusing release")
@@ -194,6 +200,7 @@ class PostgresBitgetLiveLatchRecovery:
         approval_reference: str,
         apply: bool = False,
         expected_digest: str | None = None,
+        clock_latch_reason: str = "clock-skew-exceeded",
     ) -> dict[str, Any]:
         if not confirmed or not approval_reference.strip() or not account_id.strip():
             raise BaselineRefused(
@@ -203,13 +210,23 @@ class PostgresBitgetLiveLatchRecovery:
         if apply and (expected_digest is None or len(expected_digest) != 64):
             raise BaselineRefused("apply requires the reviewed dry-run recovery_digest")
         approval_reference = approval_reference.strip()
+        if clock_latch_reason not in CLOCK_LATCH_REASONS:
+            raise BaselineRefused("unsupported approved clock latch reason")
+        clock_limit_ms = None
+        if clock_latch_reason == "clock-skew-unavailable":
+            try:
+                clock_limit_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
+            except ValueError as exc:
+                raise BaselineRefused("invalid production clock limit") from exc
+            if clock_limit_ms < 0:
+                raise BaselineRefused("invalid production clock limit")
         evidence = await collect_flat_evidence(client, account_id, "LIVE")
         connection = self._connection_factory()
         driver = None
         try:
             cursor = connection.cursor()
             observed = self._latches(cursor)
-            validate_latches(observed)
+            validate_latches(observed, clock_latch_reason=clock_latch_reason)
             self._baseline(cursor, baseline_id, account_id)
             self._ready(connection, cursor)
             # End the initial read transaction before bounded network diagnostics.
@@ -234,7 +251,7 @@ class PostgresBitgetLiveLatchRecovery:
                 "IN SHARE ROW EXCLUSIVE MODE"
             )
             locked = self._latches(cursor)
-            validate_latches(locked)
+            validate_latches(locked, clock_latch_reason=clock_latch_reason)
             if locked != observed:
                 raise BaselineRefused("latch rows changed during evidence collection")
             receipt = self._baseline(cursor, baseline_id, account_id)
@@ -246,6 +263,8 @@ class PostgresBitgetLiveLatchRecovery:
                         "baseline_id": str(baseline_id),
                         "account_id": account_id,
                         "approval_reference": approval_reference,
+                        "clock_latch_reason": clock_latch_reason,
+                        "clock_limit_ms": clock_limit_ms,
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -257,6 +276,15 @@ class PostgresBitgetLiveLatchRecovery:
             # for dry-run. The stream readers remain alive throughout these GETs.
             evidence = await collect_flat_evidence(client, account_id, "LIVE")
             _fresh(evidence)
+            clock = None
+            if clock_limit_ms is not None:
+                try:
+                    skew_ms = await client.get_clock_skew_ms()
+                except Exception as exc:
+                    raise BaselineRefused("fresh bounded clock sample unavailable") from exc
+                if abs(skew_ms) > clock_limit_ms:
+                    raise BaselineRefused("fresh clock offset exceeds production limit")
+                clock = {"offset_ms": skew_ms, "maximum_absolute_offset_ms": clock_limit_ms}
             stream = require_healthy_stream(socket, driver)
             result = {
                 "applied": False,
@@ -267,6 +295,8 @@ class PostgresBitgetLiveLatchRecovery:
                 "latches": locked,
                 "stream": stream,
                 "ledger_readiness_issues": [],
+                "clock_latch_reason": clock_latch_reason,
+                "clock": clock,
                 "provider_evidence": evidence,
             }
             if not apply:
@@ -296,6 +326,8 @@ class PostgresBitgetLiveLatchRecovery:
                     "provider_evidence": evidence,
                     "stream": stream,
                     "ledger_readiness_issues": [],
+                    "clock_latch_reason": clock_latch_reason,
+                    "clock": clock,
                 }
                 cursor.execute(
                     "INSERT INTO notifications_outbox (id,dedup_key,payload) "

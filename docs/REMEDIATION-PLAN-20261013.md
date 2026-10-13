@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: local acceptance COMPLETE (2095 passed, zero failures/errors/skips); application release committed, pushed, and deployed LIVE. Admission readiness and excellent-health acceptance are BLOCKED by production Codex authentication and a new `clock-skew-unavailable` latch outside the approved recovery policy.
+Status: reliability release deployed LIVE. Owner accepted current readiness with Codex as an unavailable fallback and explicitly approved admission activation as-is. Fresh evidence-led recovery of the current clock/stream latches is in progress; ongoing safety/risk gates remain enabled.
 
 Workstation repository: `C:/Users/it26/AppData/Local/Temp/bitget-audit-20261009-7c92`
 
@@ -429,20 +429,20 @@ Schema expectation: no migration. If that changes, add an explicit forward/backw
 | O05 | Verify deployed read-only health/clock/provider paths | DONE | O04 | Integration owner | Ledger readiness ready; authenticated GET probe PASS; web readiness ready; actual bounded clock samples -37/0/-17 ms; delivered card truthfully DEGRADED |
 | R01 | Obtain recovery authority and establish safe flat containment | DONE | O05 | Owner / operator | Approved scope recorded; four mutation consumers stopped for proof; no LIVE flag change; consumers subsequently resumed behind preserved latches |
 | R02 | Collect and review flat-baseline recovery proof | DONE | R01 | Operator | At 15:50 UTC dry-run bound UID/baseline, exact original reasons, flat three-product/four-family inventory, empty ledger issues, authenticated V2 legs and fresh pongs/mark; never applied |
-| R03 | Apply approved digest-bound recovery and read back | BLOCKED | R02 | Operator | Runtime changed venue reason to `clock-skew-unavailable`; existing policy refuses it. Original digest is obsolete after consumer resume. Codex refresh also requires owner login. No latch bypass or whitelist expansion |
-| R04 | Resume consumers and observe full runtime verifier PASS | BLOCKED | R03 | Operator | Consumers running; completed migrate/init jobs restored with no pending migrations; verifier correctly stops at active venue/stream latches, not PASS |
+| R03 | Apply approved digest-bound recovery and read back | ACTIVE | R02 | Operator | Owner approved readiness as-is and LIVE enablement; explicit clock-unavailable recovery option adds fresh bounded clock proof with unchanged limits; collect a new contained digest before apply |
+| R04 | Resume consumers and observe full runtime verifier PASS | PENDING | R03 | Operator | Resume only after fresh exact audited release; no blind SQL or automatic repeated recovery |
 | S01 | Verify delivered Telegram account/health and scheduled card | UNVERIFIED | R04 | Integration owner | New scheduled-format card SENT at 15:59:11 UTC; timer restored, next 21:58:50 UTC. New slash-command delivery not exercised; health remains DEGRADED |
 | S02 | Observe multiple monitor cycles and a report boundary | UNVERIFIED | S01 | Integration owner | Repeated healthy watchdog cycles observed, with intermittent clock-unavailable and stream stale/recovered events; manual report sent, not six-hour sustained acceptance |
 | S03 | Observe a real eligible live lifecycle without forced replay | UNVERIFIED | S02 | Integration owner | Latest stored source remains #16304; no new eligible signal or live lifecycle observed; no forced trade or historical replay |
-| S04 | Publish release verdict and close tracker | BLOCKED | S01–S03 | Integration owner | Deployed-but-admission-blocked evidence recorded; operational acceptance cannot close until production authentication and safe clock-latch recovery prerequisites are resolved |
+| S04 | Publish release verdict and close tracker | ACTIVE | S01–S03 | Integration owner | Codex fallback failure accepted by owner, not an admission blocker; publish actual activation evidence separately from unobserved lifecycle and sustained operation |
 
 Local slices are assigned to HealthRemediation, SizingRemediation, and ClockVenueRemediation; the integration owner owns shared service wiring, cutover, documentation, and final verification.
 
 ### 8.3 Current next action and production gates
 
-Current action: preserve admission latches pending owner reauthentication and reviewed clock-latch recovery. The unattended production Codex device-login attempt expired after 15 minutes without authorization. The owner must start a fresh `codex login --device-auth` on `fspmi-hostinger` and sign in to the existing production account; a different local account was explicitly not copied.
+Current action: execute the owner's approval to accept readiness as-is and enable LIVE admission. Codex is an accepted unavailable fallback; authentication is no longer an activation prerequisite. Current provider account is flat and ledger readiness is ready.
 
-Remaining production gates: fresh supported recovery after review of the new `clock-skew-unavailable` reason, production model authentication, full runtime PASS, excellent delivered health, sustained observation, and natural next-signal/lifecycle evidence. The approved original digest cannot be applied after consumer resume or changed latch rows. Do not broaden recovery policy, hide the fault, widen timing/risk thresholds, force a trade, or replay historical signals to meet acceptance.
+Remaining activation gates: verify the scoped recovery extension, stop mutation consumers, obtain fresh account/baseline/flat/ledger/authenticated-stream/clock proof, review/apply its digest, resume consumers, and observe effective LIVE admission. Owner approval permits explicit recovery of the current `clock-skew-unavailable` reason, not arbitrary/global latch clearing, weaker clock/risk bounds, suppressed warnings, forced trades, or replay of historical signals.
 
 If no real eligible signal arrives, S03 remains pending/unverified; do not mark the project end-to-end complete. Record an explicit partial verdict of local verification plus operational readiness instead of implying live acceptance.
 
@@ -504,7 +504,7 @@ Rollback base: deployed main `69a4581870d94ebf3e99895b40faee91b426ee0d`. Eight e
 
 Unrelated workstation changes are excluded from the release: FOMO-Pulse documents and the pre-existing pyproject blank-line delta. No production code/provider mutation or latch release has occurred at this preparation checkpoint.
 
-### 8.8 Production deployment and blocked-readiness evidence
+### 8.8 Historical production deployment and blocked-readiness evidence
 
 Application release: `726b71e6ca3562cd323d4ffa7a13966e5a0b0352`, committed as `fix(bitget): restore reliable sizing reporting and close reconciliation`, pushed to the release branch and GitHub main. Production main fast-forwarded from the recorded rollback base. All eight application services were rebuilt/recreated; PostgreSQL was not recreated.
 
@@ -525,6 +525,14 @@ Evidence artifacts: build `artifact://110`; recovery dry-run `artifact://115`; r
 Additional finite diagnostic: 15 independent read-only public-time samples, spaced one second apart, were all available (offset range -32 to +7 ms; elapsed range 261.66–331.70 ms). This did not reproduce the monitor's intermittent unavailable samples, establish their underlying cause, erase the durable latch, or justify widening thresholds. No code, provider state, or latch rows were modified by the diagnostic.
 
 Release verdict: **code deployed LIVE; admission intentionally blocked; excellent health and next eligible signal processing not accepted**. Owner authentication and an approved safe treatment of the new clock-unavailable latch are prerequisites, not cosmetic report fixes.
+
+### 8.9 Owner-accepted fallback limitation and LIVE activation
+
+New owner instruction: “codex just a fallback, I approve the readiness as is, enable it and make it live. whats the other pending works?” This supersedes Codex authentication as an activation blocker and explicitly authorizes return to LIVE admission under current safety/risk policy. Fallback authentication/usage still report their actual unavailable/stale state; no different account or fabricated green status is substituted.
+
+At 16:24 UTC, fresh authenticated USDT open-state reads were flat, ledger readiness returned ready with no issues, and the active exact reasons were `bitget/clock-skew-unavailable` and `bitget-protection-stream/socket-not-connected`. A new approved backup `backups/fatty_trader_20261013T162917Z.dump` passed the existing integrity gate, size 1751278 bytes; retention deletion stayed disabled.
+
+The recovery default remains narrow. New explicit `--clock-latch-reason clock-skew-unavailable` selection is required on both proof/apply and additionally proves a current bounded midpoint clock sample within the unchanged production clock limit. Selection/limit are included in the reviewed digest, and current clock evidence in the release audit. Unknown/global reasons, changed rows/binding/digest, nonflat inventory, unresolved ledger evidence, unavailable/skewed current clock, or unauthenticated/stale streams continue to refuse recovery.
 
 ## 9. Final release definition of done
 

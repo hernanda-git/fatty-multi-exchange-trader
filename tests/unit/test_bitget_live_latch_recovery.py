@@ -44,9 +44,16 @@ RECEIPT = {
 class Client:
     environment = "LIVE"
 
-    def __init__(self, *, nonflat=False):
+    def __init__(self, *, nonflat=False, clock_skew_ms=0, clock_unavailable=False):
         self.calls = []
         self.nonflat = nonflat
+        self.clock_skew_ms = clock_skew_ms
+        self.clock_unavailable = clock_unavailable
+
+    async def get_clock_skew_ms(self):
+        if self.clock_unavailable:
+            raise RuntimeError("clock sample unavailable")
+        return self.clock_skew_ms
 
     async def _get(self, path, params=None):
         self.calls.append((path, params))
@@ -219,6 +226,88 @@ async def test_apply_is_one_commit_with_exact_latches_and_audited_outbox():
         assert event["prior_latch"]["active"] is True
         assert event["provider_evidence"]["account_id"] == "1234"
         assert event["stream"]["private_authenticated"] is True
+
+
+@pytest.mark.asyncio
+async def test_unavailable_clock_latch_requires_exact_operator_selection():
+    db = Connection()
+    db.latches[0]["reason"] = "clock-skew-unavailable"
+    with pytest.raises(BaselineRefused, match="unsafe reason"):
+        await run(db)
+    assert db.commits == 0 and not db.updates
+
+
+@pytest.mark.asyncio
+async def test_approved_unavailable_clock_recovery_audits_fresh_clock_and_exact_rows():
+    db = Connection()
+    db.latches[0]["reason"] = "clock-skew-unavailable"
+    proof = await run(db, clock_latch_reason="clock-skew-unavailable")
+    result = await run(
+        db,
+        Client(clock_skew_ms=-20),
+        clock_latch_reason="clock-skew-unavailable",
+        apply=True,
+        expected_digest=proof["recovery_digest"],
+    )
+    assert result["applied"] is True and db.commits == 1
+    assert {(p[1], p[2]) for p in db.updates} == {
+        ("bitget", "clock-skew-unavailable"),
+        ("bitget-protection-stream", "socket-not-connected"),
+    }
+    for event in db.events:
+        assert event["clock_latch_reason"] == "clock-skew-unavailable"
+        assert event["clock"] == {"offset_ms": -20, "maximum_absolute_offset_ms": 10000}
+
+
+@pytest.mark.parametrize(
+    "client",
+    [Client(clock_unavailable=True), Client(clock_skew_ms=10001), Client(clock_skew_ms=-10001)],
+)
+@pytest.mark.asyncio
+async def test_approved_clock_reason_never_bypasses_current_clock_fault(client):
+    db = Connection()
+    db.latches[0]["reason"] = "clock-skew-unavailable"
+    proof = await run(db, clock_latch_reason="clock-skew-unavailable")
+    with pytest.raises(BaselineRefused, match="clock"):
+        await run(
+            db,
+            client,
+            clock_latch_reason="clock-skew-unavailable",
+            apply=True,
+            expected_digest=proof["recovery_digest"],
+        )
+    assert db.commits == 0 and not db.updates and not db.events
+
+
+@pytest.mark.asyncio
+async def test_approved_clock_reason_never_bypasses_an_unknown_global_latch():
+    db = Connection()
+    db.latches[0]["reason"] = "clock-skew-unavailable"
+    db.latches.append({**LATCHES[0], "scope": "global"})
+    with pytest.raises(BaselineRefused, match="unsafe reason"):
+        await run(db, clock_latch_reason="clock-skew-unavailable")
+    assert db.commits == 0 and not db.updates
+
+
+@pytest.mark.asyncio
+async def test_clock_recovery_digest_binds_production_limit():
+    db = Connection()
+    db.latches[0]["reason"] = "clock-skew-unavailable"
+    proof = await run(db, clock_latch_reason="clock-skew-unavailable")
+    with pytest.raises(BaselineRefused, match="differ from reviewed"):
+        await recovery.PostgresBitgetLiveLatchRecovery(lambda: db).run(
+            Client(),
+            Socket(),
+            environ={**ENV, "BITGET_MAX_CLOCK_SKEW_MS": "20000"},
+            confirmed=True,
+            account_id="1234",
+            baseline_id=BASELINE_ID,
+            approval_reference="recovery-approval",
+            clock_latch_reason="clock-skew-unavailable",
+            apply=True,
+            expected_digest=proof["recovery_digest"],
+        )
+    assert db.commits == 0 and not db.updates
 
 
 @pytest.mark.parametrize(

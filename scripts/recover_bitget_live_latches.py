@@ -16,6 +16,7 @@ from fatty_trader.exchanges.bitget.client import BitgetRestClient
 from fatty_trader.exchanges.bitget.websocket_v2 import BitgetV2WebSocket
 from fatty_trader.storage.bitget_baseline import BaselineRefused
 from fatty_trader.storage.bitget_live_latch_recovery import (
+    CLOCK_LATCH_REASONS,
     PostgresBitgetLiveLatchRecovery,
     require_production_settings,
 )
@@ -38,6 +39,12 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--expected-digest", help="reviewed dry-run recovery_digest, required for apply"
+    )
+    result.add_argument(
+        "--clock-latch-reason",
+        choices=CLOCK_LATCH_REASONS,
+        default="clock-skew-exceeded",
+        help="exact owner-approved venue reason; unavailable requires a fresh bounded clock sample",
     )
     return result
 
@@ -78,6 +85,7 @@ async def run(args: argparse.Namespace) -> dict[str, object]:
             approval_reference=args.approval_reference,
             apply=args.apply,
             expected_digest=args.expected_digest,
+            clock_latch_reason=args.clock_latch_reason,
         )
     finally:
         await client.aclose()
