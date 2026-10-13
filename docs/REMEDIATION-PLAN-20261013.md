@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: local implementation/acceptance COMPLETE (2095 passed, zero failures/errors/skips). Owner approved commit, push, and LIVE deployment; production rollout/recovery verification is in progress.
+Status: local acceptance COMPLETE (2095 passed, zero failures/errors/skips); application release committed, pushed, and deployed LIVE. Admission readiness and excellent-health acceptance are BLOCKED by production Codex authentication and a new `clock-skew-unavailable` latch outside the approved recovery policy.
 
 Workstation repository: `C:/Users/it26/AppData/Local/Temp/bitget-audit-20261009-7c92`
 
@@ -424,25 +424,25 @@ Schema expectation: no migration. If that changes, add an explicit forward/backw
 | V04 | Close local acceptance and remove throwaway scaffolds | DONE | V03 | Integration owner | Local acceptance complete; temporary smoke/diagnostic scripts removed; disposable verification services stopped after evidence collection |
 | O01 | Obtain scoped production rollout authority | DONE | V04 | Owner / operator | Owner explicitly approved commit, push and LIVE deployment, with clean signal processing and excellent health reporting |
 | O02 | Refresh safety inventory, record rollback release, create backup | DONE | O01 | Operator | All three futures products and four pending families proved flat; no active dispatch lease; baseline matched; verified 1751209-byte backup and eight prior image rollback tags preserved |
-| O03 | Build approved release and check rendered LIVE-only policy | PENDING | O02 | Operator | No running-consumer changes yet |
-| O04 | Deploy application consumers and verify actual source lineage | PENDING | O03 | Operator | Stage E; preserve latches and effective flags |
-| O05 | Verify deployed read-only health/clock/provider paths | PENDING | O04 | Integration owner | Gate E; distinguish blocked admission from deployed code correctness |
-| R01 | Obtain recovery authority and establish safe flat containment | ACTIVE | O05 | Owner / operator | Approved return to LIVE operation includes evidence-led release of the exact eligible admission blocks; fresh flat proof collected, mutation-consumer containment still required |
-| R02 | Collect and review flat-baseline recovery proof | PENDING | R01 | Operator | Exact UID/baseline/reasons/digest/stream/ledger evidence |
-| R03 | Apply approved digest-bound recovery and read back | PENDING | R02 | Operator | Refusal or changed evidence stops; never repeat blindly |
-| R04 | Resume consumers and observe full runtime verifier PASS | PENDING | R03 | Operator | Actual `runtime_check=PASS`, not healthy container count alone |
-| S01 | Verify delivered Telegram account/health and scheduled card | PENDING | R04 | Integration owner | Actual surface/delivery under notification authority |
-| S02 | Observe multiple monitor cycles and a report boundary | PENDING | S01 | Integration owner | No unexplained relapse; freshness meanings remain truthful |
-| S03 | Observe a real eligible live lifecycle without forced replay | PENDING | S02 | Integration owner | Natural event or separate authorization; keep uncovered stages unverified |
-| S04 | Publish release verdict and close tracker | PENDING | S01–S03 | Integration owner | Separate local, runtime readiness, and live-lifecycle evidence |
+| O03 | Build approved release and check rendered LIVE-only policy | DONE | O02 | Operator | Release `726b71e6ca3562cd323d4ffa7a13966e5a0b0352` pushed to GitHub main; application images built; production policy PASS |
+| O04 | Deploy application consumers and verify actual source lineage | DONE | O03 | Operator | Eight application containers match source digest `d00e9add12ed86c33008feafa2542b27418c90434db38bc27c0ec6d1797cd5e5`; nine services healthy; original LIVE flags/risk caps preserved |
+| O05 | Verify deployed read-only health/clock/provider paths | DONE | O04 | Integration owner | Ledger readiness ready; authenticated GET probe PASS; web readiness ready; actual bounded clock samples -37/0/-17 ms; delivered card truthfully DEGRADED |
+| R01 | Obtain recovery authority and establish safe flat containment | DONE | O05 | Owner / operator | Approved scope recorded; four mutation consumers stopped for proof; no LIVE flag change; consumers subsequently resumed behind preserved latches |
+| R02 | Collect and review flat-baseline recovery proof | DONE | R01 | Operator | At 15:50 UTC dry-run bound UID/baseline, exact original reasons, flat three-product/four-family inventory, empty ledger issues, authenticated V2 legs and fresh pongs/mark; never applied |
+| R03 | Apply approved digest-bound recovery and read back | BLOCKED | R02 | Operator | Runtime changed venue reason to `clock-skew-unavailable`; existing policy refuses it. Original digest is obsolete after consumer resume. Codex refresh also requires owner login. No latch bypass or whitelist expansion |
+| R04 | Resume consumers and observe full runtime verifier PASS | BLOCKED | R03 | Operator | Consumers running; completed migrate/init jobs restored with no pending migrations; verifier correctly stops at active venue/stream latches, not PASS |
+| S01 | Verify delivered Telegram account/health and scheduled card | UNVERIFIED | R04 | Integration owner | New scheduled-format card SENT at 15:59:11 UTC; timer restored, next 21:58:50 UTC. New slash-command delivery not exercised; health remains DEGRADED |
+| S02 | Observe multiple monitor cycles and a report boundary | UNVERIFIED | S01 | Integration owner | Repeated healthy watchdog cycles observed, with intermittent clock-unavailable and stream stale/recovered events; manual report sent, not six-hour sustained acceptance |
+| S03 | Observe a real eligible live lifecycle without forced replay | UNVERIFIED | S02 | Integration owner | Latest stored source remains #16304; no new eligible signal or live lifecycle observed; no forced trade or historical replay |
+| S04 | Publish release verdict and close tracker | BLOCKED | S01–S03 | Integration owner | Deployed-but-admission-blocked evidence recorded; operational acceptance cannot close until production authentication and safe clock-latch recovery prerequisites are resolved |
 
 Local slices are assigned to HealthRemediation, SizingRemediation, and ClockVenueRemediation; the integration owner owns shared service wiring, cutover, documentation, and final verification.
 
 ### 8.3 Current next action and production gates
 
-Current action: commit/push the isolated verified remediation, deploy under LIVE/LIVE/1, collect exact approved recovery proof with mutation consumers stopped, then read back admission and delivered health evidence.
+Current action: publish deployed evidence while preserving admission latches. Production Codex device authorization awaits the owner signing in to the existing production account; a different local account was explicitly not copied.
 
-Remaining production gates: verified new container/source lineage, digest-bound current recovery proof/apply, full runtime acceptance, delivered health report, sustained observation, and natural next-signal/lifecycle evidence. No forced trade or historical replay is authorized by deployment approval.
+Remaining production gates: fresh supported recovery after review of the new `clock-skew-unavailable` reason, production model authentication, full runtime PASS, excellent delivered health, sustained observation, and natural next-signal/lifecycle evidence. The approved original digest cannot be applied after consumer resume or changed latch rows. Do not broaden recovery policy, hide the fault, widen timing/risk thresholds, force a trade, or replay historical signals to meet acceptance.
 
 If no real eligible signal arrives, S03 remains pending/unverified; do not mark the project end-to-end complete. Record an explicit partial verdict of local verification plus operational readiness instead of implying live acceptance.
 
@@ -503,6 +503,28 @@ Fresh authenticated GET-only inventory matched the audited account and proved no
 Rollback base: deployed main `69a4581870d94ebf3e99895b40faee91b426ee0d`. Eight existing application images were retained under `fatty-remediation-rollback-<service>:69a4581`. Database backup `/home/valarion/apps/fatty-multi-exchange-trader/backups/fatty_trader_20261013T154125Z.dump` passed `pg_restore --list` readability verification, size 1751209 bytes. Backup retention deletion was disabled for this operation.
 
 Unrelated workstation changes are excluded from the release: FOMO-Pulse documents and the pre-existing pyproject blank-line delta. No production code/provider mutation or latch release has occurred at this preparation checkpoint.
+
+### 8.8 Production deployment and blocked-readiness evidence
+
+Application release: `726b71e6ca3562cd323d4ffa7a13966e5a0b0352`, committed as `fix(bitget): restore reliable sizing reporting and close reconciliation`, pushed to the release branch and GitHub main. Production main fast-forwarded from the recorded rollback base. All eight application services were rebuilt/recreated; PostgreSQL was not recreated.
+
+Actual source-tree digest matched in intake, analyzer, dispatcher-bitget, monitor-bitget, operator-bot, notification-sender, source-management, and web: `d00e9add12ed86c33008feafa2542b27418c90434db38bc27c0ec6d1797cd5e5`. All nine running services were healthy. Rendered and effective consumer policy remained LIVE/LIVE/1. Ledger readiness returned `ready` with no issues; the read-only venue probe returned `ok=true`; web runtime dependency/progress readiness returned `ready`. Web liveness/readiness is not model authentication or trading-admission proof.
+
+Supported recovery dry-run ran with mutation consumers stopped and approval reference `owner-approved-live-remediation-20261013`, account UID `5536885345`, baseline `1b7b797d-471f-446a-b3ef-1157fb81cab0`. It returned `applied=false`, original exact allowed latches, flat inventory across all three futures products/four pending families, no ledger issues, authenticated private V2 connection, public/private pong ages 0.962/0.736 seconds, and BTC mark age 0.189 seconds. Reviewed digest was `f481e43c4ffe72e7ae2256f4638299607da485b623bb2a4edafe4c9ba9db1985`. This is historical no-write proof, not a currently applicable release authorization.
+
+Consumers were resumed behind preserved latches after Codex authentication failed. Subsequent monitoring recorded `clock-skew-unavailable`, changing the venue latch reason outside the supported recovery whitelist. Three independent bounded live clock samples returned offsets -37/0/-17 ms with RTTs 354.27/278.32/312.25 ms; these successful samples do not erase intermittent unavailable samples or authorize latch release. Repeated watchdog cycles reported HEALTHY, while additional clock-unavailable and stream stale/recovered events remained observable. The complete verifier now reports `runtime_blocked=kill_switch_active action=preserve_latch`; it has not passed.
+
+The first verifier invocation also found missing historical migrate/init containers. All migration versions 1–25 were confirmed installed with no pending migration. Supported idempotent startup jobs were built/run successfully to restore their completed-container prerequisite; no new schema migration or database recreation was introduced.
+
+Production Codex access expired October 3. A real read-only model invocation failed with HTTP 401 and `refresh_token_reused`; the host usage probe also failed authentication. The available local Codex credential belongs to a different account, so it was not copied or substituted. A production-account device login was initiated for owner authorization; no credential value or temporary device code is stored here. Successful authorization must be followed by safe account-binding verification, analyzer recreation to bind the current host auth file, and a real model smoke before model-dependent next-signal readiness can be claimed.
+
+The actual installed health service ran using its Python 3.11 runtime and delivered a Telegram card (`SENT`, `Result=success`, `ExecMainStatus=0`) at 15:59:11 UTC. It correctly reported DEGRADED, nine healthy services, provider-flat reconciliation, two active latches, current account observed at 15:58:56 UTC (equity/available 9.170264 USDT), 19 historical fills with net realized -2.931965 USDT, October 1 admission evidence separately labeled, latest message #16304, and stale Codex quota with a `StopIteration` credential-selection reason. That quota display is not authentication success or current quota proof. The timer was restored; next invocation was 21:58:50 UTC. New slash-command Telegram delivery and excellent-health acceptance remain unverified.
+
+Evidence artifacts: build `artifact://110`; recovery dry-run `artifact://115`; real Codex failure `artifact://117`; deployed lineage/ledger/provider/web `artifact://130`; supported startup jobs `artifact://136`; delivered health/timer `artifact://139`; blocked runtime verifier `artifact://140`; multi-cycle monitor observations `artifact://142`. Production rollback backup/images remain preserved. No manual provider mutation, forced trade, historical replay, risk expansion, or latch release was initiated.
+
+Additional finite diagnostic: 15 independent read-only public-time samples, spaced one second apart, were all available (offset range -32 to +7 ms; elapsed range 261.66–331.70 ms). This did not reproduce the monitor's intermittent unavailable samples, establish their underlying cause, erase the durable latch, or justify widening thresholds. No code, provider state, or latch rows were modified by the diagnostic.
+
+Release verdict: **code deployed LIVE; admission intentionally blocked; excellent health and next eligible signal processing not accepted**. Owner authentication and an approved safe treatment of the new clock-unavailable latch are prerequisites, not cosmetic report fixes.
 
 ## 9. Final release definition of done
 
