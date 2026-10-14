@@ -29,6 +29,10 @@ claiming readiness.
 - [Architecture](ARCHITECTURE.md)
 - [Security](SECURITY.md)
 - [Operations](docs/OPERATIONS.md)
+- [Approved Bot Management Console master plan](docs/BOT-CONSOLE-MASTER-PLAN.md)
+- [Console phase progress and evidence tracker](docs/BOT-CONSOLE-PROGRESS.md)
+- [Console capability and safety inventory](docs/BOT-CONSOLE-CAPABILITIES.md)
+- [Console UI/API interaction specification](docs/BOT-CONSOLE-UI-API-SPEC.md)
 
 ## Safety invariants
 
