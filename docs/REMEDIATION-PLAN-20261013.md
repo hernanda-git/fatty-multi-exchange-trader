@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: **LIVE admission ENABLED** under owner-accepted readiness. Application release `3c51ba7` deployed; full runtime verifier PASS, nine services healthy, both admission scopes inactive, and current Telegram health delivered. Codex remains an accepted unavailable fallback; sustained operation and a natural real-trade lifecycle remain unverified.
+Status refreshed 2026-10-14 11:07 UTC: **LIVE admission restored; runtime verifier PASS** after the scheduling/protection/recovery repairs below and contained digest-bound clock-latch recovery. Nine services healthy; ledger ready; both scopes inactive; copied source digest matches all eight application containers. Current account flat at 9.17026367 USDT; Telegram health SENT. Codex remains an accepted unavailable fallback, and a naturally executed new trade lifecycle remains unverified.
 
 Workstation repository: `C:/Users/it26/AppData/Local/Temp/bitget-audit-20261009-7c92`
 
@@ -594,3 +594,50 @@ The release can be called fully complete only when all applicable local, deploym
 8. Relevant/full-suite/DB checks and integrated smoke outputs pass and are recorded.
 9. Actual deployed code, per-service LIVE policy, worker readiness, ledger/provider state, and scheduled/on-demand Telegram surfaces are verified.
 10. Real lifecycle observations support the claimed execution/protection/reconciliation coverage; remaining unobserved stages are explicitly identified rather than marked done.
+
+## 10. October 14 execution audit and repair
+
+Fresh read-only production trace at 10:50 UTC joined source messages, analyzer notifications, canonical signals, dispatch transitions, reservations, live intents, fills, source-management intents, and protection rows:
+
+| Message | Signal | Durable outcome | Entry reservation / intent / fill |
+|---|---|---|---|
+| 16280, October 10 | MAGIC SHORT | REJECTED: exact split quantity-step mismatch | 0 / 0 / 0 |
+| 16292, October 11 | FLOW LONG | REJECTED: provider 40309, removed contract | 0 / 0 / 0 |
+| 16299, October 13 | MAGIC LONG | REJECTED: kill-switch-latched | 0 / 0 / 0 |
+| 16302, October 13 | INJ LONG | EXPIRED: stale-source-message | 0 / 0 / 0 |
+| 16305, October 14 | ZEC LONG | REJECTED: kill-switch-latched | 0 / 0 / 0 |
+
+ZEC arrived through catchup at 06:00:30 UTC, was analyzed at 06:01:05, and dispatch `b6cd1ed9-5378-4a6c-b1a4-5fa34a53ad6f` rejected at 06:01:22. Later edited-source evidence remains retained; it is not proof that the original dispatch was rejected for an edit. No expired/rejected dispatch was replayed.
+
+At 10:50 UTC, the real host health loader observed equity/available 9.17026367 USDT, zero provider positions/orders, zero active intents, released historical reservations, 19 historical fills, and the active venue clock latch. All nine services were healthy. The protection-stream scope was inactive. Actual monitor flags: fallback mutations 0, stream mutations 0, stream enabled 1, maximum clock skew 5000 ms. Ledger readiness was ready with no issues. These observations do not prove a future fill or working protection on a newly opened position.
+
+Local repairs:
+
+- Remaining synchronous monitor, watchdog capability/latch, and verified-close reconciliation storage work moves off the shared asyncio loop without abandoning in-flight storage on cancellation. Cancellation drains the operation; it does not permit overlapping replacement cycles. Owned reconciliation connections close on success and failure.
+- Final ENTRY checks include `bitget-protection-stream` after awaited leverage preparation, for both market and LIMIT legs.
+- Split protection accepts `VENUE_PROTECTED` only when observed coverage equals the actual aggregate fill quantity; mismatches remain `PARTIAL_UNPROTECTED`.
+- Source cancellation's existing `reconciliation_only` contract performs GET-only readback of previously claimed cancellations belonging to that management update. It creates no new claims or cancellation POSTs.
+
+Actual local monitor/watchdog programs with injected provider responses reproduced unavailable clock evidence behind 1100 ms synchronous storage before repair; after repair, clock responses completed while storage remained pending. This proves a local starvation defect, not the exact cause of the historical production event. Clock RTT/wall-jump bounds, risk caps, source eligibility, durable latch policy, and optional mutation gates remain unchanged.
+
+Isolated integrated smoke passed: actual venue/admission/execution adapters produced exact 2.1 / 6.3 split under 0.9828 USDT margin, verified full-position native SL/first-target TP after remainder fill, reconciled replay without another entry POST, and prevented market/remainder submission when the stream latch appeared during leverage setup. The provider was injected and credential-free; this is not a live trade.
+
+Final suite, deployment lineage, finite production-monitor timing, contained digest-bound recovery, and post-recovery runtime evidence are recorded below when observed. No automatic latch clearing or synthetic test trade is authorized by this report.
+
+### October 14 verification and operational recovery receipts
+
+- Integrated isolated suite: **2150 passed in 192.94 seconds**, zero reported failures; XML `artifacts/audit-20261014.xml`. Ruff lint/format passed (290 files formatted); mypy passed 108 source files; compileall passed.
+- Verified backup: `backups/fatty_trader_20261014T105354Z.dump`, 1752785 bytes, restore-list integrity passed, retention deletion disabled. Eight original images retained as `fatty-audit-rollback-<service>:1ce44d3`.
+- Rendered production LIVE policy passed before building all eight repaired images. Current provider-flat read preceded stopping dispatcher, monitor, operator, and source-management for contained observation/recovery.
+- Actual repaired `service.run_worker("monitor-bitget")` ran 180.5 seconds at unchanged production cadence: six actual monitor clock samples and 34 additional same-client GET probes, zero unavailable samples, maximum respective elapsed 283.379 / 561.508 ms. Maximum loop delay 507.871 ms. Watchdog produced one initial disconnected startup observation followed by 31 HEALTHY cycles; final state HEALTHY, zero watchdog exceptions. No provider mutation was permitted by the diagnostic.
+- Supported dry-run reviewed fresh flat inventory across all futures products and pending families, ready ledger, authenticated dual-leg V2 pong/mark evidence, and clock offset -11 ms within unchanged 5000 ms policy. Reviewed digest `cee87dd133c863251c71ee65dc017cb1eb6fb797494692ece34bc32b210d1f24`.
+- Matching contained apply returned `applied=true`, recovery ID `ccebf19c-9ebd-4a03-beb9-41922191bb59`, and fresh offset +1 ms. Only the approved venue clock latch was released; no order, risk limit, historical dispatch, fill or reservation was changed by recovery. Approval reference `owner-requested-full-audit-repair-20261014`.
+- Monitor resumed first. Fresh inactive-latch count was required before the other seven application containers were recreated; each reported healthy. Full runtime verifier and delivered health evidence follow when observed.
+
+The 180-second observation is finite runtime evidence, not a promise of overnight network reliability or a naturally filled trade. New genuine faults still latch; unsupported, edited, expired or risk-infeasible signals still fail closed.
+
+Final deployed acceptance: `scripts/verify_bitget_runtime.sh` returned **runtime_check=PASS**: LIVE policy passed, migrations 1–25 and startup jobs valid, nine services healthy, no active admission latch, ready ledger, authenticated venue reads passed, and all eight copied source trees matched digest `9c330e020c556123c91997687c566de7af7710b39a6a1b1c8d9f4407005842e9`. Normal monitor logs repeatedly reported `state=ok reasons=none latched_reason=none`; watchdog repeatedly HEALTHY after startup connection.
+
+The installed health service returned success/exit 0. A direct invocation of the real health-report script additionally returned **SENT**, with provider account observed at 11:06:58 UTC: 9.17026367 USDT equity/available, zero positions/orders, zero active intents, inactive latch. Card remains DEGRADED because unprobed lifecycle/safety and stale Codex fields are not fabricated as green. No new source signal arrived during these observations; no synthetic order, historical signal replay, leverage/risk expansion, or manual provider mutation was performed.
+
+Evidence boundary: production readiness is restored at this checkpoint. Native entry/fill/TP/SL/close execution on the next natural eligible source remains unobserved; exchange/network faults and legitimate admission rejection are still possible. Optional fallback mutation lifecycle and Codex reauthentication were not changed. Transient SSH pre-auth restriction resolved during work; its server-side cause was not established.

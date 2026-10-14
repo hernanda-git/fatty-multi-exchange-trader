@@ -105,6 +105,10 @@ Clock offset uses a single-attempt request midpoint, with monotonic duration che
 
 The protection stream's synchronous symbol lookup (including lazy iteration) and ordered capability persistence run off the shared asyncio loop. Database work must not postpone socket heartbeat handling or an in-flight clock response. Each standalone PostgreSQL capability read/write closes its owned connection on success and failure. Active fallback reads rely on the supported migration prerequisite instead of repeatedly running schema DDL. These scheduling/resource changes do not widen clock bounds, weaken native/fallback identity checks, or clear admission latches automatically.
 
+Monitor reconciliation, watchdog capability/latch persistence, and verified-close storage also run off the shared loop. The shared storage boundary drains an in-flight operation before acknowledging cancellation or a cycle timeout; cancellation must not start a replacement cycle over unfinished writes. Owned reconciliation connections close on success and failure. This does not alter the independently gated fallback mutation lifecycle.
+
+The final ENTRY fence rechecks global, Bitget, and protection-stream latches after awaited leverage preparation, including the LIMIT remainder. A split's protected status requires observed coverage equal to actual aggregate filled quantity. Source cancellation recovery with `reconciliation_only=True` reads back only that management update's existing cancellation claims; it never creates claims or sends cancellation POSTs.
+
 ## Approved flat-baseline latch recovery
 
 Use `scripts/recover_bitget_live_latches.py` only under its existing scoped approval and flat-baseline contract. All account mutation consumers must remain stopped throughout proof and apply; a venue admission latch alone does not prove fallback/source/operator mutations are stopped. Do not stop exposure protection to run a flat-account recovery on a nonflat account.

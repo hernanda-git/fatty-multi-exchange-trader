@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
 
 from fatty_trader.exchanges.bitget.live import normalize_fill
+from fatty_trader.execution.async_storage import _run_sync_storage
 from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
 
 
@@ -101,21 +102,9 @@ class PostgresVerifiedCloseLifecycle:
         environment = getattr(client, "environment", None)
         if environment not in {"DEMO", "LIVE"}:
             return
-        c = self._connection_factory()
-        try:
-            cur = c.cursor()
-            cur.execute(
-                """SELECT r.dispatch_id,r.client_order_id,r.symbol,b.close_client_order_id
-                FROM bitget_verified_close_bindings b
-                JOIN bitget_margin_reservations r ON r.id=b.reservation_id
-                WHERE r.environment=%s AND r.state='consumed'""",
-                (environment,),
-            )
-            candidates = cur.fetchall()
-        finally:
-            c.close()
+        candidates = await _run_sync_storage(self._read_close_candidates, environment)
         for dispatch_id, entry_oid, symbol, close_oid in candidates:
-            record = self._store.get(close_oid)
+            record = await _run_sync_storage(self._store.get, close_oid)
             if record is None or record.state in {"cancelled", "rejected"}:
                 continue
             raw = await client.get_fills(symbol)
@@ -205,7 +194,7 @@ class PostgresVerifiedCloseLifecycle:
             record.fee = sum((f["fee"] for f in evidence), Decimal(0))
             record.provider_fill_ids = tuple(f["provider_fill_id"] for f in evidence)
             record.provider_fills = tuple(matches)
-            self._store.update(record)
+            await _run_sync_storage(self._store.update, record)
             # Full authenticated position read includes BOTH hold sides; malformed is not flat.
             positions = await client.get_all_positions()
             if not isinstance(positions, list):
@@ -224,7 +213,8 @@ class PostgresVerifiedCloseLifecycle:
             except (KeyError, ValueError, TypeError, ArithmeticError):
                 continue
             observed_at = datetime.now(UTC)
-            self._reservations.release_verified_close(
+            await _run_sync_storage(
+                self._reservations.release_verified_close,
                 environment=environment,
                 symbol=symbol,
                 dispatch_id=dispatch_id,
@@ -235,3 +225,18 @@ class PostgresVerifiedCloseLifecycle:
                 flat_quantity=Decimal(0),
                 fills=tuple(evidence),
             )
+
+    def _read_close_candidates(self, environment: str) -> list[Any]:
+        c = self._connection_factory()
+        try:
+            cur = c.cursor()
+            cur.execute(
+                """SELECT r.dispatch_id,r.client_order_id,r.symbol,b.close_client_order_id
+                FROM bitget_verified_close_bindings b
+                JOIN bitget_margin_reservations r ON r.id=b.reservation_id
+                WHERE r.environment=%s AND r.state='consumed'""",
+                (environment,),
+            )
+            return list(cur.fetchall())
+        finally:
+            c.close()

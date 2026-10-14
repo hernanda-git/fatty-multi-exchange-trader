@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -21,6 +22,7 @@ from fatty_trader.exchanges.bitget.live import (
 from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
+from fatty_trader.execution.entry_routing import EntryMode, EntryRoute
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
 
@@ -369,3 +371,124 @@ async def test_native_and_restart_get_use_persisted_plan_not_source_or_new_admis
     assert len(execution.reconcile_calls) == 1
     assert dispatch.stop_loss == Decimal("63000.04")
     assert dispatch.take_profits == (Decimal("65000.06"),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replay", [False, True])
+async def test_split_quantity_mismatch_never_reports_protected_partial(replay) -> None:
+    dispatch = _dispatch()
+    submission = replace(
+        _submission(),
+        quantity=Decimal("0.008"),
+        entry_route=EntryRoute(
+            EntryMode.SPLIT_MARKET_LIMIT,
+            Decimal("0.002"),
+            Decimal("0.006"),
+            Decimal("64000"),
+        ),
+    )
+    store = InMemoryLiveIntentStore()
+    if replay:
+        root = replace(
+            BitgetDispatchExecution._intent(dispatch, submission),
+            requested_qty=Decimal("0.002"),
+            dispatch_id=dispatch.id,
+            entry_leg="market",
+        )
+        limit = replace(
+            root,
+            client_oid=root.client_oid + "-limit",
+            requested_qty=Decimal("0.006"),
+            entry_leg="limit",
+            order_type="limit",
+            limit_price=Decimal("64000"),
+            state="staged",
+        )
+        assert store.claim_split(root, limit)
+    mismatch = AsyncProtectionResult(ProtectionState.VENUE_PROTECTED, Decimal("0.001"))
+
+    async def read_protection(intent, plan):
+        return mismatch
+
+    execution = Execution(result=_result(), protection=mismatch)
+    adapter = BitgetDispatchExecution(execution, store, recovery_protection=read_protection)
+    assert await adapter.submit_entry(dispatch, submission) == "PARTIAL_UNPROTECTED"
+    assert execution.submit_calls == ([] if replay else [adapter.client_oid(dispatch)])
+    assert len(execution.protect_calls) == (0 if replay else 1)
+    limit = store.get(adapter.client_oid(dispatch) + "-limit")
+    assert limit is not None and limit.state == "cancelled" and limit.provider_terminal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", [False, True])
+async def test_stale_cancellation_reads_existing_claim_only_and_never_posts(
+    monkeypatch, terminal
+) -> None:
+    management_id = UUID(int=99)
+    store = InMemoryLiveIntentStore()
+    roots = []
+    for dispatch_id in (3, 4):
+        dispatch = replace(_dispatch(), id=UUID(int=dispatch_id << 64))
+        root = replace(
+            BitgetDispatchExecution._intent(dispatch, _submission()),
+            dispatch_id=dispatch.id,
+            entry_leg="market",
+        )
+        limit = replace(
+            root,
+            client_oid=root.client_oid + "-limit",
+            requested_qty=root.requested_qty * 3,
+            entry_leg="limit",
+            order_type="limit",
+            limit_price=Decimal("64000"),
+            state="staged",
+        )
+        assert store.claim_split(root, limit)
+        assert store.claim_entry_post(limit.client_oid)
+        roots.append(root)
+    claimed_oid = roots[0].client_oid + "-limit"
+    unrelated_oid = roots[1].client_oid + "-limit"
+    assert store.claim_cancel(claimed_oid, management_id)
+    claims = []
+
+    def forbid_claim(*args):
+        claims.append(args)
+        raise AssertionError("stale source recovery cannot create a cancellation claim")
+
+    monkeypatch.setattr(store, "claim_cancel", forbid_claim)
+    monkeypatch.setattr(store, "claim_cancel_post", forbid_claim)
+
+    class ReadOnlyExecution(Execution):
+        cancel_calls = []
+
+        async def reconcile_intent(self, intent):
+            self.reconcile_calls.append(intent.client_oid)
+            return replace(
+                _result(),
+                client_oid=intent.client_oid,
+                status=LiveOrderStatus.REJECTED if terminal else LiveOrderStatus.ACCEPTED,
+                filled_qty=Decimal("0"),
+                avg_price=None,
+                provider_fill_ids=(),
+                provider_fills=(),
+                provider_terminal=terminal,
+            )
+
+        async def cancel_pending_entry(self, intent, claim):
+            self.cancel_calls.append(intent.client_oid)
+            raise AssertionError("reconciliation-only must not call cancellation adapter")
+
+    execution = ReadOnlyExecution(result=_result())
+    adapter = BitgetDispatchExecution(execution, store)
+    assert (
+        await adapter.cancel_pending_entries("BTCUSDT", management_id, reconciliation_only=True)
+        is terminal
+    )
+    assert execution.reconcile_calls == (
+        [claimed_oid, roots[0].client_oid] if terminal else [claimed_oid]
+    )
+    assert execution.cancel_calls == execution.submit_calls == execution.protect_calls == []
+    assert claims == []
+    unrelated = store.get(unrelated_oid)
+    assert unrelated is not None and unrelated.cancel_requested_by is None
+    assert not unrelated.provider_terminal and unrelated.state == "requested"

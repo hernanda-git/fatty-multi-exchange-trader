@@ -21,6 +21,7 @@ from fatty_trader.exchanges.bitget.live import (
 )
 from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
+from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
 
@@ -427,7 +428,10 @@ class BitgetDispatchExecution:
             aggregate = self._aggregate_split(root, limit)
             if aggregate.filled_qty > 0:
                 protection = await self._read_recovery_protection(aggregate, dispatch)
-                if protection.state is not ProtectionState.VENUE_PROTECTED:
+                if (
+                    protection.state is not ProtectionState.VENUE_PROTECTED
+                    or protection.observed_quantity != aggregate.filled_qty
+                ):
                     return "PARTIAL_UNPROTECTED"
             return _dispatcher_status(self._aggregate_result(aggregate).status)
         try:
@@ -454,6 +458,7 @@ class BitgetDispatchExecution:
                 return (
                     "PARTIAL_UNPROTECTED"
                     if protection.state is not ProtectionState.VENUE_PROTECTED
+                    or protection.observed_quantity != root.filled_qty
                     else "PARTIAL"
                 )
             if self._store.claim_entry_post(limit.client_oid):
@@ -502,29 +507,34 @@ class BitgetDispatchExecution:
             return "EXPIRED"
         return None
 
-    async def cancel_pending_entries(self, symbol: str, management_id: UUID) -> bool:
-        """Fence ONLY owned LIMIT ENTRY children, then prove terminal provider truth."""
+    async def cancel_pending_entries(
+        self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
+    ) -> bool:
+        """Prove owned cancellation; stale recovery reads only its existing claims."""
         try:
             binding = getattr(self._recovery_protection, "verify_account_binding", None)
             if callable(binding):
                 await binding()
             for limit in self._store.pending_entries(symbol, management_id):
+                if reconciliation_only and limit.cancel_requested_by != management_id:
+                    continue
                 root = self._store.get(limit.client_oid.removesuffix("-limit"))
                 if root is None:
                     return False
                 self._aggregate_split(root, limit)
-                self._store.claim_cancel(limit.client_oid, management_id)
-                limit_updated = self._store.get(limit.client_oid)
-                if limit_updated is None:
-                    return False
-                limit = limit_updated
+                if not reconciliation_only:
+                    self._store.claim_cancel(limit.client_oid, management_id)
+                    limit_updated = self._store.get(limit.client_oid)
+                    if limit_updated is None:
+                        return False
+                    limit = limit_updated
                 if not limit.provider_terminal:
                     cancel = getattr(self._execution, "cancel_pending_entry", None)
                     result = (
                         await cancel(
                             limit, (lambda oid=limit.client_oid: self._store.claim_cancel_post(oid))
                         )
-                        if callable(cancel)
+                        if callable(cancel) and not reconciliation_only
                         else await self._execution.reconcile_intent(limit)
                     )
                     self._persist_readback(limit, result)
@@ -550,7 +560,7 @@ class BitgetDispatchExecution:
                         # admission verdict. A flat source-close retry must remain
                         # able to reconcile its real close fills.
                         await self._recovery_protection(aggregate, plan)
-            return not self._store.pending_entries(symbol)
+            return reconciliation_only or not self._store.pending_entries(symbol)
         except Exception:
             return False
 
@@ -607,11 +617,15 @@ class BitgetDispatchExecution:
             # read can retire our now-proven unsent rejected claim, never a replay.
             repository.entry_source_eligible(dispatch.id)
             return "EXPIRED"
-        # Eligibility may wait on FOR UPDATE. Read BOTH kill scopes only after
-        # all eligibility/protection DB operations, immediately before permission.
-        # Never gate reconciliation or closes with this ENTRY-only boundary.
+        # Eligibility may wait on FOR UPDATE. Read every entry kill scope only
+        # after all eligibility/protection DB operations, immediately before POST.
+        # Never gate reconciliation, required protection or closes with this boundary.
         killed = self._kill_switch is not None and any(
-            (self._kill_switch.is_active("global"), self._kill_switch.is_active("bitget"))
+            (
+                self._kill_switch.is_active("global"),
+                self._kill_switch.is_active("bitget"),
+                self._kill_switch.is_active(PROTECTION_STREAM_SCOPE),
+            )
         )
         if killed:
             intent.state = "rejected"

@@ -32,6 +32,7 @@ from fatty_trader.exchanges.bitget.protection_capability import (
     NativeProtectionState,
     StreamState,
 )
+from fatty_trader.execution.async_storage import _run_sync_storage
 from fatty_trader.storage.protection_capabilities import ProtectionCapabilityRepository
 
 #: Dedicated kill-switch scope for protection-stream failure.
@@ -159,7 +160,7 @@ class BitgetProtectionWatchdog:
                     provider_failure = True
                     if "provider-position-invalid" not in reasons:
                         reasons.append("provider-position-invalid")
-            capability = self._ensure_capability(symbol)
+            capability = await _run_sync_storage(self._ensure_capability, symbol)
             native_verified = capability.native_state is NativeProtectionState.VERIFIED
             # A dead socket denies entries even if REST says the capability is
             # verified: without a live stream, protection is not being enforced.
@@ -170,7 +171,8 @@ class BitgetProtectionWatchdog:
             )
             if native_verified and read_ok:
                 continue
-            self._repository.update_stream(
+            await _run_sync_storage(
+                self._repository.update_stream,
                 "bitget",
                 self._environment,
                 symbol,
@@ -205,12 +207,12 @@ class BitgetProtectionWatchdog:
             status = WatchdogStatus.HEALTHY
         # Only socket death and provider read failure are severe enough to
         # latch. Per-symbol quiet is reported, not enforced.
-        self._track_consecutive_failures(
+        await self._track_consecutive_failures(
             status, unique_reasons, latchable=socket_dead or provider_failure
         )
         return WatchdogReport(status, allow_new_entries, unique_reasons)
 
-    def _track_consecutive_failures(
+    async def _track_consecutive_failures(
         self, status: WatchdogStatus, reasons: tuple[str, ...], *, latchable: bool
     ) -> None:
         """Latch the protection-stream kill switch once failures persist.
@@ -232,7 +234,7 @@ class BitgetProtectionWatchdog:
             return
         if self._consecutive_bad_cycles < self._stale_cycles_before_latch:
             return
-        if self._is_latched():
+        if await _run_sync_storage(self._is_latched):
             return
 
         reason = "protection-watchdog-latched"
@@ -246,7 +248,7 @@ class BitgetProtectionWatchdog:
             if candidate in reasons:
                 reason = candidate
                 break
-        self._latch(reason)
+        await _run_sync_storage(self._latch, reason)
 
     def _is_latched(self) -> bool:
         is_active = getattr(self._kill_switch, "is_active", None)

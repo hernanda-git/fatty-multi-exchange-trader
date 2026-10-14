@@ -281,3 +281,150 @@ def test_operator_close_releases_only_after_monitor_verifies_real_fills(postgres
             "SELECT quantity,fee,realized_pnl FROM fills WHERE provider_fill_id='operator-fill'"
         ).fetchone() == (Decimal(1), Decimal(".1"), Decimal(2))
     assert client.posts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["candidates", "get", "update", "release"])
+async def test_close_reconciliation_storage_keeps_shared_clock_responsive(
+    postgres_schema, monkeypatch, operation
+):
+    import asyncio
+    import threading
+    import time
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+
+    dsn, schema, _, _, _, store = setup_owner(postgres_schema)
+    client = Client()
+    gateway = BitgetOperatorGateway(client, store, client_oid_factory=lambda: "operator-new-close")
+    await asyncio.to_thread(gateway.close_position, "BTCUSDT")
+    lifecycle = store.verified_close_lifecycle
+    entered = threading.Event()
+    release = threading.Event()
+    request_started = asyncio.Event()
+    respond = asyncio.Event()
+    if operation == "candidates":
+        target, method = lifecycle, "_read_close_candidates"
+    elif operation == "release":
+        target, method = lifecycle._reservations, "release_verified_close"
+    else:
+        target, method = store, operation
+    original = getattr(target, method)
+
+    def block_store(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, method, block_store)
+
+    async def time_response(*args, **kwargs):
+        request_started.set()
+        await respond.wait()
+        return {"serverTime": int(time.time() * 1000)}
+
+    clock_client = BitgetRestClient("", "", "")
+    monkeypatch.setattr(clock_client, "_request", time_response)
+    clock_task = asyncio.create_task(clock_client.get_clock_skew_ms())
+    reconciliation_task = None
+    try:
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        reconciliation_task = asyncio.create_task(lifecycle.reconcile(client))
+        assert await asyncio.to_thread(entered.wait, 1)
+        respond.set()
+        await asyncio.wait_for(clock_task, timeout=1)
+        assert not reconciliation_task.done(), "storage cannot starve clock/socket I/O"
+    finally:
+        release.set()
+        respond.set()
+        await asyncio.gather(
+            clock_task,
+            *([reconciliation_task] if reconciliation_task else []),
+            return_exceptions=True,
+        )
+        await clock_client.aclose()
+    with _connect(dsn, schema) as c:
+        assert c.execute("SELECT state FROM bitget_margin_reservations").fetchone() == ("released",)
+    assert client.posts == 1
+
+
+@pytest.mark.asyncio
+async def test_close_candidate_query_owns_connection_and_preserves_sql_failure():
+    import threading
+
+    from fatty_trader.storage.verified_closes import PostgresVerifiedCloseLifecycle
+
+    loop_thread = threading.get_ident()
+    events = []
+    failure = RuntimeError("query failure")
+
+    class Connection:
+        def __init__(self):
+            assert threading.get_ident() != loop_thread
+            self.owner = threading.get_ident()
+            events.append("connected")
+
+        def cursor(self):
+            assert threading.get_ident() == self.owner
+            return self
+
+        def execute(self, statement, params):
+            assert threading.get_ident() == self.owner
+            events.append("query")
+            raise failure
+
+        def close(self):
+            assert threading.get_ident() == self.owner
+            events.append("closed")
+
+    lifecycle = PostgresVerifiedCloseLifecycle(Connection, None)
+    with pytest.raises(RuntimeError) as raised:
+        await lifecycle.reconcile(Client())
+    assert raised.value is failure
+    assert events == ["connected", "query", "closed"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_query_drains_before_closing_connection():
+    import asyncio
+    import threading
+
+    from fatty_trader.storage.verified_closes import PostgresVerifiedCloseLifecycle
+
+    entered = threading.Event()
+    release = threading.Event()
+    events = []
+
+    class Connection:
+        def cursor(self):
+            return self
+
+        def execute(self, statement, params):
+            events.append("query")
+            entered.set()
+            release.wait(timeout=2)
+
+        def fetchall(self):
+            events.append("read")
+            return []
+
+        def close(self):
+            events.append("closed")
+
+    lifecycle = PostgresVerifiedCloseLifecycle(Connection, None)
+    operation = asyncio.create_task(lifecycle.reconcile(Client()))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        operation.cancel()
+        await asyncio.sleep(0)
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done()
+        assert events == ["query"]
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert events == ["query", "read", "closed"]
+    finally:
+        release.set()
+        await asyncio.gather(operation, return_exceptions=True)

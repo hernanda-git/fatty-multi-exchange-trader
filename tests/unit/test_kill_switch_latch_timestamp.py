@@ -24,6 +24,7 @@ class MemorySQLConnection:
         )
         self.now = "2026-10-05 10:00:00"
         self.outbox = []
+        self.closed_connections = 0
 
     def cursor(self):
         return self
@@ -43,6 +44,9 @@ class MemorySQLConnection:
 
     def rollback(self):
         self.db.rollback()
+
+    def close(self):
+        self.closed_connections += 1
 
 
 @pytest.mark.parametrize(
@@ -72,5 +76,6 @@ def test_latch_sets_missing_timestamp_preserves_active_epoch_and_resets_released
         ).fetchone()
         assert second == (expected, connection.now)
         assert repository.kill_switch_reason("bitget") == "provider-fills-read-failed"
+        assert connection.closed_connections == 3
     finally:
         connection.db.close()

@@ -23,6 +23,7 @@ class Connection(Protocol):
     def cursor(self) -> Cursor: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
+    def close(self) -> None: ...
 
 
 class ReconciliationRepository(Protocol):
@@ -119,32 +120,38 @@ class PostgresReconciliationRepository:
 
     def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
-                      filled_qty, filled_price, fee, provider_order_id, provider_fill_ids
-               FROM live_order_intents i
-               WHERE exchange = %s
-                 AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
-                     WHERE b.record_kind='intent' AND b.record_id=i.id)
-                 AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')""",
-            (exchange,),
-        )
-        return [_intent_from_row(row) for row in cursor.fetchall()]
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
+                          filled_qty, filled_price, fee, provider_order_id, provider_fill_ids
+                   FROM live_order_intents i
+                   WHERE exchange = %s
+                     AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                         WHERE b.record_kind='intent' AND b.record_id=i.id)
+                     AND state NOT IN ('rejected', 'cancelled', 'reconciled', 'filled')""",
+                (exchange,),
+            )
+            return [_intent_from_row(row) for row in cursor.fetchall()]
+        finally:
+            connection.close()
 
     def expected_position_symbols(self, exchange: str) -> set[str]:
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            """SELECT DISTINCT symbol FROM live_order_intents i
-               WHERE exchange = %s AND state NOT IN ('rejected', 'cancelled')
-                 AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
-                     WHERE b.record_kind='intent' AND b.record_id=i.id)""",
-            (exchange,),
-        )
-        return {
-            str(row["symbol"] if isinstance(row, dict) else row[0]) for row in cursor.fetchall()
-        }
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT DISTINCT symbol FROM live_order_intents i
+                   WHERE exchange = %s AND state NOT IN ('rejected', 'cancelled')
+                     AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                         WHERE b.record_kind='intent' AND b.record_id=i.id)""",
+                (exchange,),
+            )
+            return {
+                str(row["symbol"] if isinstance(row, dict) else row[0]) for row in cursor.fetchall()
+            }
+        finally:
+            connection.close()
 
     def update_intent(self, record: LiveIntentRecord) -> None:
         connection = self._connection_factory()
@@ -173,27 +180,35 @@ class PostgresReconciliationRepository:
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
 
     def kill_switch_active(self, scope: str) -> bool:
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute("SELECT active FROM venue_kill_switches WHERE scope = %s", (scope,))
-        row = cursor.fetchone()
-        if row is None:
-            return False
-        return bool(row["active"] if isinstance(row, dict) else row[0])
+        try:
+            cursor = connection.cursor()
+            cursor.execute("SELECT active FROM venue_kill_switches WHERE scope = %s", (scope,))
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            return bool(row["active"] if isinstance(row, dict) else row[0])
+        finally:
+            connection.close()
 
     def kill_switch_reason(self, scope: str) -> str | None:
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            "SELECT reason FROM venue_kill_switches WHERE scope = %s AND active", (scope,)
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return None
-        reason = row["reason"] if isinstance(row, dict) else row[0]
-        return reason if isinstance(reason, str) else None
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT reason FROM venue_kill_switches WHERE scope = %s AND active", (scope,)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            reason = row["reason"] if isinstance(row, dict) else row[0]
+            return reason if isinstance(reason, str) else None
+        finally:
+            connection.close()
 
     def is_active(self, scope: str) -> bool:
         return self.kill_switch_active(scope)
@@ -231,6 +246,8 @@ class PostgresReconciliationRepository:
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
 
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
         """Return whether a post-fill mismatch was recorded since the last release.
@@ -241,21 +258,24 @@ class PostgresReconciliationRepository:
         would re-latch forever on a historical row and could never be cleared.
         """
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            """SELECT EXISTS (
-                   SELECT 1 FROM bitget_post_fill_reconciliations m
-                   WHERE m.exchange = %s
-                     AND m.status = 'mismatch'
-                     AND m.created_at > COALESCE(
-                         (SELECT k.updated_at FROM venue_kill_switches k WHERE k.scope = %s),
-                         TIMESTAMPTZ '1970-01-01 00:00:00+00'
-                     )
-               )""",
-            (scope, scope),
-        )
-        row = cursor.fetchone()
-        return bool(row["exists"] if isinstance(row, dict) else row[0])
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT EXISTS (
+                       SELECT 1 FROM bitget_post_fill_reconciliations m
+                       WHERE m.exchange = %s
+                         AND m.status = 'mismatch'
+                         AND m.created_at > COALESCE(
+                             (SELECT k.updated_at FROM venue_kill_switches k WHERE k.scope = %s),
+                             TIMESTAMPTZ '1970-01-01 00:00:00+00'
+                         )
+                   )""",
+                (scope, scope),
+            )
+            row = cursor.fetchone()
+            return bool(row["exists"] if isinstance(row, dict) else row[0])
+        finally:
+            connection.close()
 
     def release_kill_switch(self, scope: str, approval_reference: str) -> None:
         """Record an approved release and enqueue a durable operator event."""
@@ -291,6 +311,8 @@ class PostgresReconciliationRepository:
         except Exception:
             connection.rollback()
             raise
+        finally:
+            connection.close()
 
 
 def _intent_from_row(row: Any) -> LiveIntentRecord:

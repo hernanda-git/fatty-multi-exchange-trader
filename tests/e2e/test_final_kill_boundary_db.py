@@ -16,7 +16,7 @@ from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["global", "bitget"])
+@pytest.mark.parametrize("scope", ["global", "bitget", "bitget-protection-stream"])
 @pytest.mark.parametrize("activation", ["preflight", "leverage", "eligibility_lock"])
 async def test_service_final_kill_blocks_known_unsent_entry(
     postgres_schema, monkeypatch, scope, activation

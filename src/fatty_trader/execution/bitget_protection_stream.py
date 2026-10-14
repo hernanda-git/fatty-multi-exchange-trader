@@ -15,6 +15,7 @@ from fatty_trader.exchanges.bitget.protection_capability import StreamState
 from fatty_trader.exchanges.bitget.websocket import BitgetClassicWebSocket, fresh_mark
 from fatty_trader.exchanges.bitget.websocket_v2 import BitgetV2WebSocket
 from fatty_trader.exchanges.bitget.ws_models import BitgetWebSocketEvent
+from fatty_trader.execution.async_storage import _run_sync_storage
 from fatty_trader.execution.bitget_fallback_protection import check_thresholds
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,7 @@ class BitgetProtectionStreamRuntime:
         if self._active_symbol_source is None:
             return (), ()
         try:
-            active_symbols = await asyncio.to_thread(self._read_active_symbols)
+            active_symbols = await _run_sync_storage(self._read_active_symbols)
         except Exception as exc:
             logger.warning(
                 "Bitget protection stream active-symbol read failed: %s",
@@ -227,7 +228,7 @@ class BitgetProtectionStreamRuntime:
         if not callable(check) or not check(event.symbol):
             return
         self._last_event_ms[event.symbol] = event.event_time_ms
-        await asyncio.to_thread(self._record_event, event)
+        await _run_sync_storage(self._record_event, event)
 
     def _record_event(self, event: BitgetWebSocketEvent) -> None:
         """Keep synchronous store calls ordered without blocking socket/clock I/O."""

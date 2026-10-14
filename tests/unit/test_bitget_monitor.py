@@ -124,6 +124,219 @@ async def test_clean_cycle_exposes_persisted_latch_separately_from_current_failu
 
 
 @pytest.mark.asyncio
+async def test_unavailable_clock_latches_and_clean_next_cycle_does_not_release():
+    class Venue(ReadOnlyVenue):
+        unavailable = True
+
+        async def get_clock_skew_ms(self):
+            if self.unavailable:
+                raise TimeoutError("unavailable clock evidence")
+            return 0
+
+    venue = Venue()
+    repository = InMemoryReconciliationRepository()
+    monitor = BitgetMonitor(venue, repository)
+    first = await monitor.run_once()
+    assert first.reasons == ("clock-skew-unavailable",)
+    assert repository.kill_switch_active("bitget")
+    venue.unavailable = False
+    second = await monitor.run_once()
+    assert second.status == "kill-switch-latched"
+    assert second.reasons == ()
+    assert second.latched_reason == "clock-skew-unavailable"
+    assert repository.kill_switch_active("bitget")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "unresolved_intents",
+        "expected_position_symbols",
+        "has_unhandled_post_fill_mismatch",
+        "kill_switch_active",
+        "kill_switch_reason",
+        "latch_kill_switch",
+        "update_intent",
+    ],
+)
+async def test_monitor_storage_does_not_delay_in_flight_clock_response(
+    monkeypatch, operation
+) -> None:
+    import asyncio
+    import threading
+    import time
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+
+    entered = threading.Event()
+    release = threading.Event()
+    request_started = asyncio.Event()
+    respond = asyncio.Event()
+    repository = InMemoryReconciliationRepository()
+    venue = ReadOnlyVenue()
+    if operation == "kill_switch_reason":
+        repository.latch_kill_switch("bitget", "clock-skew-unavailable")
+    elif operation == "latch_kill_switch":
+        venue.clock_skew_ms = 10_001
+    elif operation == "update_intent":
+        repository.intents.append(
+            LiveIntentRecord(
+                exchange="bitget",
+                client_oid="known-unknown",
+                symbol="BTCUSDT",
+                side="BUY",
+                state="unknown",
+                requested_qty=Decimal("0.01"),
+            )
+        )
+        venue.details["known-unknown"] = {"status": "cancelled", "orderId": "provider-1"}
+    original = getattr(repository, operation)
+
+    def block_store(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            release.wait(timeout=2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repository, operation, block_store)
+
+    async def time_response(*args, **kwargs):
+        request_started.set()
+        await respond.wait()
+        return {"serverTime": int(time.time() * 1000)}
+
+    client = BitgetRestClient("", "", "")
+    monkeypatch.setattr(client, "_request", time_response)
+    clock_task = asyncio.create_task(client.get_clock_skew_ms())
+    monitor_task = None
+    try:
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        monitor_task = asyncio.create_task(BitgetMonitor(venue, repository).run_once())
+        assert await asyncio.to_thread(entered.wait, 1)
+        respond.set()
+        await asyncio.wait_for(clock_task, timeout=1)
+        assert not monitor_task.done(), "storage must not block shared clock/socket I/O"
+    finally:
+        release.set()
+        respond.set()
+        await asyncio.gather(
+            clock_task, *([monitor_task] if monitor_task else []), return_exceptions=True
+        )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("storage_fails", [False, True])
+async def test_storage_boundary_drains_repeated_cancellation_without_hiding_failures(
+    storage_fails,
+) -> None:
+    import asyncio
+    import threading
+
+    from fatty_trader.execution.async_storage import _run_sync_storage
+
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    writes = []
+
+    def persist():
+        entered.set()
+        release.wait(timeout=2)
+        writes.append("committed")
+        completed.set()
+        if storage_fails:
+            raise RuntimeError("storage failure")
+        return "stored"
+
+    operation = asyncio.create_task(_run_sync_storage(persist))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        operation.cancel("initial timeout")
+        await asyncio.sleep(0)
+        operation.cancel("second cancellation")
+        await asyncio.sleep(0)
+        assert not operation.done(), "cancellation cannot abandon an in-flight storage write"
+        assert not completed.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError, match="initial timeout") as cancelled:
+            await operation
+        assert completed.is_set()
+        assert writes == ["committed"]
+        if storage_fails:
+            assert isinstance(cancelled.value.__cause__, RuntimeError)
+            assert str(cancelled.value.__cause__) == "storage failure"
+        else:
+            assert cancelled.value.__cause__ is None
+    finally:
+        release.set()
+        await asyncio.gather(operation, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "unresolved_intents",
+        "expected_position_symbols",
+        "kill_switch_active",
+        "kill_switch_reason",
+        "has_unhandled_post_fill_mismatch",
+        "latch_kill_switch",
+        "update_intent",
+    ],
+)
+@pytest.mark.parametrize("fails", [False, True])
+def test_postgres_monitor_repository_closes_owned_connection(operation, fails):
+    from fatty_trader.storage.reconciliation import PostgresReconciliationRepository
+
+    events = []
+    failure = RuntimeError("SQL failed")
+
+    class Connection:
+        def cursor(self):
+            return self
+
+        def execute(self, *args):
+            events.append("execute")
+            if fails:
+                raise failure
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return (False,) if operation == "has_unhandled_post_fill_mismatch" else None
+
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    repository = PostgresReconciliationRepository(Connection)
+    argument = (
+        LiveIntentRecord(exchange="bitget", client_oid="owned", symbol="BTCUSDT", side="BUY")
+        if operation == "update_intent"
+        else "bitget"
+    )
+    args = (argument, "clock-skew-unavailable") if operation == "latch_kill_switch" else (argument,)
+    if fails:
+        with pytest.raises(RuntimeError) as raised:
+            getattr(repository, operation)(*args)
+        assert raised.value is failure
+    else:
+        getattr(repository, operation)(*args)
+    assert events[-1] == "close"
+    assert events.count("close") == 1
+    if operation in {"latch_kill_switch", "update_intent"}:
+        assert events[-2] == ("rollback" if fails else "commit")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["positions", "orders"])
 @pytest.mark.parametrize("failure", ["exception", "shape"])
 async def test_monitor_row_read_diagnostics_distinguish_exception_from_shape(

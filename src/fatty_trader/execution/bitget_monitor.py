@@ -20,6 +20,7 @@ from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
 )
 from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
 from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
+from fatty_trader.execution.async_storage import _run_sync_storage
 from fatty_trader.execution.protection import ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
 
@@ -79,12 +80,12 @@ class BitgetMonitor:
             self._client.get_pending_orders, "provider-orders-invalid", reasons
         )
         await self._check_positions(positions, reasons)
-        self._check_orders(orders, reasons)
+        await self._check_orders(orders, reasons)
         # A post-fill margin/leverage mismatch is durable evidence that a position is
         # not what the plan promised. The adapter that recorded it cannot block a
         # replacement worker, so the latch lives here: it survives restarts and blocks
         # new entries until an operator releases the switch with an approval reference.
-        if self._repository.has_unhandled_post_fill_mismatch(self._scope):
+        if await _run_sync_storage(self._repository.has_unhandled_post_fill_mismatch, self._scope):
             reasons.append("post-fill-margin-or-leverage-mismatch")
         # Bot-managed TP/SL fallback for symbols that reject native SL/TP (43011)
         await self._run_fallback_monitor(reasons)
@@ -115,15 +116,19 @@ class BitgetMonitor:
             if not self._enforce_kill_switch:
                 return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
             for reason in latchable_reasons:
-                self._repository.latch_kill_switch(self._scope, reason)
+                await _run_sync_storage(self._repository.latch_kill_switch, self._scope, reason)
             return MonitorReport(
                 "kill-switch-latched", latchable_reasons, provider_exits_reconciled
             )
-        if self._enforce_kill_switch and self._repository.kill_switch_active(self._scope):
+        if self._enforce_kill_switch and await _run_sync_storage(
+            self._repository.kill_switch_active, self._scope
+        ):
             return MonitorReport(
                 "kill-switch-latched",
                 provider_exits_reconciled=provider_exits_reconciled,
-                latched_reason=self._repository.kill_switch_reason(self._scope),
+                latched_reason=await _run_sync_storage(
+                    self._repository.kill_switch_reason, self._scope
+                ),
             )
         return MonitorReport("ok", provider_exits_reconciled=provider_exits_reconciled)
 
@@ -147,7 +152,8 @@ class BitgetMonitor:
             reasons.append(f"fallback-monitor-error:{exc}")
 
     async def _reconcile_unresolved_intents(self, reasons: list[str]) -> None:
-        for intent in self._repository.unresolved_intents(self._scope):
+        intents = await _run_sync_storage(self._repository.unresolved_intents, self._scope)
+        for intent in intents:
             try:
                 reconciled = await reconcile_unknown_intent(
                     intent,
@@ -158,7 +164,7 @@ class BitgetMonitor:
                     read_position=lambda symbol: self._client.get_single_position(symbol),
                     read_pending_orders=lambda _symbol: self._client.get_pending_orders(),
                 )
-                self._repository.update_intent(reconciled)
+                await _run_sync_storage(self._repository.update_intent, reconciled)
             except Exception:
                 reasons.append(f"unknown-intent-unreconciled:{intent.client_oid}")
 
@@ -194,7 +200,7 @@ class BitgetMonitor:
             if not _looks_like_external_exit(fill):
                 continue
             try:
-                result = reconcile_provider_exit(store, fill)
+                result = await _run_sync_storage(reconcile_provider_exit, store, fill)
             except ProviderFillReconciliationError:
                 reasons.append("provider-fill-reconciliation-error")
                 continue
@@ -232,7 +238,9 @@ class BitgetMonitor:
         return result
 
     async def _check_positions(self, positions: list[dict[str, Any]], reasons: list[str]) -> None:
-        expected_symbols = self._repository.expected_position_symbols(self._scope)
+        expected_symbols = await _run_sync_storage(
+            self._repository.expected_position_symbols, self._scope
+        )
         for position in positions:
             quantity = _open_quantity(position)
             if quantity is None:
@@ -262,8 +270,9 @@ class BitgetMonitor:
             if report.state is not ProtectionState.VENUE_PROTECTED:
                 reasons.append(report.reason or "native-protection-unconfirmed")
 
-    def _check_orders(self, orders: list[dict[str, Any]], reasons: list[str]) -> None:
-        known = {intent.client_oid for intent in self._repository.unresolved_intents(self._scope)}
+    async def _check_orders(self, orders: list[dict[str, Any]], reasons: list[str]) -> None:
+        intents = await _run_sync_storage(self._repository.unresolved_intents, self._scope)
+        known = {intent.client_oid for intent in intents}
         for order in orders:
             oid = order.get("clientOid", order.get("client_oid"))
             if not isinstance(oid, str) or oid not in known:

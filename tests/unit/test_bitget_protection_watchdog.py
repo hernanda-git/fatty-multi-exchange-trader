@@ -110,6 +110,95 @@ async def test_connecting_socket_with_empty_symbols_is_not_healthy() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["lookup", "insert", "update", "latch-read", "latch-write"])
+async def test_watchdog_storage_does_not_latch_monitor_for_clock_unavailability(
+    monkeypatch, operation
+) -> None:
+    import asyncio
+    import threading
+    import time
+
+    from fatty_trader.exchanges.bitget.client import BitgetRestClient
+    from fatty_trader.execution.bitget_monitor import BitgetMonitor
+    from fatty_trader.storage.reconciliation import InMemoryReconciliationRepository
+
+    entered = threading.Event()
+    release = threading.Event()
+    request_started = asyncio.Event()
+    respond = asyncio.Event()
+    loop_thread = threading.get_ident()
+    repository = InMemoryProtectionCapabilityRepository()
+    kill_switch = InMemoryReconciliationRepository()
+
+    class Socket(FakeSocket):
+        def check_freshness(self, symbol=None):
+            assert threading.get_ident() == loop_thread
+            return super().check_freshness(symbol)
+
+    socket = Socket(True)
+    symbols = ["BTCUSDT"]
+    if operation.startswith("latch-"):
+        socket.state = WebSocketConnectionState.DISCONNECTED
+        symbols = []
+        target = kill_switch
+        method = "is_active" if operation == "latch-read" else "latch_kill_switch"
+    else:
+        target = repository
+        method = {"lookup": "get", "insert": "upsert", "update": "update_stream"}[operation]
+    original = getattr(target, method)
+
+    def block_store(*args, **kwargs):
+        entered.set()
+        release.wait(timeout=2)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, method, block_store)
+
+    async def read_position(symbol):
+        return []
+
+    async def read_only_response(method, path, **kwargs):
+        assert method == "GET"
+        if path == "/api/v2/public/time":
+            request_started.set()
+            await respond.wait()
+            return {"serverTime": int(time.time() * 1000)}
+        return []
+
+    client = BitgetRestClient("", "", "")
+    monkeypatch.setattr(client, "_request", read_only_response)
+    monitor_repository = InMemoryReconciliationRepository()
+    watchdog = BitgetProtectionWatchdog(
+        socket,
+        repository,
+        environment="LIVE",
+        symbols=symbols,
+        read_position=read_position,
+        now=lambda: _NOW,
+        kill_switch=kill_switch,
+        stale_cycles_before_latch=1,
+    )
+    monitor_task = asyncio.create_task(BitgetMonitor(client, monitor_repository).run_once())
+    watchdog_task = None
+    try:
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+        watchdog_task = asyncio.create_task(watchdog.run_once())
+        assert await asyncio.to_thread(entered.wait, 1)
+        respond.set()
+        report = await asyncio.wait_for(monitor_task, timeout=1)
+        assert report.status == "ok"
+        assert not monitor_repository.kill_switch_active("bitget")
+        assert not watchdog_task.done(), "watchdog storage must not delay the monitor clock"
+    finally:
+        release.set()
+        respond.set()
+        await asyncio.gather(
+            monitor_task, *([watchdog_task] if watchdog_task else []), return_exceptions=True
+        )
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_stale_stream_blocks_symbol_and_marks_capability_stale(
     repository: InMemoryProtectionCapabilityRepository,
 ) -> None:
