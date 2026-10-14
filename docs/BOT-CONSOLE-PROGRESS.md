@@ -36,7 +36,7 @@ Phases are sequencing, not reduced scope. No phase is accepted because documenta
 | CAP1 | Actual gateway/parser/service/lifecycle capabilities and missing boundaries | SPECIFIED |
 | SPEC1 | Screen interactions, API/DTO/jobs/auth/event contracts, operations privilege boundary | SPECIFIED |
 | VERIFY1 | Local read-only runtime and cross-document link/coverage smoke | LOCALLY VERIFIED |
-| PUB1 | Commit explicit files, push without force, prove published SHA; preserve unrelated work | ACTIVE |
+| PUB1 | Commit explicit files, push without force, prove published SHA; preserve unrelated work | PUBLISHED |
 
 ## Prerequisites and risk register
 
@@ -60,7 +60,7 @@ Documentation smoke passed: 81 relative file links resolve; P0 through P6 each a
 
 ## Publication receipts
 
-Pending: commit and origin SHA recorded after successful publication. Commit/push is not deployment. Progress records should refer to Git history rather than insert a self-referential commit hash into its own committed file.
+Planning/specification commit `883f9a4` (`docs(console): approve master plan and specify capability and UI API contracts`) was pushed successfully from baseline `ea0114e` to `origin/main`. This receipt update is a separate documentation commit. Publication is not deployment; no production changes occurred.
 
 
 ## Next implementation gate
