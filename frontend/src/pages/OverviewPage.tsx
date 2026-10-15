@@ -1,7 +1,7 @@
 import React from 'react';
 import {Link} from '../nav';
-import {Value, StatusBadge, formatDateTime, formatNumber} from '../primitives';
-import {DomainTable, DomainDetail} from '../domain';
+import {StatusBadge, formatDateTime, formatNumber} from '../primitives';
+import {PositionsTable, SignalsTable, DomainDetail} from '../domain';
 import {type Envelope, type RecordData, isObjectRecord} from '../types';
 
 export function OverviewPage({
@@ -9,12 +9,14 @@ export function OverviewPage({
   safety,
   readSection,
   resourceId,
+  onOpenAction,
   render,
 }: {
   envelope: Envelope | null;
   safety: Envelope | null;
   readSection: string;
   resourceId: string;
+  onOpenAction?: (action: string, initialArgs?: RecordData, initialTargets?: string[]) => void;
   render: (value: unknown) => React.ReactNode;
 }) {
   const isAccountView = readSection.startsWith('account');
@@ -23,175 +25,132 @@ export function OverviewPage({
   const data = envelope ? envelope.data : null;
   const items = isObjectRecord(data) && Array.isArray(data.items) ? data.items.filter(isObjectRecord) : [];
 
-  // Parse safety & overview facts safely
+  // Extract financial & safety figures
+  const provider = isObjectRecord(safetyData.provider) ? safetyData.provider : {};
+  const equity = String(provider.equity || '0.00');
+  const available = String(provider.available_balance || '0.00');
+  const upnl = Number(provider.unrealized_pnl || 0);
+
   const latches = Array.isArray(safetyData.latches) ? safetyData.latches : [];
   const activeLatches = latches.filter((l: unknown) => isObjectRecord(l) && l.active === true);
   const stream = isObjectRecord(safetyData.stream) ? safetyData.stream : null;
   const clock = isObjectRecord(safetyData.clock) ? safetyData.clock : null;
-  const effectiveConfig = isObjectRecord(safetyData.effective_config) ? safetyData.effective_config : null;
+
   if (isAccountView) {
     return (
       <div className="page-content account-page">
-        <div className="section-intro">
-          <h2>Account & Economic Observations</h2>
-          <p className="text-secondary">
-            Authoritative provider balances, margin reservations, and historical fill economics.
-            Account-wide net P&amp;L is unobserved in current read models; recorded gross realized P&amp;L and fees are displayed truthfully.
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <span className="eyebrow">PORTFOLIO ECONOMICS</span>
+              <h2>Balances &amp; Ledger Performance</h2>
+            </div>
+          </div>
+          <p className="text-secondary text-sm" style={{marginBottom: '16px'}}>
+            Verified provider balances and ledger-recorded fill economics. Account-wide net P&amp;L is
+            unobserved in current read models; recorded gross realized P&amp;L and fees are displayed truthfully.
           </p>
-        </div>
 
-        {resourceId ? (
-          <DomainDetail section={readSection} data={data} render={render} />
-        ) : items.length > 0 ? (
-          <DomainTable section={readSection} items={items} render={render} />
-        ) : (
-          <DomainDetail section="account" data={data} render={render} />
-        )}
+          <DomainDetail section="account" data={safetyData} render={render} />
+        </div>
       </div>
     );
   }
 
   return (
     <div className="page-content overview-page">
-      {/* Top Operating Status Card */}
-      <section className="card status-hero-card">
-        <div className="hero-header">
-          <div>
-            <span className="eyebrow">SYSTEM STATUS</span>
-            <h2>Operating Condition & Admission</h2>
-          </div>
-          <div className="hero-badges">
+      {/* 4 Clean Executive Metric Tiles */}
+      <div className="metric-grid-4">
+        <div className="metric-tile">
+          <span className="metric-tile-label">Account Equity</span>
+          <span className="metric-tile-value">${formatNumber(equity)}</span>
+          <span className="metric-tile-sub">Available: ${formatNumber(available)} USDT</span>
+        </div>
+
+        <div className="metric-tile">
+          <span className="metric-tile-label">Unrealized P&amp;L</span>
+          <span className={`metric-tile-value ${upnl >= 0 ? 'text-success' : 'text-danger'}`}>
+            {upnl >= 0 ? '+' : ''}${formatNumber(upnl.toFixed(2))}
+          </span>
+          <span className="metric-tile-sub">Across open futures contracts</span>
+        </div>
+
+        <div className="metric-tile">
+          <span className="metric-tile-label">Admission State</span>
+          <span className="metric-tile-value" style={{fontSize: '16px', display: 'flex', alignItems: 'center', gap: '6px'}}>
             <StatusBadge
               status={activeLatches.length > 0 ? 'danger' : 'warn'}
-              label={activeLatches.length > 0 ? 'Containment Active' : 'Admission Gated'}
+              label={activeLatches.length > 0 ? 'Containment Latched' : 'Admission Fail-Closed'}
             />
-          </div>
+          </span>
+          <span className="metric-tile-sub">
+            {activeLatches.length > 0 ? `${activeLatches.length} active incident latch` : 'No positive admission asserted'}
+          </span>
         </div>
 
-        <div className="metric-strip">
-          <div className="metric-card">
-            <span className="metric-label">Admission Verdict</span>
-            <span className="metric-value text-muted">Not Observed</span>
-            <small className="metric-note">Independent latches &amp; risk gates enforce fail-closed</small>
-          </div>
-
-          <div className="metric-card">
-            <span className="metric-label">Active Latches</span>
-            <span className={`metric-value ${activeLatches.length > 0 ? 'text-danger' : 'text-success'}`}>
-              {activeLatches.length}
-            </span>
-            <small className="metric-note">
-              {activeLatches.length > 0 ? (
-                <Link to="/recovery">Inspect {activeLatches.length} latch{activeLatches.length > 1 ? 'es' : ''} →</Link>
-              ) : (
-                'No active database latches'
-              )}
-            </small>
-          </div>
-
-          <div className="metric-card">
-            <span className="metric-label">Protection Stream</span>
-            <span className="metric-value">
-              {stream ? (
-                <StatusBadge
-                  status={stream.state === 'running' || stream.state === 'connected' ? 'fresh' : 'warn'}
-                  label={String(stream.state || 'Unknown')}
-                />
-              ) : (
-                'Not observed'
-              )}
-            </span>
-            <small className="metric-note">
-              {stream && stream.observed_at ? `Observed ${formatDateTime(String(stream.observed_at))}` : 'No recent stream heartbeat'}
-            </small>
-          </div>
-
-          <div className="metric-card">
-            <span className="metric-label">Exchange Clock</span>
-            <span className="metric-value">
-              {clock ? (
-                <StatusBadge
-                  status={clock.healthy ? 'fresh' : 'warn'}
-                  label={clock.healthy ? 'Synchronized' : 'Desynchronized'}
-                />
-              ) : (
-                'Not observed'
-              )}
-            </span>
-            <small className="metric-note">
-              {clock && clock.skew_ms !== undefined ? `Skew: ${formatNumber(Number(clock.skew_ms))} ms` : 'Clock telemetry unavailable'}
-            </small>
-          </div>
+        <div className="metric-tile">
+          <span className="metric-tile-label">Exchange Connection</span>
+          <span className="metric-tile-value" style={{fontSize: '16px', display: 'flex', alignItems: 'center', gap: '6px'}}>
+            <StatusBadge
+              status={clock && clock.healthy ? 'fresh' : 'warn'}
+              label={clock && clock.healthy ? 'Synchronized' : 'Clock Check Pending'}
+            />
+          </span>
+          <span className="metric-tile-sub">
+            {clock && clock.skew_ms !== undefined ? `Clock skew: ${clock.skew_ms}ms` : 'Bitget V2 stream'}
+          </span>
         </div>
-      </section>
-
-      {/* Exposure & Account Summary */}
-      <div className="grid-two-col">
-        <section className="card">
-          <div className="card-header">
-            <div>
-              <span className="eyebrow">PORTFOLIO</span>
-              <h2>Open Positions &amp; Exposure</h2>
-            </div>
-            <Link to="/positions" className="btn btn-secondary btn-sm">Trading Desk →</Link>
-          </div>
-          <p className="text-secondary">
-            Active market risk across Bitget contracts. Detailed liquidation and native protection proofs are inspected in Trading.
-          </p>
-          <div className="quick-access-box">
-            <div className="box-item">
-              <span className="box-title">Positions</span>
-              <Link to="/positions" className="link-action">Inspect open contracts</Link>
-            </div>
-            <div className="box-item">
-              <span className="box-title">Working Orders</span>
-              <Link to="/orders" className="link-action">View orders &amp; fills</Link>
-            </div>
-            <div className="box-item">
-              <span className="box-title">SL / TP Protection</span>
-              <Link to="/protection" className="link-action">Review protection proofs</Link>
-            </div>
-          </div>
-        </section>
-
-        <section className="card">
-          <div className="card-header">
-            <div>
-              <span className="eyebrow">ACTIVITY</span>
-              <h2>Recent Signals &amp; Jobs</h2>
-            </div>
-            <Link to="/signals" className="btn btn-secondary btn-sm">Signals Inbox →</Link>
-          </div>
-          <p className="text-secondary">
-            Verified intake revisions, dispatched trade instructions, and durable command audit logs.
-          </p>
-          <div className="quick-access-box">
-            <div className="box-item">
-              <span className="box-title">Telegram Signals</span>
-              <Link to="/signals" className="link-action">Inspect immutable revisions</Link>
-            </div>
-            <div className="box-item">
-              <span className="box-title">Durable Jobs</span>
-              <Link to="/audit" className="link-action">Follow operations &amp; readback</Link>
-            </div>
-            <div className="box-item">
-              <span className="box-title">Account &amp; Balances</span>
-              <Link to="/account" className="link-action">Inspect margin &amp; PnL</Link>
-            </div>
-          </div>
-        </section>
       </div>
 
-      {/* Snapshot domain details */}
-      <section className="card">
+      {/* Active Positions Table on Overview */}
+      <div className="card">
         <div className="card-header">
           <div>
-            <span className="eyebrow">EVIDENCE PANELS</span>
-            <h2>Independent Verification Domains</h2>
+            <span className="eyebrow">PORTFOLIO</span>
+            <h2>Active Positions</h2>
           </div>
+          <Link to="/trading" className="btn btn-primary btn-sm">
+            + New Trade
+          </Link>
         </div>
-        <DomainDetail section="overview" data={safetyData} render={render} />
-      </section>
+        <PositionsTable
+          items={items.filter((i) => i.symbol && (i.direction || isObjectRecord(i.provider)))}
+          onClose={(item) => onOpenAction?.('position.close', item)}
+        />
+      </div>
+
+      {/* Quick Navigation Cards */}
+      <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginTop: '16px'}}>
+        <div className="card" style={{marginBottom: 0}}>
+          <div className="card-header">
+            <h2>Trading Desk</h2>
+            <Link to="/positions" className="btn btn-secondary btn-sm">Open →</Link>
+          </div>
+          <p className="text-secondary text-sm">
+            Manage open contracts, view working limit orders, audit fill ledger, and configure native SL/TP.
+          </p>
+        </div>
+
+        <div className="card" style={{marginBottom: 0}}>
+          <div className="card-header">
+            <h2>Signal Stream</h2>
+            <Link to="/signals" className="btn btn-secondary btn-sm">Open →</Link>
+          </div>
+          <p className="text-secondary text-sm">
+            Monitor incoming Telegram setups, immutable text revisions, and execution dispatches.
+          </p>
+        </div>
+
+        <div className="card" style={{marginBottom: 0}}>
+          <div className="card-header">
+            <h2>Safety &amp; Recovery</h2>
+            <Link to="/recovery" className="btn btn-secondary btn-sm">Open →</Link>
+          </div>
+          <p className="text-secondary text-sm">
+            Review incident containment, clock evidence, baseline exclusions, and recovery proofs.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

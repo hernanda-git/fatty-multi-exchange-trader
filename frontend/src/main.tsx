@@ -1,11 +1,6 @@
 import React, {useState, useEffect, useCallback, useRef} from 'react';
 import {createRoot} from 'react-dom/client';
-import {
-  api,
-  ApiError,
-  passwordLogin,
-  setCsrf,
-} from './api';
+import {api, ApiError, passwordLogin, setCsrf} from './api';
 import {
   type RecordData,
   type Principal,
@@ -15,13 +10,7 @@ import {
   isObjectRecord,
 } from './types';
 import {parseRoute, navigate, Link, PRIMARY_DESTINATIONS} from './nav';
-import {
-  Value,
-  ErrorBox,
-  AttentionBanner,
-  StateView,
-  EvidenceDisclosure,
-} from './primitives';
+import {ErrorBox, AttentionBanner, StateView} from './primitives';
 import {ActionPanel} from './command';
 import {Filters} from './forms';
 import {OverviewPage} from './pages/OverviewPage';
@@ -88,10 +77,10 @@ function Auth({onAuthenticated}: {onAuthenticated: () => void}) {
   return (
     <main className="auth-wrapper">
       <div className="auth-card">
-        <span className="eyebrow">PRIVATE OPERATOR CONSOLE</span>
+        <span className="brand-badge" style={{marginBottom: '12px'}}>FATTY CONSOLE</span>
         <h1 className="auth-title">Evidence Before Action</h1>
-        <p className="text-secondary" style={{marginBottom: '20px'}}>
-          Sign in with the shared console password to access scoped account observations and durable management jobs.
+        <p className="text-secondary text-sm" style={{marginBottom: '20px'}}>
+          Sign in with the shared console password to access scoped observations and management jobs.
         </p>
         <ErrorBox error={error} />
         <form onSubmit={submit} data-testid="password-auth">
@@ -111,14 +100,14 @@ function Auth({onAuthenticated}: {onAuthenticated: () => void}) {
           <button
             type="submit"
             className="btn btn-primary"
-            style={{width: '100%', marginTop: '10px'}}
+            style={{width: '100%', marginTop: '8px'}}
             data-testid="password-login"
             disabled={busy}
           >
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-        <p className="form-help" style={{marginTop: '20px', textAlign: 'center'}}>
+        <p className="text-muted text-xs" style={{marginTop: '20px', textAlign: 'center'}}>
           Use the authorized HTTPS origin or localhost SSH tunnel. Passwords are cleared from memory immediately.
         </p>
       </div>
@@ -138,7 +127,6 @@ function App() {
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
   const [cursor, setCursor] = useState(() => new URLSearchParams(location.search).get('cursor') || '');
-  const [historyCursors, setHistoryCursors] = useState<string[]>([]);
   const [filters, setFilters] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       [...new URLSearchParams(location.search)].filter(
@@ -152,8 +140,9 @@ function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('console.theme') || 'light');
   const [timezone, setTimezone] = useState(() => localStorage.getItem('console.timezone') || 'UTC');
 
-  // Active command trigger state
-  const [activeAction, setActiveAction] = useState<string>('');
+  // Command modal state
+  const [actionModalOpen, setActionModalOpen] = useState(false);
+  const [actionModalAction, setActionModalAction] = useState('');
 
   const eventCursor = useRef<string>('');
   const liveRefresh = useRef<number | undefined>(undefined);
@@ -182,7 +171,7 @@ function App() {
     }
   }
 
-  // Routing and popstate listener
+  // Routing listener
   useEffect(() => {
     void checkSession();
     const handlePopState = () => {
@@ -190,7 +179,6 @@ function App() {
       const q = new URLSearchParams(location.search);
       setCurrentRoute(nextRoute);
       setCursor(q.get('cursor') || '');
-      setHistoryCursors([]);
       setFilters(
         Object.fromEntries(
           [...q].filter(([key]) => !['view', 'cursor'].includes(key))
@@ -204,7 +192,7 @@ function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Sync theme & timezone
+  // Theme & Timezone sync
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('console.theme', theme);
@@ -215,7 +203,7 @@ function App() {
     localStorage.setItem('console.timezone', timezone);
   }, [timezone]);
 
-  // Session event listeners
+  // Session events
   useEffect(() => {
     const handleSessionChanged = (event: Event) => {
       const result = (event as CustomEvent<RecordData>).detail;
@@ -305,7 +293,7 @@ function App() {
     return () => controller.abort();
   }, [principal, refresh]);
 
-  // SSE event stream listener
+  // SSE event stream
   useEffect(() => {
     if (!principal) return;
     let source: EventSource | null = null;
@@ -394,7 +382,7 @@ function App() {
 
     const watchdog = setInterval(() => {
       if (Date.now() - lastHeartbeat > 45000) {
-        setConnection('stale connection');
+        setConnection('stale');
         source?.close();
         lastHeartbeat = Date.now();
         if (!stopped) {
@@ -416,7 +404,7 @@ function App() {
   if (checking && !principal) {
     return (
       <main className="auth-wrapper">
-        <p role="status">Checking secure session…</p>
+        <p role="status" className="text-secondary text-sm">Checking secure session…</p>
       </main>
     );
   }
@@ -436,14 +424,17 @@ function App() {
   const scopeData = envelope?.scope || safety?.scope || {};
 
   const handleOpenAction = (action: string) => {
-    setActiveAction(action);
+    setActionModalAction(action);
+    setActionModalOpen(true);
   };
+
+  const showFilters =
+    !currentRoute.resourceId &&
+    ['signals', 'orders', 'fills', 'audit', 'notifications'].includes(currentRoute.readSection);
 
   return (
     <div className="app-container">
-      <a className="skip-link" href="#content">Skip to content</a>
-
-      {/* 5-Item Navigation Sidebar */}
+      {/* Sidebar */}
       <aside className={`app-sidebar ${mobileOpen ? 'open' : ''}`} aria-label="Main sidebar navigation">
         <div className="brand-section">
           <Link to="/overview" className="brand-link">
@@ -477,26 +468,26 @@ function App() {
 
         <div className="sidebar-footer">
           Scoped Control Plane<br />
-          <small>Password-Only Operator Identity</small>
+          <small>Password-Only Operator</small>
         </div>
       </aside>
 
-      {/* Main Workspace Area */}
+      {/* Main Workspace */}
       <div className="app-workspace">
         <header className="app-header">
           <div className="header-left">
             <button
               type="button"
               className="mobile-menu-btn"
-              aria-label="Toggle navigation drawer"
+              aria-label="Toggle navigation"
               aria-expanded={mobileOpen}
               onClick={() => setMobileOpen(!mobileOpen)}
             >
-              ☰ Menu
+              ☰
             </button>
             <div className="scope-chips">
-              <span className="scope-account">{String(scopeData.account_id || 'Account unobserved')}</span>
-              <span className="badge badge-warn">{String(scopeData.environment || 'UNKNOWN')}</span>
+              <span className="scope-account">{String(scopeData.account_id || 'account')}</span>
+              <span className="badge badge-warn">{String(scopeData.environment || 'LIVE')}</span>
               <span className="badge badge-neutral">{String(scopeData.venue || 'bitget')}</span>
             </div>
           </div>
@@ -514,7 +505,7 @@ function App() {
               onChange={(e) => setTimezone(e.target.value)}
             >
               <option value="UTC">UTC</option>
-              <option value="Local">Local Time</option>
+              <option value="Local">Local</option>
             </select>
 
             <select
@@ -528,18 +519,24 @@ function App() {
               <option value="system">System</option>
             </select>
 
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => handleOpenAction('')}
+              title="Manual command execution"
+            >
+              + Action
+            </button>
+
             <details className="user-identity">
               <summary aria-haspopup="true">{principal.display_name}</summary>
               <div className="identity-dropdown">
-                <div>Roles: <strong>{principal.roles.join(', ')}</strong></div>
-                {principal.session_id && (
-                  <div className="text-secondary" style={{fontSize: '11px'}}>
-                    Session: <code>{principal.session_id.slice(0, 12)}…</code>
-                  </div>
-                )}
+                <div className="text-sm font-bold">{principal.display_name}</div>
+                <div className="text-muted text-xs">Roles: {principal.roles.join(', ')}</div>
                 <button
                   type="button"
                   className="btn btn-secondary btn-sm"
+                  style={{marginTop: '4px'}}
                   onClick={async () => {
                     try {
                       await api('/auth/logout', {});
@@ -561,44 +558,11 @@ function App() {
           </div>
         </header>
 
-        {/* Actionable Containment / Latch Alert */}
+        {/* Attention Banner if Containment Latched */}
         <AttentionBanner latches={latches} />
 
         <main id="content" className="app-main" tabIndex={-1}>
-          <div className="page-title-row">
-            <div>
-              <span className="eyebrow">
-                {currentRoute.destination.toUpperCase()} DESTINATION
-              </span>
-              <h1 className="page-heading">
-                {currentRoute.resourceId
-                  ? `${currentRoute.screen}: ${currentRoute.resourceId.slice(0, 16)}`
-                  : currentRoute.screen.replace(/[._]/g, ' ').toUpperCase()}
-              </h1>
-              <p className="page-subtext">
-                {currentRoute.resourceId
-                  ? 'Authoritative resource detail and associated evidence.'
-                  : 'Current verified evidence. Unknown is never treated as zero or safe.'}
-              </p>
-            </div>
-            <div className="action-btn-row">
-              {currentRoute.resourceId && (
-                <Link to={`/${currentRoute.screen}`} className="btn btn-secondary btn-sm">
-                  ← Back to list
-                </Link>
-              )}
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={reload}
-                disabled={loading}
-              >
-                {loading ? 'Reading…' : 'Refresh Evidence'}
-              </button>
-            </div>
-          </div>
-
-          {/* Secondary Tab Bar */}
+          {/* Secondary Tabs */}
           {currentTabs.length > 0 && !currentRoute.resourceId && (
             <div className="tab-bar" role="tablist">
               {currentTabs.map((tab) => {
@@ -624,8 +588,8 @@ function App() {
 
           <ErrorBox error={error} />
 
-          {/* Filters for collection queries */}
-          {!currentRoute.resourceId && currentRoute.screen !== 'trading' && (
+          {/* Filters only on collection views where appropriate */}
+          {showFilters && (
             <Filters
               key={currentRoute.readSection}
               section={currentRoute.readSection}
@@ -633,13 +597,12 @@ function App() {
               onApply={(val) => {
                 setFilters(val);
                 setCursor('');
-                setHistoryCursors([]);
                 setEnvelope(null);
               }}
             />
           )}
 
-          {/* Core Destination Page Router */}
+          {/* Core Page Router */}
           {loading && !envelope ? (
             <StateView state="loading" />
           ) : (
@@ -650,7 +613,8 @@ function App() {
                   safety={safety}
                   readSection={currentRoute.readSection}
                   resourceId={currentRoute.resourceId}
-                  render={(v) => <Value value={v} />}
+                  onOpenAction={handleOpenAction}
+                  render={(v) => <span className="font-mono">{String(v)}</span>}
                 />
               )}
               {currentRoute.destination === 'trading' && (
@@ -661,7 +625,7 @@ function App() {
                   currentScreen={currentRoute.screen}
                   capabilities={caps}
                   onOpenAction={handleOpenAction}
-                  render={(v) => <Value value={v} />}
+                  render={(v) => <span className="font-mono">{String(v)}</span>}
                 />
               )}
               {currentRoute.destination === 'signals' && (
@@ -670,7 +634,7 @@ function App() {
                   readSection={currentRoute.readSection}
                   resourceId={currentRoute.resourceId}
                   onOpenAction={handleOpenAction}
-                  render={(v) => <Value value={v} />}
+                  render={(v) => <span className="font-mono">{String(v)}</span>}
                 />
               )}
               {currentRoute.destination === 'activity' && (
@@ -680,7 +644,7 @@ function App() {
                   resourceId={currentRoute.resourceId}
                   onOpenAction={handleOpenAction}
                   reload={reload}
-                  render={(v) => <Value value={v} />}
+                  render={(v) => <span className="font-mono">{String(v)}</span>}
                 />
               )}
               {currentRoute.destination === 'settings' && (
@@ -691,36 +655,33 @@ function App() {
                   principal={principal}
                   onOpenAction={handleOpenAction}
                   reload={reload}
-                  render={(v) => <Value value={v} />}
+                  render={(v) => <span className="font-mono">{String(v)}</span>}
                 />
               )}
             </>
           )}
 
-          {/* Durable Action Panel */}
+          {/* Action Modal (Opens cleanly when action clicked, zero clutter when closed) */}
           {envelope && (
             <ActionPanel
-              key={`${principal.id}/${String(scopeData.account_id)}/${String(
-                scopeData.environment
-              )}/${currentRoute.readSection}/${currentRoute.resourceId}/${activeAction}`}
+              isOpen={actionModalOpen}
+              onClose={() => setActionModalOpen(false)}
               principalId={principal.id}
-              initialAction={activeAction || (currentRoute.screen === 'trading' ? 'trade.open' : '')}
+              initialAction={actionModalAction}
               capabilities={caps}
               scope={scopeData}
               section={currentRoute.readSection}
               items={
-                currentRoute.resourceId && isObjectRecord(envelope.data)
-                  ? [envelope.data]
-                  : isObjectRecord(envelope.data) && Array.isArray(envelope.data.items)
+                isObjectRecord(envelope.data) && Array.isArray(envelope.data.items)
                   ? envelope.data.items.filter(isObjectRecord)
                   : []
               }
-              onChanged={reload}
+              onChanged={() => {
+                setActionModalOpen(false);
+                reload();
+              }}
             />
           )}
-
-          {/* Authoritative Evidence Disclosures */}
-          {envelope && <EvidenceDisclosure evidence={envelope.evidence} />}
         </main>
       </div>
     </div>
