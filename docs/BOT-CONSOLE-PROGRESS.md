@@ -20,11 +20,11 @@ Fresh isolated clone of origin/main `ea0114e136ec1ba4adc547f10a61aa533934221d` a
 |---|---|---|---|
 | P0 Capability/safety | ACCEPTED | Source-backed capability inventory, policy prohibitions and shared adapter boundaries documented and implemented | Natural live trade is separate provider evidence, not a development acceptance gate |
 | P1 UI/API contracts | ACCEPTED | All 15 screens, typed actions, scoped evidence, jobs/approvals, SSE and host boundary implemented; operator guide published with source | Runtime receipts below remain separate from specification |
-| P2 Authenticated read console | ACTIVE | Existing console deployed; owner's subsequent password-only login/session/CSRF cutover locally exercised with no other login fields or factors | Publish and verify password-only production rollout; historical passkey receipts below are superseded for current auth |
-| P3 Durable shared commands | DEPLOYED | Schema 26, shared Telegram/web commands, fenced worker and approvals; complete 2305-test Linux suite, real PostgreSQL races and browser job/readback proofs | Normal action-specific consent and distinct-owner Tier 3 approval remain enforced |
+| P2 Authenticated read console | DEPLOYED | Password-only login, real production wrong-password refusal/correct-password sign-in/logout, opaque sessions/CSRF, all nine application containers healthy | No enrollment, username, passkey, OTP or external login is required |
+| P3 Durable shared commands | DEPLOYED | Schema 26, shared Telegram/web commands, fenced worker and digest-bound password-session consent; complete 2312-test Linux suite and real browser Tier 2 job/readback proof | Financial confirmations remain; sole shared owner cannot supply a distinct Tier 3 approver |
 | P4 Trading/protection controls | DEPLOYED | Current copied source/image identity proved across all nine applications; ownership, risk, cancellation, protection and replay regressions passed | No synthetic live trade authorized; existing incident latch and independent mutation flags remain unchanged |
 | P5 Recovery/operations | DEPLOYED | Separate host executor active, fresh actual service/log/schedule evidence, immutable current release catalog and verified pre-rollout backups; allowlist/restore/replay refusal regressions passed | Dangerous host/provider effects require their normal approvals; no production restore or test rollback was performed |
-| P6 Hardening/release | ACCEPTED | Engineering release acceptance: 2305 passed/zero skips, strict types/lint, frontend/image/package builds, source security reviews, actual private browser/API/SQL/container/host proof and published runbooks | Natural live lifecycle and unrelated sticky clock-latch recovery are separate evidence/authorization tracks |
+| P6 Hardening/release | ACCEPTED | Password-only release: 2312 passed/zero skips, strict types/lint, frontend/image/package builds, actual password browser/API/SQL/container/host proof and published runbooks | Natural live lifecycle and unrelated sticky clock-latch recovery remain separate |
 
 Phases are sequencing, not reduced scope. No phase is accepted because documentation exists; code and runtime gates above still apply.
 
@@ -381,4 +381,46 @@ without consuming consent and preserve immutable job/receipt tests using support
 Tier 2 authority. No live trade, latch release or other provider mutation was used.
 Ruff and strict Linux-platform mypy passed; TypeScript/Vite production build passed.
 The complete isolated Linux suite is running before deployment.
+
+### Password-only release acceptance and production proof
+
+Published and deployed **`16b6508`**. The complete isolated Linux/PostgreSQL suite
+returned **2312 passed, zero failures and zero skips**, in **823.85 seconds**.
+Ruff checked all source, **311 files** passed formatting, strict mypy passed
+**120 source files**, TypeScript/Vite built and Python source/wheel packaging passed.
+The final JUnit receipt is preserved privately at
+`runtime/console-password-release-20261015/acceptance.xml`, SHA256
+`62148217309ab482583c96a3a5c53e0c69c99bf8879429beb9425234a88a6488`.
+
+Protected rollout proved the authenticated account flat at `04:34:47Z` and
+`04:35:11Z`, quiescing entry-capable consumers between observations and leaving
+monitoring running until the second proof. The integrity-checked pre-cutover backup
+is `backups/console-password-before-20261015/fatty_trader_20261015T043523Z.dump`,
+**11,446,518 bytes**. No restore or test trade occurred.
+
+The supplied password was sent only over SSH stdin to the provisioner; only a
+salted scrypt verifier was written to the ignored private 0640 hash file and mounted
+read-only into web. The secret is absent from Git and deployment command arguments.
+All previous sessions were revoked, old non-password principals disabled and unused
+invitations/challenges consumed. Immutable consent records were not rewritten:
+revoking their sessions invalidates old authority.
+
+Actual production browser proof: exactly one password field and one sign-in
+button; incorrect password refused; supplied password accepted; session identity
+`console-password-owner`, account/environment matched the deployed LIVE binding and
+auth policy `console-password-v2`. There was no extra authentication prompt after
+login. Logout returned to the one-field form and protected overview returned **401**.
+The verification session was signed out rather than left active.
+
+All **nine application containers** are healthy on immutable image
+`sha256:ed72455b83b574d76c19c2c68892335dd04bc36b604eef501774498b4af4c7e6`,
+revision `16b6508`, copied source digest
+`f3e8186b7e9c62160a8752fe9704071f6a167df07a7b406f81732f82c99d3b40`.
+The same source is installed in the dedicated host executor and current artifact
+`console-20261015-16b6508` is registered. Actual SQL evidence shows zero active old
+sessions, zero enabled old principals and zero live enrollment invitations.
+Web remains loopback-only, restricted to console SQL writes and without exchange
+credentials/Docker socket/host decryption key. Production LIVE/LIVE/1, risk values,
+optional mutation gates and incident-latch reason/update time match the preserved
+baseline. Password-only login does not release the sticky clock incident.
 

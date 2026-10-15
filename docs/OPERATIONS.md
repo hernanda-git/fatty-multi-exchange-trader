@@ -133,8 +133,8 @@ or enrollment tokens. To set/rotate it through trusted SSH, run
 and pass one password line on stdin; never place it in arguments or shell history.
 The private 0640 `runtime/console-password.hash` is the only stored verifier and is
 mounted read-only into web. Restart web after rotation. Quiesce console/Telegram
-mutation admission, revoke existing console sessions and expire bound consent
-grants during rotation before reopening access; do not clear incident latches.
+mutation admission and revoke existing console sessions, invalidating their bound
+consent without rewriting immutable grant records; do not clear incident latches.
 The hash/scope-derived principal revision additionally rejects stale password
 epochs. Old enrollment/challenge tables are retained as inert history, not login
 routes. No password or verifier belongs in exports, config drafts or logs.
