@@ -10,7 +10,7 @@ Owner requested complete autonomous delivery after approving the full plan. This
 
 ## Authentication and access
 
-Server inspection found the existing web exposed only at 127.0.0.1:18081 and no established OIDC identity service or general-purpose HTTPS ingress for this bot. Do not adopt an unrelated application's identity/credentials, provision a public DNS name, or expose an administrative port on all interfaces.
+Server inspection originally found the existing web exposed only at 127.0.0.1:18081 and no established OIDC identity service or general-purpose HTTPS ingress for this bot. The implementation therefore did not adopt an unrelated application's identity or credentials, and the administrative port is never exposed on all interfaces. On 2026-10-15 the owner directed public access through their own `trade.warga-digital.com` subdomain, served by the existing OpenLiteSpeed HTTPS ingress; the web port itself remains bound to `127.0.0.1:18081`.
 
 Owner superseded the initial passkey design with password-only authentication.
 `POST /api/v1/auth/login` accepts only a password and issues a scoped opaque owner
@@ -19,9 +19,11 @@ The deployment stores only a salted scrypt verifier in
 `runtime/console-password.hash` (0640), mounted read-only into web. Plaintext is
 read from provisioning stdin and is never committed, logged or returned.
 
-Default access remains an SSH tunnel to the private web port; public hosting
-requires HTTPS. Exact-origin checks, sessions, CSRF, scoped authorization and
-durable rate limiting remain. `POST /api/v1/auth/consent` derives expiring,
+Access is the owner-provided HTTPS origin `https://trade.warga-digital.com`, which
+must match `CONSOLE_ORIGIN` exactly. Exact-origin checks, sessions, CSRF, scoped
+authorization and durable rate limiting remain; every other origin — including the
+former `http://localhost:18081` SSH-tunnel path — is rejected for login and
+mutations. `POST /api/v1/auth/consent` derives expiring,
 digest-bound consent from the current password session after effect review,
 without a second authentication factor or password prompt. It rotates the session
 and CSRF token together. Old passkey sessions, invitations and grants are revoked

@@ -139,6 +139,18 @@ The hash/scope-derived principal revision additionally rejects stale password
 epochs. Old enrollment/challenge tables are retained as inert history, not login
 routes. No password or verifier belongs in exports, config drafts or logs.
 
+Public access is `https://trade.warga-digital.com`, a proxied Cloudflare A record
+(`trade.warga-digital.com -> 46.202.155.192`, record id
+`eeaadd59fcc530156940525ac1f8b0b1`) terminated by the host OpenLiteSpeed vhost
+`/usr/local/lsws/conf/vhosts/trade.warga-digital.com/vhost.conf` (a `respBuffer 0`
+proxy to `127.0.0.1:18081`, mapped in the `Default`, `SSL`, and `SSL IPv6`
+listeners of `/usr/local/lsws/conf/httpd_config.conf`). The host `.env` sets
+`CONSOLE_ORIGIN="https://trade.warga-digital.com"`; recreate `web`,
+`operator-bot`, and `console-worker` together after changing it. The web port
+stays loopback-only. Login and mutations require that exact origin, so the former
+`ssh -N -L 18081:127.0.0.1:18081 fspmi-hostinger` tunnel no longer establishes a
+session; it can still serve unauthenticated reads such as `/health/telemetry`.
+
 
 The web process has no Docker socket, exchange credentials, private secret key,
 or host command runner. `deploy/systemd/fatty-console-ops-worker.service` runs

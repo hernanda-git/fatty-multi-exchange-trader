@@ -431,3 +431,34 @@ credentials/Docker socket/host decryption key. Production LIVE/LIVE/1, risk valu
 optional mutation gates and incident-latch reason/update time match the preserved
 baseline. Password-only login does not release the sticky clock incident.
 
+## Public HTTPS access at trade.warga-digital.com (2026-10-15)
+
+The owner directed public access to the console through their existing
+`trade.warga-digital.com` subdomain, following the OpenLiteSpeed ingress pattern
+already used by the owner's other applications. A proxied Cloudflare A record
+`trade.warga-digital.com -> 46.202.155.192` (record
+`eeaadd59fcc530156940525ac1f8b0b1`) fronts a new OpenLiteSpeed vhost
+`/usr/local/lsws/conf/vhosts/trade.warga-digital.com/vhost.conf` — a
+`respBuffer 0` proxy to `127.0.0.1:18081` mapped in the `Default`, `SSL`, and
+`SSL IPv6` listeners. The web port remains bound to host loopback; no port was
+published on all interfaces and no other application's identity or credentials
+were adopted.
+
+The host `.env` now sets `CONSOLE_ORIGIN="https://trade.warga-digital.com"`;
+`web`, `operator-bot`, and `console-worker` were recreated together and all three
+report the new origin. Exact-origin enforcement was proved on the recreated web:
+`POST /api/v1/auth/login` returned **200** with `Origin:
+https://trade.warga-digital.com` and **403** with the previous
+`http://localhost:18081` origin, so the former SSH-tunnel path is no longer a
+sign-in or mutation origin.
+
+Edge verification: `https://trade.warga-digital.com/` served the console HTML
+**200** through Cloudflare (`CF-RAY` SIN edge, `cf-cache-status: DYNAMIC`),
+`/health/telemetry` **200**, login **200**, and `GET /api/v1/events` SSE **200**
+(`eventsource`). A production browser sign-in exercised the live surface through
+the public origin: header `5536885345 LIVE bitget live`, Exchange Connection
+Synchronized (skew **-5ms**), live equity **$9.17**, and the signal inbox
+rendering expanded `MESSAGE / SETUP` cells. All ten application containers report
+`unless-stopped` and OpenLiteSpeed is system-enabled, so the public console
+restarts with the host. The verification session was left to idle-expire.
+
