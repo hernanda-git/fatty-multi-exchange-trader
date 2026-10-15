@@ -174,3 +174,56 @@ missing fresh evidence. Deployment remains withheld until authenticated inventor
 is available; the console worker must not be added blindly to an already
 rate-limited provider workload.
 
+### Published implementation and superseding admission observations
+
+Implementation commit **`56d04be`** (`feat(console): implement authenticated durable
+bot management console`) was pushed to `origin/main`. This is publication, not
+production cutover. Console documentation relative-link smoke checked **88 links**
+with no missing targets.
+
+A later paced, independent authenticated observation at
+`2026-10-15T02:42:44Z` verified the configured provider account identity, zero active
+positions and zero ordinary orders. The initial custom plan probe correctly
+withheld proof on an unrecognized null-list response; the existing canonical
+`normalize_pending_plan_response` decoder then proved zero `profit_loss`,
+`normal_plan` and `track_plan` orders with no continuation in any category.
+This supersedes the earlier 429/incomplete-inventory checkpoint; it does not
+release the fault latch or establish future request availability.
+
+Before source cutover, the existing integrity-checking backup script completed:
+`backups/console-before-20261015/fatty_trader_20261015T024423Z.dump`,
+**1,753,550 bytes**, with automatic retention disabled. Previous images for all
+eight running application services were retained under
+`fatty-console-rollback-<service>:ea0114e-20261015`; the private nonsecret policy/image
+baseline is `runtime/console-release-20261015/before.json`. No database rollback
+is implied if subsequent provider effects occur.
+
+The dedicated host executor virtual environment was installed from locked,
+hash-checked dependencies and the published package without altering another
+application environment. Its new user unit was copied but not started at this
+checkpoint. The complete final Linux suite and deployment admission still gate
+production cutover; production application containers remain unchanged here.
+
+### Final-suite synchronization correction
+
+The next complete Linux run returned **2299 passed, 1 failed**. The failure was
+the responsiveness regression's one-second wall-clock deadline for reaching the
+selected real PostgreSQL operation, not a clock response failure. That deadline
+included preceding database work and was not the responsiveness invariant.
+The test now awaits an explicit operation-entry barrier or reconciliation
+completion/failure, asserts the operation runs outside the event-loop thread, and
+keeps the same one-second clock-completion bound while storage remains blocked.
+No runtime timeout, admission gate or production code was relaxed.
+
+All four real-PostgreSQL storage-operation variants then passed in **7.84 seconds**.
+The changed regression passed Ruff and formatting; all five shell scripts passed
+Linux `bash -n`. The final complete suite is running again without concurrent image
+builds. Production cutover remains withheld pending that result.
+
+The published immutable image `fattyconsole:56d04be` was built from the Git archive
+of the pushed source, not the Windows verification snapshot. Image identity is
+`sha256:2e952a6188a2afff7b1a3d24907ef01c6c252c0ed6998f37e92163ebb066844b`;
+copied Python source exactly matches the published tree at digest
+`508e6c14b14e1e6bc9013e7520a0a60baab2662b58f635f7e93088f1214bb219`.
+Its image revision label is `56d04be`.
+

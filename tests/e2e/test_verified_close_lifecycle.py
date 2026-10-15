@@ -299,7 +299,9 @@ async def test_close_reconciliation_storage_keeps_shared_clock_responsive(
     gateway = BitgetOperatorGateway(client, store, client_oid_factory=lambda: "operator-new-close")
     await asyncio.to_thread(gateway.close_position, "BTCUSDT")
     lifecycle = store.verified_close_lifecycle
-    entered = threading.Event()
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered = asyncio.Event()
     release = threading.Event()
     request_started = asyncio.Event()
     respond = asyncio.Event()
@@ -312,8 +314,9 @@ async def test_close_reconciliation_storage_keeps_shared_clock_responsive(
     original = getattr(target, method)
 
     def block_store(*args, **kwargs):
-        entered.set()
-        release.wait(timeout=2)
+        assert threading.get_ident() != loop_thread, "storage must run outside the event loop"
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
         return original(*args, **kwargs)
 
     monkeypatch.setattr(target, method, block_store)
@@ -327,19 +330,29 @@ async def test_close_reconciliation_storage_keeps_shared_clock_responsive(
     monkeypatch.setattr(clock_client, "_request", time_response)
     clock_task = asyncio.create_task(clock_client.get_clock_skew_ms())
     reconciliation_task = None
+    entered_task = None
     try:
         await asyncio.wait_for(request_started.wait(), timeout=1)
         reconciliation_task = asyncio.create_task(lifecycle.reconcile(client))
-        assert await asyncio.to_thread(entered.wait, 1)
+        entered_task = asyncio.create_task(entered.wait())
+        done, _ = await asyncio.wait(
+            (entered_task, reconciliation_task), return_when=asyncio.FIRST_COMPLETED
+        )
+        if reconciliation_task in done:
+            await reconciliation_task
+        assert entered.is_set(), "reconciliation must reach the selected storage operation"
         respond.set()
         await asyncio.wait_for(clock_task, timeout=1)
         assert not reconciliation_task.done(), "storage cannot starve clock/socket I/O"
     finally:
         release.set()
         respond.set()
+        if entered_task is not None:
+            entered_task.cancel()
         await asyncio.gather(
             clock_task,
             *([reconciliation_task] if reconciliation_task else []),
+            *([entered_task] if entered_task else []),
             return_exceptions=True,
         )
         await clock_client.aclose()
