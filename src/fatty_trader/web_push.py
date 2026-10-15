@@ -43,7 +43,12 @@ class WebPushFailed(Exception):
 
 @dataclass(frozen=True)
 class WebPushConfig:
-    """Complete sender configuration; absence leaves web push visibly disabled."""
+    """Complete sender configuration; absence leaves web push visibly disabled.
+
+    ``private_key`` holds the VAPID private key in the base64url DER form the
+    ``pywebpush``/``py_vapid`` stack accepts; the provisioned PEM file is
+    converted at load time.
+    """
 
     private_key: str
     subject: str
@@ -62,8 +67,34 @@ class WebPushConfig:
             return None
         if not key:
             return None
+        ttl_seconds = _ttl(environ)
         subject = environ.get("WEB_PUSH_VAPID_SUBJECT", "").strip() or "https://localhost"
-        return cls(private_key=key, subject=subject, ttl_seconds=_ttl(environ))
+        try:
+            private_key = vapid_private_key_for_pywebpush(key)
+        except ValueError:
+            return None
+        return cls(private_key=private_key, subject=subject, ttl_seconds=ttl_seconds)
+
+
+def vapid_private_key_for_pywebpush(pem_text: str) -> str:
+    """Return the base64url-encoded PKCS8 DER string ``pywebpush`` expects."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    try:
+        loaded = serialization.load_pem_private_key(pem_text.encode("utf-8"), password=None)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("VAPID private key is not a readable PEM key") from exc
+    if not isinstance(loaded, ec.EllipticCurvePrivateKey):
+        raise ValueError("VAPID private key must be an EC P-256 key")
+    der = loaded.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    return base64.urlsafe_b64encode(der).rstrip(b"=").decode("ascii")
 
 
 def _ttl(environ: Mapping[str, str]) -> int:

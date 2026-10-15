@@ -102,6 +102,39 @@ def test_configuration_requires_a_positive_ttl(tmp_path: Path) -> None:
         )
 
 
+def test_configuration_converts_pem_for_pywebpush(tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from py_vapid import Vapid
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    pem = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    target = tmp_path / "vapid.pem"
+    target.write_bytes(pem)
+
+    config = WebPushConfig.from_environ({"WEB_PUSH_VAPID_PRIVATE_KEY_FILE": str(target)})
+    assert config is not None
+    assert config.subject == "https://localhost"
+    parsed = Vapid.from_string(config.private_key)
+    expected_public = private_key.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    actual_public = parsed.public_key.public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    assert actual_public == expected_public
+
+
+def test_unreadable_pem_is_inert_instead_of_crashing(tmp_path: Path) -> None:
+    target = tmp_path / "garbage.pem"
+    target.write_text("not a key at all", encoding="utf-8")
+    assert WebPushConfig.from_environ({"WEB_PUSH_VAPID_PRIVATE_KEY_FILE": str(target)}) is None
+
+
 def test_public_key_file_is_optional(tmp_path: Path) -> None:
     assert read_public_key_file({}) is None
     target = tmp_path / "public.txt"
