@@ -1,5 +1,14 @@
 # Bot Management Console: UI and API contracts
 
+**Historical baseline:** source-support statements below refer to the original
+`ea0114e` design checkpoint, not the current implemented API. Discover current
+support from source and the [implementation decisions](BOT-CONSOLE-IMPLEMENTATION.md).
+New frontend composition/navigation is specified in the
+[UX master plan](BOT-CONSOLE-UX-MASTER-PLAN.md) and [page specifications](BOT-CONSOLE-UX-PAGES.md);
+execution status belongs to the [UX tracker](BOT-CONSOLE-UX-PROGRESS.md).
+Password-only login supersedes historical authenticator/identity proposals.
+These planning documents do not authorize a rollout or changed financial policy.
+
 Date: 2026-10-14. Status: **phase 1 design deliverable; not an implemented console**. This specification covers the entire approved console, including capabilities that need new durable adapters. It does not authorize deployment, provider mutations, consumer shutdown, Telegram sends, latch release, risk changes, or access changes. Production remains LIVE/LIVE/1 under [PRODUCTION-LIVE-POLICY.md](PRODUCTION-LIVE-POLICY.md); all independent admission and mutation gates remain effective.
 
 ## 1. Evidence, architecture, and implementation boundary

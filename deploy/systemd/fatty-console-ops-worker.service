@@ -1,0 +1,24 @@
+[Unit]
+Description=Fatty console allowlisted host operations worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User unit: only the trusted host operator UID has Docker authority.
+# The web UID never receives Docker group membership or this environment.
+WorkingDirectory=%h/apps/fatty-multi-exchange-trader
+EnvironmentFile=%h/apps/fatty-multi-exchange-trader/.env
+EnvironmentFile=%h/apps/fatty-multi-exchange-trader/runtime/console-ops.env
+Environment=CONSOLE_OPS_WORKER=1
+Environment=CONSOLE_ENABLED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=%h/apps/fatty-multi-exchange-trader/runtime/console-ops-venv/bin/python %h/apps/fatty-multi-exchange-trader/scripts/console_ops_worker.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

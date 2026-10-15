@@ -1,5 +1,11 @@
 # Bot Console — autonomous implementation and deployment decisions
 
+**UX redesign:** this document describes existing implementation decisions, not
+the redesigned interface. The [new UX master plan](BOT-CONSOLE-UX-MASTER-PLAN.md),
+[page specification](BOT-CONSOLE-UX-PAGES.md) and [progress tracker](BOT-CONSOLE-UX-PROGRESS.md)
+describe a separate, planning-only frontend workstream. Existing source/runtime
+receipts must not be reused as proof of redesigned pages.
+
 Owner requested complete autonomous delivery after approving the full plan. This document records design choices made from repository/server evidence; the progress tracker records observed acceptance separately.
 
 ## Authentication and access

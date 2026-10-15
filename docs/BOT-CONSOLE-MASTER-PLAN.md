@@ -1,5 +1,13 @@
 # Bot Management Console — approved master plan
 
+**Frontend redesign planning:** the owner rejected the current information design
+and requested a detailed rework plan. The [UX master plan](BOT-CONSOLE-UX-MASTER-PLAN.md),
+[page specifications](BOT-CONSOLE-UX-PAGES.md), [execution plan](BOT-CONSOLE-UX-EXECUTION.md)
+and [UX tracker](BOT-CONSOLE-UX-PROGRESS.md) govern that separate workstream.
+Redesign implementation has not started; historical functional acceptance below
+does not constitute UX acceptance. Current password-only authentication and
+financial safety contracts remain binding.
+
 Date: 2026-10-14. Owner approved the planning proposal and requested documentation, phase tracking, commit/push, and work to start. This approval covers repository development and publication, not provider mutations, test trades, production console rollout, latch release, changed risk limits, or credential substitution.
 
 The subsequent instruction to complete everything autonomously extends authority to

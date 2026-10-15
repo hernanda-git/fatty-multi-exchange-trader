@@ -33,24 +33,13 @@ Use desktop navigation or the mobile **Menu**. Filters are server-side and bound
 a list is not proof of complete provider inventory. Details link durable IDs and
 versions rather than adopting an arbitrary symbol as bot-owned.
 
-| Screen | Operational use |
+| Primary destination | Secondary views & operational use |
 |---|---|
-| Overview | Independent health, admission, containment, account and protection evidence; navigate into the exact blocker. |
-| Signals & trace | Inspect original receipt/revision, text/media, classification, canonical signal, dispatches, reservations, intents and management. `signal.annotate` attaches an immutable revision-bound operator note; `signal.reanalyze` records a separate analysis-only result. Neither renews freshness or trades historical signals. |
-| Trading desk | Review supported contract, quote, sizing, margin/leverage, direction and SL/TP. `trade.open` creates a new explicitly manual command through existing admission and durable ownership. |
-| Positions | Compare provider and owned residual; selected partial/full reduce-only close, exact remainder cancellation and protection changes. Baseline/external exposure is not silently adopted. |
-| Orders & intents | Inspect entry legs versus protective/reduce-only orders and fills. Cancel only the exact owned entry or owned remaining entries. Reconcile ambiguous existing intents without another POST. |
-| Protection | Inspect native plan identity, trigger and quantity against actual fills; repair missing protection or change supported SL/TP. Fallback operations retain independent mutation and epoch gates. |
-| Management | Trace source/manual management and cancellation-before-close outcomes; reconcile existing requests. A queued source instruction is not an execution confirmation. |
-| Recovery & safety | Inspect faults, latches, baselines, unresolved ownership and authenticated inventory. Acknowledge an exact incident without clearing it. Pause entries separately from an incident latch; proof/release requires the exact approved binding. |
-| Account & PnL | Current provider account, admission snapshots, reservations and ledger economics. Unavailable fees/funding or incomplete evidence stays unknown. |
-| Services & deployment | Actual host/container observation, bounded logs, approved release catalog and maintenance plans. No arbitrary shell, path, Git ref or image tag input. |
-| Configuration | Immutable desired drafts versus independently observed effective consumer configuration. Stage replacement secrets through the write-only encrypted form; never paste credentials into reasons or general settings. |
-| Notifications | Observe outbox/attempt outcomes; queue configured test/health delivery or explicit eligible retry. Duplicate delivery risk must be accepted; retry never replays a trade. |
-| Audit & jobs | Inspect actor, immutable arguments/digest, approvals, lifecycle, claims and readback. Export bounded JSON/CSV through `report.export`; CSV escapes formula-leading values. |
-| Backups | Create, catalog and verify integrity; deletion and restore require their reviewed prerequisites. Restore refuses changed trading evidence and never downgrades schema or replays signals. |
-| Access | Inspect the shared owner, exact scope, owned sessions and password-only policy; revoke owned sessions. No invitation, MFA enrollment or external-identity setup. |
-
+| **Overview** (`/overview`) | High-level operating status, admission condition, active containment alerts, portfolio exposure, and drill-down into Account & Performance (`/account`, `/account/pnl`, `/account/reservations`, `/account/admission-snapshots`). |
+| **Trading** (`/positions`) | Active owned positions (`/positions`), working orders & intents (`/orders`), fills & ledger economics (`/orders?view=fills`), native SL/TP & fallback protection (`/protection`), and dedicated New manual trade entry (`/trading`). |
+| **Signals** (`/signals`) | Telegram signal inbox (`/signals`), immutable original message texts, authenticated media attachments, parsed revisions, and evidence-linked dispatch traces (`/signals/{id}`, `/signals/dispatches/{id}`). |
+| **Activity** (`/audit`) | System audit trail (`/audit`), durable command jobs (`/audit?view=jobs`, `/audit/jobs/{id}`), approvals & Tier 3 governance (`/audit?view=approvals`), trade management instructions (`/management`), and notification deliveries (`/notifications`). |
+| **Settings** (`/config`) | Effective settings & encrypted secret staging (`/config`), drafts & revisions (`/config/drafts`, `/config/history`), safety latches & recovery proofs (`/recovery`, `/recovery/baselines`), container services & logs (`/services`), release catalog (`/services?view=releases`), backups (`/backups`), and password-only access policy & sessions (`/access`). |
 ## Preview, authorize, queue, observe
 
 1. Select the action from **Action catalog**, fill typed arguments, choose only exact

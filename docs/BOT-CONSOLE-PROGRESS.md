@@ -1,5 +1,12 @@
 # Bot Management Console — progress and evidence tracker
 
+**New UX workstream:** the owner reports that the current frontend is too
+complicated and requested a detailed redesign plan. Track that work in the
+[UX progress and checklist register](BOT-CONSOLE-UX-PROGRESS.md), under the
+[UX master plan](BOT-CONSOLE-UX-MASTER-PLAN.md). Redesign implementation is
+NOT STARTED. Historical backend/release acceptance here is not acceptance of the
+current visual design or evidence that the redesign exists.
+
 Created 2026-10-14. Approved scope: [master plan](BOT-CONSOLE-MASTER-PLAN.md). Specification: [UI/API](BOT-CONSOLE-UI-API-SPEC.md). Source investigation: [capabilities](BOT-CONSOLE-CAPABILITIES.md).
 
 ## Status vocabulary
