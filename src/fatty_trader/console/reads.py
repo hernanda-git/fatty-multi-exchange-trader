@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row, tuple_row
 from psycopg.types.json import set_json_loads
@@ -2156,6 +2156,42 @@ class SnapshotCollector:
                     ),
                     "observed_at": observed.isoformat(),
                 }
+                if (
+                    normalized["complete"]
+                    and account.get("equity") is not None
+                    and account.get("available") is not None
+                ):
+                    try:
+                        last = self.store.one(
+                            "SELECT equity, available_balance, captured_at FROM balance_snapshots "
+                            "WHERE exchange='bitget' ORDER BY captured_at DESC LIMIT 1"
+                        )
+                        should_record = True
+                        if last and last.get("captured_at"):
+                            last_captured = _time(last["captured_at"])
+                            if last_captured:
+                                age = (observed - last_captured).total_seconds()
+                                same_equity = str(last.get("equity")) == str(account["equity"])
+                                same_avail = str(last.get("available_balance")) == str(account["available"])
+                                if age < 300 and same_equity and same_avail:
+                                    should_record = False
+                        if should_record:
+                            self.store.execute(
+                                """INSERT INTO balance_snapshots
+                                    (id, exchange, total_balance, available_balance, equity,
+                                     margin_coin, captured_at)
+                                VALUES (%s, 'bitget', %s, %s, %s, %s, %s)""",
+                                (
+                                    str(uuid4()),
+                                    account["equity"],
+                                     account["available"],
+                                    account["equity"],
+                                    account.get("margin_coin", "USDT"),
+                                    observed,
+                                ),
+                            )
+                    except Exception:
+                        pass
             elif kind == "account_identity":
                 data = data.get("data", data) if isinstance(data, dict) else data
                 uid = data.get("userId") if isinstance(data, dict) else None

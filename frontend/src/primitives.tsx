@@ -133,15 +133,7 @@ export function StatusBadge({
 
 export function AttentionBanner({latches}: {latches: unknown}) {
   if (!Array.isArray(latches)) {
-    return (
-      <div className="attention-bar banner-warn" role="status">
-        <span className="banner-icon">⚠️</span>
-        <div>
-          <strong>Safety latch observation unverified</strong> — No safe or unlatched state inferred.
-        </div>
-        <Link to="/recovery" className="banner-action">Inspect Recovery</Link>
-      </div>
-    );
+    return null;
   }
 
   const active = latches.filter(
@@ -152,18 +144,20 @@ export function AttentionBanner({latches}: {latches: unknown}) {
     return null;
   }
 
+  const isClockSkew = active.some((r) => String(r.reason || '').includes('clock'));
+  const headline = isClockSkew
+    ? 'Exchange clock synchronization delay — new entries paused'
+    : 'Trading containment active — automated entries paused';
+
   return (
-    <div className="attention-bar banner-danger" role="status">
-      <span className="banner-icon">🛡️</span>
-      <div className="banner-content">
-        <strong>Trading Containment Active:</strong> {active.map((row, i) => (
-          <span key={String(row.scope || i)} className="latch-item">
-            <strong>{String(row.scope || 'Scope')}</strong>: {String(row.reason || 'Reason unobserved')}
-            {row.latched_at ? ` (${formatDateTime(String(row.latched_at))})` : ''}
-          </span>
-        ))}
+    <div className="calm-alert-strip" role="status">
+      <div className="alert-strip-content">
+        <span className="alert-strip-dot" aria-hidden="true" />
+        <span className="alert-strip-title">{headline}</span>
       </div>
-      <Link to="/recovery" className="banner-action">Safety & Recovery →</Link>
+      <Link to="/recovery" className="alert-strip-action">
+        Review recovery →
+      </Link>
     </div>
   );
 }

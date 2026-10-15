@@ -277,32 +277,47 @@ a:hover {
   gap: 8px;
 }
 
-.attention-bar {
-  margin: 14px 24px 0;
-  padding: 10px 16px;
-  border-radius: 8px;
+/* Calm, Sleek, Professional Alert Strip */
+.calm-alert-strip {
+  margin: 12px 24px 0;
+  padding: 8px 16px;
+  border-radius: 6px;
   font-size: 13px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border: 1px solid transparent;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  transition: opacity 0.15s;
 }
-.banner-warn {
-  background: var(--color-warn-bg);
-  color: var(--color-warn-text);
-  border-color: rgba(245, 158, 11, 0.25);
+.alert-strip-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.banner-danger {
-  background: var(--color-danger-bg);
-  color: var(--color-danger-text);
-  border-color: rgba(239, 68, 68, 0.25);
+.alert-strip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex-shrink: 0;
 }
-.banner-action {
-  font-weight: 600;
-  color: inherit;
-  text-decoration: underline;
+.alert-strip-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.alert-strip-action {
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--accent-blue);
+  text-decoration: none;
   white-space: nowrap;
+}
+.alert-strip-action:hover {
+  text-decoration: underline;
 }
 
 /* Filters Bar */
