@@ -1,9 +1,130 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {DomainTable, DomainDetail} from '../domain';
 import {SecretStage} from '../forms';
 import {Link} from '../nav';
 import type {Envelope, Capability, RecordData, Principal} from '../types';
 import {isObjectRecord} from '../types';
+
+function TradingDefaultsConfig({
+  onSave,
+}: {
+  onSave: (settings: RecordData) => void;
+}) {
+  const [mode, setMode] = useState<'PERCENTAGE' | 'FIXED_USDT'>('PERCENTAGE');
+  const [allocationPct, setAllocationPct] = useState('0.20');
+  const [fixedMarginUsdt, setFixedMarginUsdt] = useState('1.00');
+  const [defaultLeverage, setDefaultLeverage] = useState(20);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const settings: RecordData = {
+      BITGET_MARGIN_MODE_TYPE: mode,
+      BITGET_ALLOCATION_PCT: Number(allocationPct),
+      BITGET_MAX_MARGIN_PER_TRADE_USDT: Number(fixedMarginUsdt),
+      BITGET_DEFAULT_LEVERAGE: Number(defaultLeverage),
+    };
+    onSave(settings);
+  };
+
+  return (
+    <section className="card">
+      <div className="card-header">
+        <div>
+          <span className="eyebrow">AUTOMATED TRADING DEFAULTS</span>
+          <h2>Default Margin &amp; Leverage (Signals)</h2>
+        </div>
+        <span className="badge badge-positive">Live Signal Engine</span>
+      </div>
+      <p className="text-secondary text-sm" style={{marginBottom: '16px'}}>
+        Configure how the automated dispatcher sizes incoming Telegram signals on Bitget futures.
+      </p>
+
+      <form onSubmit={handleSubmit}>
+        {/* Margin Sizing Mode Selector */}
+        <label className="form-group">
+          <span className="form-label">Default Margin Sizing Mode</span>
+          <div className="side-selector" style={{maxWidth: '480px', marginBottom: '14px'}}>
+            <button
+              type="button"
+              className={`side-btn ${mode === 'PERCENTAGE' ? 'active-long' : ''}`}
+              onClick={() => setMode('PERCENTAGE')}
+            >
+              Percentage of Total USDT (% of Equity)
+            </button>
+            <button
+              type="button"
+              className={`side-btn ${mode === 'FIXED_USDT' ? 'active-long' : ''}`}
+              onClick={() => setMode('FIXED_USDT')}
+            >
+              Fixed USDT Quantity ($)
+            </button>
+          </div>
+        </label>
+
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px'}}>
+          {mode === 'PERCENTAGE' ? (
+            <label className="form-group">
+              <span className="form-label">
+                Margin Allocation: {(Number(allocationPct) * 100).toFixed(0)}% of Equity
+              </span>
+              <input
+                type="range"
+                min="0.05"
+                max="1.00"
+                step="0.05"
+                value={allocationPct}
+                onChange={(e) => setAllocationPct(e.target.value)}
+              />
+              <span className="text-muted text-xs">
+                Allocates {(Number(allocationPct) * 100).toFixed(0)}% of your available balance per trade.
+              </span>
+            </label>
+          ) : (
+            <label className="form-group">
+              <span className="form-label">Fixed Margin per Trade (USDT)</span>
+              <input
+                type="text"
+                pattern="^[0-9]+(?:\.[0-9]+)?$"
+                required
+                value={fixedMarginUsdt}
+                onChange={(e) => setFixedMarginUsdt(e.target.value)}
+                placeholder="1.00"
+              />
+              <span className="text-muted text-xs">
+                Hard dollar cap in USDT allocated per automated signal.
+              </span>
+            </label>
+          )}
+
+          <label className="form-group">
+            <span className="form-label">Default Leverage ({defaultLeverage}x)</span>
+            <div style={{display: 'flex', gap: '8px', marginTop: '4px'}}>
+              {[5, 10, 15, 20].map((lev) => (
+                <button
+                  key={lev}
+                  type="button"
+                  className={`btn btn-sm ${defaultLeverage === lev ? 'btn-primary' : 'btn-secondary'}`}
+                  onClick={() => setDefaultLeverage(lev)}
+                >
+                  {lev}x {lev === 20 ? '(Ceiling)' : ''}
+                </button>
+              ))}
+            </div>
+            <span className="text-muted text-xs" style={{marginTop: '4px'}}>
+              Ceiling is pinned at 20x for safe liquidation headroom.
+            </span>
+          </label>
+        </div>
+
+        <div style={{marginTop: '16px'}}>
+          <button type="submit" className="btn btn-primary btn-sm">
+            Save Trading Defaults Draft →
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
 
 export function SettingsPage({
   envelope,
@@ -59,9 +180,16 @@ export function SettingsPage({
 
   return (
     <div className="page-content settings-page">
-      {/* Contextual top controls based on settings domain */}
+      {/* Configuration Defaults Card */}
       {readSection === 'config' && (
-        <SecretStage isOwner={isOwner} onChanged={reload} />
+        <>
+          <TradingDefaultsConfig
+            onSave={(settings) =>
+              onOpenAction('config.save_draft', {settings})
+            }
+          />
+          <SecretStage isOwner={isOwner} onChanged={reload} />
+        </>
       )}
 
       {readSection === 'access' && (

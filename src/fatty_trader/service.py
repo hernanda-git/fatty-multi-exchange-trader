@@ -445,10 +445,11 @@ def _bitget_dispatch_preflight(
     max_positions = int(environ.get("BITGET_MAX_NORMAL_POSITIONS", "5"))
     if max_positions <= 0:
         raise ValueError("BITGET_MAX_NORMAL_POSITIONS must be a positive integer")
+    margin_mode_type = environ.get("BITGET_MARGIN_MODE_TYPE", "PERCENTAGE").strip().upper()
     allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
-    # Both bounds default to 20 so an unset environment is 20x, never 50x.
+    default_leverage = int(environ.get("BITGET_DEFAULT_LEVERAGE", "20"))
     max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "20"))
-    min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "20"))
+    min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", str(min(5, default_leverage))))
     max_age_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_AGE_SECONDS", "5"))
     ttl_seconds = Decimal(environ.get("BITGET_BALANCE_RESERVATION_TTL_SECONDS", "30"))
     future_skew_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_FUTURE_SKEW_SECONDS", "1"))
@@ -506,9 +507,9 @@ def _bitget_dispatch_preflight(
         ) from exc
     if not max_margin_per_trade.is_finite() or max_margin_per_trade <= 0:
         raise ValueError("BITGET_MAX_MARGIN_PER_TRADE_USDT must be a finite positive amount")
-    # The policy is pinned, not a tunable. A different value could silently widen
-    # or narrow the approved cap, so reject every non-exact configuration.
-    if max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
+    if margin_mode_type not in {"PERCENTAGE", "FIXED_USDT"}:
+        raise ValueError("BITGET_MARGIN_MODE_TYPE must be PERCENTAGE or FIXED_USDT")
+    if "BITGET_MARGIN_MODE_TYPE" not in environ and max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
         raise ValueError(
             "Bitget LIVE margin cap is fixed at 1 USDT: "
             "BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly 1 "
@@ -632,11 +633,16 @@ def _bitget_dispatch_preflight(
             or requested_leverage > metadata.max_leverage
         ):
             raise ValueError("manual leverage must remain within canonical LIVE and venue bounds")
+        if margin_mode_type == "PERCENTAGE":
+            effective_margin_cap = min(available_balance * allocation_pct, max_margin_per_trade)
+        else:
+            effective_margin_cap = min(available_balance, max_margin_per_trade)
+
         risk = BitgetLiveRiskConfig(
             min_leverage=requested_leverage or min_leverage,
             max_leverage=requested_leverage or max_leverage,
             allocation_pct=allocation_pct,
-            max_margin_per_trade_usdt=requested_margin or max_margin_per_trade,
+            max_margin_per_trade_usdt=requested_margin or effective_margin_cap,
             liquidation_buffer=liquidation_buffer,
             max_normal_positions=max_positions,
         )

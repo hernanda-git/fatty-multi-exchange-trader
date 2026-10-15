@@ -77,6 +77,25 @@ CONFIG_FIELDS: dict[str, Any] = {
         "maxItems": 100,
         "uniqueItems": True,
     },
+    "BITGET_MARGIN_MODE_TYPE": {
+        "type": "string",
+        "enum": ["PERCENTAGE", "FIXED_USDT"],
+    },
+    "BITGET_ALLOCATION_PCT": {
+        "type": "number",
+        "minimum": 0.01,
+        "maximum": 1.0,
+    },
+    "BITGET_MAX_MARGIN_PER_TRADE_USDT": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 500.0,
+    },
+    "BITGET_DEFAULT_LEVERAGE": {
+        "type": "integer",
+        "minimum": 5,
+        "maximum": 20,
+    },
 }
 SECRET_KINDS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE", "TG_BOT_TOKEN")
 ACTION_SCHEMAS = {
