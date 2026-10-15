@@ -59,9 +59,19 @@
   service posture. Separate scenarios refused a stale revision and a racing entry
   without writing an override, retained monitoring, and refused mismatched readback.
   Regression coverage also preserves intentionally stopped consumers.
-- New code is locally verified, not deployed. Real PostgreSQL/Compose application
-  was not exercised: the local Docker daemon is unavailable. No claim of production
-  save/apply success follows from these adapter-based checks.
+- Release `19c4ced` is deployed at `https://trade.warga-digital.com/config`.
+  Rebuilt/recreated only web and reinstalled/restarted the host operations worker.
+  All other container IDs, including dispatcher and monitor, were preserved.
+- Production web is healthy with `/assets/index-Cr8CyYIZ.js`; image revision
+  label is `19c4ced`, digest
+  `sha256:d61c1e6485f65b115320a27dfced8eb987598fdf7180fb1862f435d274a0fee6`.
+  Host package exposes `config.save`; public browser sign-in and new bundle verified.
+- Authenticated production save/apply was not submitted. Deployment and healthy
+  services do not prove a runtime settings mutation or trading admission.
+- Separate read-only MAGIC audit found message 16310 rejected in preflight by
+  exchange-wide ASCII contract-symbol validation. See
+  [the full audit](AUDIT-MAGIC-20261015.md); this trading defect was not changed by
+  the configuration-console release.
 
 ## 2. Status and evidence rules
 
