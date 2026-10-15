@@ -227,3 +227,62 @@ copied Python source exactly matches the published tree at digest
 `508e6c14b14e1e6bc9013e7520a0a60baab2662b58f635f7e93088f1214bb219`.
 Its image revision label is `56d04be`.
 
+### Complete regression gate passed
+
+The complete isolated Linux/PostgreSQL run finished with **2300 passed, zero
+failures and zero skips** in **806.24 seconds**. This supersedes both prior failed
+full-suite checkpoints. The accepted JUnit receipt is preserved privately at
+`runtime/console-release-20261015/acceptance.xml`, SHA256
+`d5652da414b2df991dc990ed49288f58d06e1c48a1a2d853bcb10862bfe70ccc`.
+The deterministic regression/documentation correction was pushed separately as
+`4a4f89f`; runtime source remains identical to the built `56d04be` image.
+
+The published inert Compose configuration validated and its policy checker returned
+`production_live_policy=PASS`. The pre-console backup SHA256 is
+`1d6f76212773e899d022345f68523cc167defd96c9d63fb9f938fbf4af703694`.
+Production cutover now proceeds through fresh authenticated flatness, entry-consumer
+quiescence and a second flatness observation before stopping monitoring.
+
+### Initial production rollout and catalog boundary finding
+
+The protected cutover's two authenticated flat observations were recorded at
+`03:11:35Z` and `03:12:00Z`, with entry-capable consumers stopped between them;
+monitoring remained running through the second proof. After all application
+consumers stopped, a second integrity-checked backup completed:
+`backups/console-before-20261015/fatty_trader_20261015T031248Z.dump`,
+**1,753,547 bytes**. The checkout fast-forwarded to `4a4f89f`; console-only secrets
+were provisioned without printing values. Existing effective policy values matched
+the pre-rollout baseline before migration.
+
+Migration and initialization exited 0; schema is **26**. All **nine application
+containers** became healthy on immutable image
+`sha256:2e952a6188a2afff7b1a3d24907ef01c6c252c0ed6998f37e92163ebb066844b`;
+each copied Python tree matched the published source digest. The separate host
+executor is active/running with zero restarts and fresh services/log/schedule
+observations. Actual web binds only `127.0.0.1:18081`, has no provider credentials,
+private key or Docker socket mount, and uses `fatty_console_web`: financial SELECT
+allowed, financial UPDATE refused, console submission allowed.
+
+The real deployed login surface was exercised through the SSH tunnel: HTML 200,
+health 200, unauthenticated overview 401, no-store protected responses and restrictive
+CSP. No production authentication bypass or invented owner passkey was used.
+A one-use 600-second enrollment invitation was delivered through the configured
+private Telegram owner channel; the token was not printed. Trusted host enrollment
+registered `console-20261015-56d04be` in the immutable release catalog.
+
+Current latches remain byte-for-byte the prior reasons/update times: Bitget active
+with `clock-skew-unavailable`; protection-stream inactive with its prior approved
+release reason. Fresh account, identity, clock, position, ordinary/plan-order, fill,
+protection and worker observations were independently available. This does not clear
+the sticky incident or claim entry readiness.
+
+Post-rollout evidence exposed a real read-model bug: the provider catalog contains
+**833 contracts**, including three valid Unicode symbol names, but an ASCII-only
+metadata identity validator rejected the whole collection. The correction accepts
+bounded uppercase Unicode alphanumeric **catalog identities only**. Position
+ownership and all mutation symbol schemas remain ASCII-only; no unsupported market
+is newly authorized for trading. New regressions preserve ASCII plus Unicode catalog
+rows, refuse unsupported position adoption, and reject missing/control/markup
+identities rather than fabricating a complete inventory. The corrected release is
+under verification before superseding the initial image.
+

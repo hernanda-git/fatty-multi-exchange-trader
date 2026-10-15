@@ -2037,11 +2037,18 @@ def provider_rows(payload: Any, kind: str) -> tuple[list[dict[str, Any]], bool]:
     if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
         raise ValueError("invalid provider collection")
     for row in payload:
-        if kind in {"positions", "contracts"} and (
-            not isinstance(row.get("symbol"), str)
-            or not re.fullmatch(r"[A-Z0-9]{3,30}", row["symbol"])
-        ):
-            raise ValueError("provider symbol missing")
+        if kind in {"positions", "contracts"}:
+            symbol = row.get("symbol")
+            if (
+                not isinstance(symbol, str)
+                or not 3 <= len(symbol) <= 30
+                or not symbol.isalnum()
+                or symbol != symbol.upper()
+                or (kind == "positions" and not symbol.isascii())
+            ):
+                raise ValueError("provider symbol missing")
+            # Catalog identity is not trading admission. Bitget publishes Unicode
+            # contract names; position ownership and mutation schemas stay ASCII-only.
         if kind == "positions":
             quantity = Decimal(str(row.get("total")))
             if (

@@ -102,6 +102,21 @@ def test_valid_empty_and_partial_fill_containers_are_distinct():
         provider_rows([{"symbol": "BTCUSDT", "holdSide": "long", "total": "NaN"}], "positions")
 
 
+def test_unicode_contract_catalog_preserves_ascii_markets_without_adopting_positions():
+    catalog = [{"symbol": "BTCUSDT"}, {"symbol": "龙虾USDT"}]
+    rows, complete = provider_rows(catalog, "contracts")
+    assert rows == catalog
+    assert complete is True
+    with pytest.raises(ValueError):
+        provider_rows([{"symbol": "龙虾USDT", "holdSide": "long", "total": "1"}], "positions")
+
+
+@pytest.mark.parametrize("symbol", [None, "", "BTC\nUSDT", "<script>USDT"])
+def test_invalid_contract_identity_never_publishes_complete_inventory(symbol):
+    with pytest.raises(ValueError):
+        provider_rows([{"symbol": "BTCUSDT"}, {"symbol": symbol}], "contracts")
+
+
 def test_collector_is_get_only_and_keeps_sources_independent():
     store = MemoryStore()
     asyncio.run(
