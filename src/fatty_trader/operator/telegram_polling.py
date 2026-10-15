@@ -121,10 +121,10 @@ class TelegramBotApi:
             {"command": "settp", "description": "preview owned native target modification"},
             {"command": "open", "description": "preview canonical manual MARKET or LIMIT"},
             {"command": "trade", "description": "preview canonical Bitget trade"},
-            {"command": "confirm", "description": "enqueue durable preview after passkey step-up"},
+            {"command": "confirm", "description": "enqueue durable preview after console consent"},
             {
                 "command": "approve",
-                "description": "approve exact durable job after passkey step-up",
+                "description": "approve exact durable job under distinct-approver policy",
             },
             {"command": "reject", "description": "reject exact durable job"},
             {"command": "job", "description": "read durable job evidence"},

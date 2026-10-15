@@ -49,7 +49,7 @@ services:
       SERVICE_NAME: web
       CONSOLE_ENABLED: "1"
       CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
-      CONSOLE_RP_ID: ${CONSOLE_RP_ID:-localhost}
+      CONSOLE_PASSWORD_HASH_FILE: /run/console-password.hash
       CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
       CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
       CONSOLE_STATIC_DIR: /app/console-static
@@ -75,6 +75,7 @@ services:
       - health-notification:/run/fatty-health/notification:ro
       - ./runtime/console-stages:/run/console-stages
       - ./runtime/console-public.pem:/run/console-public.pem:ro
+      - ./runtime/console-password.hash:/run/console-password.hash:ro
       - ./data/media:/app/runtime/media:ro
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
@@ -300,7 +301,6 @@ services:
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
       CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
-      CONSOLE_RP_ID: ${CONSOLE_RP_ID:-localhost}
       CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
       TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: operator-bot
@@ -406,7 +406,6 @@ services:
       CONSOLE_ENABLED: "1"
       CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
       CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
-      CONSOLE_RP_ID: ${CONSOLE_RP_ID:-localhost}
       CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
       CONSOLE_HEARTBEAT_FILE: /tmp/console-worker-heartbeat
       BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}

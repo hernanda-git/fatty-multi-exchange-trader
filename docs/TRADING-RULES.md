@@ -48,8 +48,8 @@ See [AGENTS.md](../AGENTS.md) for the agentic workflow and [PRODUCTION-LIVE-POLI
 ## Durable console trading
 
 Console and private Telegram mutations use the same typed preview, authorization,
-passkey step-up, durable job and worker authority. Telegram does not manufacture
-step-up evidence or maintain process-local confirmation tokens. Read-only operator
+password-session digest-bound consent, durable job and worker authority. Telegram
+cannot manufacture login/consent or maintain process-local confirmation tokens. Read-only operator
 cards retain no provider mutation methods.
 
 Manual MARKET and LIMIT entries have genuine `console_manual` dispatch provenance

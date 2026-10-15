@@ -38,44 +38,19 @@ def build_handlers(
         **{action: operations for action in OPERATIONS_ACTIONS - HOST_ACTIONS},
         **{action: trading for action in TRADING_ACTIONS},
     }
-    from fatty_trader.console.auth import AuthHandlers
-
-    access = AuthHandlers(environ, store)
-    handlers.update(
-        {
-            action: access
-            for action in (
-                "access.invite",
-                "access.change_roles",
-                "access.disable",
-                "session.revoke",
-            )
-        }
-    )
     return handlers
 
 
 def build_preview_handlers(environ: Mapping[str, str], store: ConsoleStore) -> dict[str, Any]:
     """Web construction creates no provider client and never imports a host runner."""
-    from fatty_trader.console.auth import AuthHandlers
     from fatty_trader.console.operations import OPERATIONS_ACTIONS, OperationsHandlers
     from fatty_trader.console.trading import TRADING_ACTIONS, TradingHandlers
 
     operations = OperationsHandlers(environ, store)
     trading = TradingHandlers(environ, store)
-    access = AuthHandlers(environ, store)
     return {
         **{action: operations for action in OPERATIONS_ACTIONS},
         **{action: trading for action in TRADING_ACTIONS},
-        **{
-            action: access
-            for action in (
-                "access.invite",
-                "access.change_roles",
-                "access.disable",
-                "session.revoke",
-            )
-        },
     }
 
 

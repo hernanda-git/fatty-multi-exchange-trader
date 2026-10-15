@@ -18,8 +18,8 @@ const columns:Record<string,Column[]>={
  releases:[{label:'Release',paths:['release_id','sha','version']},{label:'Approval / state',paths:['approved','state']},{label:'Created',paths:['created_at']}],
  'config/history':[{label:'Requested revision',paths:['version','base_version']},{label:'Lifecycle',paths:['state','kind']},{label:'Actor / time',paths:['actor_id','created_at']}],
  'config/drafts':[{label:'Draft revision',paths:['version','base_version']},{label:'Status',paths:['state']},{label:'Creator',paths:['actor_id','created_at']}],
- 'access/principals':[{label:'Identity',paths:['display_name']},{label:'Roles / scopes',paths:['roles','scopes']},{label:'Enabled / passkeys',paths:['enabled','passkey_count']},{label:'Created',paths:['created_at']}],
- 'access/sessions':[{label:'Principal',paths:['principal_id']},{label:'Authenticated / verified',paths:['authenticated_at','step_up_at']},{label:'Last seen / expires',paths:['last_seen_at','absolute_expires_at']},{label:'Revoked',paths:['revoked_at']}],
+ 'access/principals':[{label:'Identity',paths:['display_name']},{label:'Roles / scopes',paths:['roles','scopes']},{label:'Enabled',paths:['enabled']},{label:'Created',paths:['created_at']}],
+ 'access/sessions':[{label:'Principal',paths:['principal_id']},{label:'Authenticated',paths:['authenticated_at']},{label:'Last seen / expires',paths:['last_seen_at','absolute_expires_at']},{label:'Revoked',paths:['revoked_at']}],
  'account/reservations':[{label:'Contract / binding',paths:['symbol','binding_symbol','client_order_id']},{label:'Reserved margin',paths:['amount','margin_usdt']},{label:'Lifecycle',paths:['state','created_at']}],
  'account/admission-snapshots':[{label:'Account / currency',paths:['account_id','margin_coin']},{label:'Equity / available',paths:['equity','available_balance']},{label:'Admission capture',paths:['captured_at']}],
  'recovery/baselines':[{label:'Account / historical cutoff',paths:['account_id','historical_before']},{label:'Approval / policy',paths:['approval_reference','uncertainty_policy']},{label:'Created',paths:['created_at']}]

@@ -1,6 +1,6 @@
 import React,{useState,useEffect,useCallback,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
-import {api,ApiError,passkey,setCsrf,type RecordData,type Principal,type Envelope,type Capability} from './api';
+import {api,ApiError,passwordLogin,authorize,setCsrf,type RecordData,type Principal,type Envelope,type Capability} from './api';
 import {Filters,SecretStage,serverFilters} from './forms';
 import {DomainTable,DomainDetail,LatchBanner} from './domain';
 import './style.css';
@@ -36,24 +36,21 @@ function Value({value,depth=0}:{value:unknown;depth?:number}):React.ReactNode{
 function Evidence({value}:{value:unknown}){const list=Array.isArray(value)?value:isObject(value)?[value]:[];return <div className="evidence">{list.map((item,i)=>{const e=isObject(item)?item:{};const time=e.observed_at?Date.parse(String(e.observed_at)):NaN;const age=Number.isFinite(time)?Math.max(0,Math.floor((Date.now()-time)/1000)):null;const stale=age!==null&&typeof e.stale_after_seconds==='number'&&age>e.stale_after_seconds;return <details key={i}><summary><span className={`dot ${stale||e.freshness==='stale'?'warn':e.freshness==='fresh'?'good':'unknown'}`}/>{String(e.id||e.source||'Evidence')} · {String(e.read_status||'unknown')} · {age===null?'age unknown':`${age}s ago`}{stale?' · stale':''}</summary><Value value={e}/></details>;})}</div>;}
 function ErrorBox({error}:{error:unknown}){return error?<div role="alert" className="alert danger">{error instanceof Error?error.message:String(error)}{error instanceof ApiError&&error.detail.request_id?<small>Request {String(error.detail.request_id)}</small>:null}</div>:null;}
 function Auth({onAuthenticated}:{onAuthenticated:()=>void}){
- const [mode,setMode]=useState(false),[token,setToken]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState<unknown>(null);
+ const [password,setPassword]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState<unknown>(null);
  async function submit(e:React.FormEvent){
   e.preventDefault();setError(null);setBusy(true);
-  try{await passkey(mode?'bootstrap':'authenticate',mode?{token}:{});setToken('');onAuthenticated();}
+  const submitted=password;setPassword('');
+  try{await passwordLogin(submitted);onAuthenticated();}
   catch(e){setError(e);}finally{setBusy(false);}
  }
  return <main className="auth"><div className="auth-card">
   <span className="eyebrow">PRIVATE OPERATOR CONSOLE</span><h1>Evidence before action.</h1>
-  <p>Use your passkey to access scoped account observations and durable management jobs.</p><ErrorBox error={error}/>
-  <form onSubmit={submit} data-testid="passkey-auth">
-   {mode&&<label>One-time owner invitation / bootstrap token
-    <input data-testid="bootstrap-token" type="password" autoComplete="off" value={token} onChange={e=>setToken(e.target.value)} required/>
-    <small>Enter the token delivered through the approved private channel. It is never stored in your browser.</small>
-   </label>}
-   <button className="primary" data-testid={mode?'passkey-enroll':'passkey-login'} disabled={busy}>{busy?'Waiting for your authenticator…':mode?'Enroll a passkey':'Sign in with a passkey'}</button>
+  <p>Sign in with the shared console password to access scoped account observations and durable management jobs.</p><ErrorBox error={error}/>
+  <form onSubmit={submit} data-testid="password-auth">
+   <label>Console password<input data-testid="console-password" type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required disabled={busy}/></label>
+   <button className="primary" data-testid="password-login" disabled={busy}>{busy?'Signing in…':'Sign in'}</button>
   </form>
-  <button className="link-button" data-testid="toggle-enrollment" onClick={()=>{setMode(!mode);setToken('');setError(null);}}>{mode?'Already enrolled? Sign in':'First access / accepted invitation'}</button>
-  <p className="muted">Secure origin required. Use the authorized HTTPS origin or localhost SSH tunnel. No password or recovery-code fallback.</p>
+  <p className="muted">Use the authorized HTTPS origin or localhost SSH tunnel. Password input is held only in memory and cleared on submission.</p>
  </div></main>;
 }
 function SchemaField({name,schema,value,onChange,required=false}:{name:string;schema:RecordData;value:unknown;onChange:(v:unknown)=>void;required?:boolean}){
@@ -131,7 +128,7 @@ function ActionPanel({capabilities,scope,section,items,onChanged,principalId,ini
   <div className="section-heading"><div><span className="eyebrow">DURABLE COMMANDS</span><h2>Review → authorize → queue</h2></div></div>
   <p className="muted">Preview is read-only. The server rechecks ownership, freshness, gates and approval before execution. Accepted is not executed.</p>
   <ErrorBox error={error}/>
-  {pending&&!job&&<div className="alert warning"><strong>An operation may already have been accepted.</strong><p>Recover its durable receipt first. Retry uses the exact persisted public approval payload and original operation ID; no account credentials, CSRF or passkey assertions are stored.</p><button disabled={busy} onClick={recover}>Recover same operation</button><Link to="/audit">Inspect durable jobs</Link>{unaccepted&&<button disabled={busy} onClick={()=>{sessionStorage.removeItem(recoveryStorage);setPending(null);setUnaccepted(false);invalidate();}}>Discard request proved unaccepted</button>}</div>}
+  {pending&&!job&&<div className="alert warning"><strong>An operation may already have been accepted.</strong><p>Recover its durable receipt first. Retry uses the exact persisted public approval payload and original operation ID; no account credentials, passwords or CSRF tokens are stored.</p><button disabled={busy} onClick={recover}>Recover same operation</button><Link to="/audit">Inspect durable jobs</Link>{unaccepted&&<button disabled={busy} onClick={()=>{sessionStorage.removeItem(recoveryStorage);setPending(null);setUnaccepted(false);invalidate();}}>Discard request proved unaccepted</button>}</div>}
   <form onSubmit={makePreview}><fieldset disabled={busy||!!pending} className="command-fields">
    <label>Action catalog<select data-testid="action-catalog" value={action} onChange={e=>{setAction(e.target.value);setArgs({});setTargets([]);invalidate();}}><option value="">Choose an action…</option>{capabilities.map(c=><option key={c.action} value={c.action}>{c.action}{!c.preview_allowed?' · unavailable':''}</option>)}</select></label>
    {cap&&<>
@@ -148,9 +145,9 @@ function ActionPanel({capabilities,scope,section,items,onChanged,principalId,ini
    <p className={expired?'alert danger':'muted'}>{expired?'Preview expired: only receipt retrieval / identical replay is permitted. An unaccepted request needs a new preview.':`Expires ${String(preview.expires_at)}`}</p>
    <label className="risk-acknowledgment"><input type="checkbox" checked={acknowledged} onChange={e=>setAcknowledged(e.target.checked)}/>I reviewed the exact effects, exclusions, evidence gates and all warnings above. Accepted work is not execution proof.</label>
    {tier>=2&&<><label>Exact confirmation phrase<input data-testid="confirmation-phrase" disabled={!!pending} value={phrase} onChange={e=>setPhrase(e.target.value)} autoComplete="off" placeholder={String(preview.confirmation_phrase||'')}/></label>
-   <label>Approval reference<input disabled={!!pending} required maxLength={200} value={approval} onChange={e=>setApproval(e.target.value)} autoComplete="off"/><small>Tier 3 queues awaiting approval by a distinct eligible owner of this exact immutable digest.</small></label></>}
+   <label>Approval reference<input disabled={!!pending} required maxLength={200} value={approval} onChange={e=>setApproval(e.target.value)} autoComplete="off"/><small>Actions requiring a distinct approver remain unavailable under the shared-password identity; this reference does not replace that policy.</small></label></>}
    <ErrorBox error={error}/><div className="button-row">
-    {tier>=2&&<button data-testid="preview-stepup" disabled={busy||expired} onClick={async()=>{setBusy(true);setError(null);try{await passkey('stepup',{preview_digest:preview.preview_digest});setVerified(String(preview.preview_digest));onChanged();}catch(e){setError(e);}finally{setBusy(false);}}}>{verified===preview.preview_digest?'Passkey verified for this digest':'Verify passkey step-up'}</button>}
+    {tier>=2&&<button data-testid="preview-consent" disabled={busy||expired||!acknowledged} onClick={async()=>{setBusy(true);setError(null);try{await authorize({preview_digest:String(preview.preview_digest)});setVerified(String(preview.preview_digest));onChanged();}catch(e){setError(e);}finally{setBusy(false);}}}>{verified===preview.preview_digest?'Exact digest authorized':'Authorize reviewed digest'}</button>}
     <button data-testid="enqueue-job" className="danger-button" disabled={busy||!acknowledged||!!job||(!pending&&(expired||!gatesPass||!cap?.enqueue_allowed||(tier>=2&&(phrase!==String(preview.confirmation_phrase)||!approval.trim()||verified!==preview.preview_digest))))} onClick={submit}>{pending?'Retrieve / retry exact same operation':'Queue exact approved operation'}</button>
    </div>
    <small>An ambiguous outcome keeps the same operation ID after reload. Never create a new command to resolve a claimed effect. All authority remains server-enforced.</small>
@@ -172,7 +169,7 @@ function JobControls({job,onChanged}:{job:RecordData;onChanged:()=>void}){
   <ErrorBox error={error}/><p>Exact approval digest: <code>{String(job.preview_digest)}</code> · observed revision {String(job.resource_version)}. Review the requested arguments, effects and durable steps before authorizing.</p><label>Reason<textarea maxLength={1000} value={reason} onChange={e=>setReason(e.target.value)} required/></label>
   <div className="button-row">
    {['approve','reject','cancel','reconcile'].map(name=>{const eligible=name==='reconcile'?job.state==='reconciliation_pending':name==='cancel'?!['succeeded','failed','partially_succeeded','rejected','expired','cancelled'].includes(String(job.state)):['awaiting_approval','queued'].includes(String(job.state))&&!job.effect_claimed;return <button title={eligible?'Server revalidates authority and exact revision':'Unavailable in the observed job state'} data-testid={`job-${name}`} key={name} disabled={busy||!reason.trim()||!eligible||(['approve','reject'].includes(name)&&verified!==job.preview_digest)} onClick={()=>command(name)}>{human(name)}</button>;})}
-   {['awaiting_approval','queued'].includes(String(job.state))&&<button disabled={busy} onClick={async()=>{setBusy(true);setError(null);try{await passkey('stepup',{job_id:job.id});setVerified(String(job.preview_digest));onChanged();}catch(e){setError(e);}finally{setBusy(false);}}}>Verify passkey for exact job digest</button>}
+   {['awaiting_approval','queued'].includes(String(job.state))&&<button data-testid="job-consent" disabled={busy} onClick={async()=>{setBusy(true);setError(null);try{await authorize({job_id:String(job.id)});setVerified(String(job.preview_digest));onChanged();}catch(e){setError(e);}finally{setBusy(false);}}}>Authorize reviewed job digest</button>}
    {job.action==='report.export'&&job.state==='succeeded'&&<a href={`/api/v1/jobs/${encodeURIComponent(String(job.id))}/download`}>Download authorized export</a>}
   </div>
  </div>;
@@ -263,7 +260,7 @@ function App(){
      <label className="sr-only" htmlFor="timezone">Display timezone</label><select id="timezone" value={timezone} onChange={e=>setTimezone(e.target.value)}><option value="UTC">UTC</option><option value={Intl.DateTimeFormat().resolvedOptions().timeZone}>Local timezone</option></select>
      <label className="sr-only" htmlFor="theme">Color theme</label><select id="theme" value={theme} onChange={e=>setTheme(e.target.value)}><option value="system">System theme</option><option value="light">Light</option><option value="dark">Dark</option></select>
      <details className="identity"><summary>{principal.display_name}</summary><div className="identity-menu">
-      <Value value={{roles:principal.roles,step_up_at:principal.step_up_at}}/>
+      <Value value={{roles:principal.roles,session_id:principal.session_id}}/>
       <button onClick={async()=>{try{await api('/auth/logout',{});setPrincipal(null);setCsrf('');setEnvelope(null);setSafety(null);setCaps([]);eventCursor.current='';}catch(e){setError(e);}}}>Sign out</button>
      </div></details>
     </div>
@@ -288,6 +285,7 @@ function App(){
     }}>{labels[t]||human(t)}</button>)}</div>}
     <ErrorBox error={error}/>
     <LatchBanner value={safetyData.latches}/>
+    {current.screen==='access'&&<div className="alert" data-testid="password-access-policy"><strong>Shared-password owner access</strong><p>The console has one active login identity. Review its scope and sessions below; use Sign out to revoke the current session. Financial actions requiring a distinct approver remain unavailable to this shared identity.</p></div>}
     {!resourceId&&current.screen!=='trading'&&<Filters key={readSection} section={readSection} value={filters} onApply={value=>{setFilters(value);setCursor('');setHistoryCursors([]);setEnvelope(null);}}/>}
     {loading&&!envelope?<div className="panel skeleton" role="status">Loading authorized records and evidence…</div>:envelope?<div role="tabpanel" aria-label={human(readSection)}>
      <Evidence value={envelope.evidence}/>

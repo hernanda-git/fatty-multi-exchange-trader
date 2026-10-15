@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from jsonschema import Draft202012Validator, FormatChecker
 from psycopg.types.json import Jsonb
 
+from fatty_trader.console.auth import OWNER_ID
 from fatty_trader.console.store import TERMINAL_STATES, ConsoleStore, digest, safe_json
 
 POLICY_VERSION = "console-policy-26-v1"
@@ -41,73 +42,6 @@ def catalog() -> tuple[dict[str, Any], dict[str, Any]]:
         **ACTION_POLICIES,
     }
     policies["protection.disable_fallback"] = {"role": "risk_owner", "danger_tier": 3}
-    # Owner/admin grants remain two-person; access enrollment does not bypass it.
-    text = {"type": "string", "minLength": 1, "maxLength": 200}
-    schemas.update(
-        {
-            "access.invite": {
-                "type": "object",
-                "properties": {
-                    "display_name": text,
-                    "roles": {
-                        "type": "array",
-                        "items": {
-                            "enum": [
-                                "viewer",
-                                "operator",
-                                "risk_owner",
-                                "ops_admin",
-                                "access_admin",
-                                "owner",
-                            ]
-                        },
-                        "minItems": 1,
-                        "uniqueItems": True,
-                    },
-                },
-                "required": ["display_name", "roles"],
-                "additionalProperties": False,
-            },
-            "access.change_roles": {
-                "type": "object",
-                "properties": {
-                    "principal_id": text,
-                    "roles": {
-                        "type": "array",
-                        "items": {
-                            "enum": [
-                                "viewer",
-                                "operator",
-                                "risk_owner",
-                                "ops_admin",
-                                "access_admin",
-                                "owner",
-                            ]
-                        },
-                        "minItems": 1,
-                        "uniqueItems": True,
-                    },
-                },
-                "required": ["principal_id", "roles"],
-                "additionalProperties": False,
-            },
-            "access.disable": {
-                "type": "object",
-                "properties": {"principal_id": text},
-                "required": ["principal_id"],
-                "additionalProperties": False,
-            },
-            "session.revoke": {
-                "type": "object",
-                "properties": {"session_id": text},
-                "required": ["session_id"],
-                "additionalProperties": False,
-            },
-        }
-    )
-    for action in ("access.invite", "access.change_roles", "access.disable"):
-        policies[action] = {"role": "access_admin", "danger_tier": 3}
-    policies["session.revoke"] = {"role": "access_admin", "danger_tier": 2}
     return schemas, policies
 
 
@@ -159,25 +93,16 @@ class CommandService:
         self, principal: dict[str, Any], scope: dict[str, Any]
     ) -> list[dict[str, Any]]:
         schemas, policies = catalog()
-        owners = self.store.query(
-            """SELECT p.id,p.scopes FROM console_principals p
-            WHERE p.enabled AND p.roles @> '["owner"]'::jsonb
-            AND EXISTS(SELECT 1 FROM console_credentials c WHERE c.principal_id=p.id)"""
-        )
-        distinct_owner = any(
-            row["id"] != principal["id"] and scope in row["scopes"] for row in owners
-        )
+        # One shared password cannot establish an independent second person.
         result = []
         for action, schema in sorted(schemas.items()):
             policy = policies[action]
             reasons = []
-            if policy["danger_tier"] == 3 and not distinct_owner:
+            if policy["danger_tier"] == 3:
                 reasons.append(
                     {
                         "code": "second_approver_required",
-                        "message": (
-                            "Enroll a distinct eligible owner for this scoped two-person action"
-                        ),
+                        "message": "Two-person actions are unavailable with shared-password access",
                     }
                 )
             if (
@@ -256,8 +181,6 @@ class CommandService:
                     check(item)
 
         check(arguments)
-        if action == "access.invite" and arguments.get("roles") == ["viewer"]:
-            return {"role": "access_admin", "danger_tier": 2}
         return cast(dict[str, Any], policies[action])
 
     def _resource_current(self, authority: dict[str, Any]) -> None:
@@ -343,16 +266,8 @@ class CommandService:
         if len(targets) > 1 and tier >= 2:
             tier = 3
         if tier == 3:
-            owners = self.store.query(
-                """SELECT p.id,p.scopes FROM console_principals p
-                WHERE p.enabled AND p.roles @> '["owner"]'::jsonb
-                AND EXISTS(SELECT 1 FROM console_credentials c WHERE c.principal_id=p.id)"""
-            )
-            eligible = any(
-                row["id"] != principal["id"] and scope in row["scopes"] for row in owners
-            )
             planned.setdefault("gates", []).append(
-                {"name": "distinct_approver_enrolled", "verdict": "pass" if eligible else "fail"}
+                {"name": "distinct_approver_available", "verdict": "fail"}
             )
         phrase = f"{action.upper()} {scope['environment']} {preview_id[:8]}" if tier >= 2 else ""
         preview: dict[str, Any] = {
@@ -463,7 +378,7 @@ class CommandService:
         grant = cursor.fetchone()
         if not grant:
             raise CommandError(
-                "step_up_required", "Verify a fresh passkey bound to this preview", 403
+                "consent_required", "Review and authorize this exact preview in the console", 403
             )
         cursor.execute(
             "UPDATE console_step_up_grants SET consumed_at=now(),job_id=%s WHERE id=%s",
@@ -719,6 +634,16 @@ class CommandService:
             )
             if job["state"] not in {"awaiting_approval", "queued"} or job["effect_claimed"]:
                 raise CommandError("not_approvable", "Only unclaimed queued approval can change")
+            if (
+                approved
+                and job["danger_tier"] == 3
+                and (principal["id"] == OWNER_ID or job["actor_id"] == OWNER_ID)
+            ):
+                raise CommandError(
+                    "distinct_approver_required",
+                    "Shared-password access cannot establish a distinct approver",
+                    403,
+                )
             if job["danger_tier"] == 3 and job["actor_id"] == principal["id"]:
                 raise CommandError(
                     "distinct_approver_required", "Tier 3 requires a different eligible owner", 403
@@ -832,6 +757,12 @@ class CommandService:
     ) -> None:
         """Exact durable consent plus current session/scope; no provider calls."""
         policy = self._policy(job["action"], job["arguments"])
+        if job["danger_tier"] == 3 and job["actor_id"] == OWNER_ID:
+            raise CommandError(
+                "distinct_approver_required",
+                "Shared-password access cannot authorize a two-person action",
+                403,
+            )
         self._principal(
             cursor,
             {"id": job["actor_id"], "session_id": job["session_id"]},

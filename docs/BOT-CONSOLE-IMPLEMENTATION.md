@@ -6,9 +6,23 @@ Owner requested complete autonomous delivery after approving the full plan. This
 
 Server inspection found the existing web exposed only at 127.0.0.1:18081 and no established OIDC identity service or general-purpose HTTPS ingress for this bot. Do not adopt an unrelated application's identity/credentials, provision a public DNS name, or expose an administrative port on all interfaces.
 
-Replace the proposed OIDC integration prerequisite with maintained-library WebAuthn passkey authentication requiring user verification. This is a documented architecture decision, not a password/MFA shortcut. Initial owner enrollment uses a high-entropy short-lived one-use server-generated token, stored hashed and delivered privately through the already configured owner Telegram binding or a secure SSH operation. Tokens/credentials are not committed, logged, placed in URLs or browser storage, or substituted across accounts. Owner enrolling a personal passkey is normal account usage; software cannot manufacture a user's authenticator.
+Owner superseded the initial passkey design with password-only authentication.
+`POST /api/v1/auth/login` accepts only a password and issues a scoped opaque owner
+session. No username, invitation, passkey, OTP or external sign-in remains.
+The deployment stores only a salted scrypt verifier in
+`runtime/console-password.hash` (0640), mounted read-only into web. Plaintext is
+read from provisioning stdin and is never committed, logged or returned.
 
-Default access is an SSH tunnel to the existing private web port and trustworthy localhost WebAuthn origin. Public hosting remains HTTPS-only with exact RP/origin configuration. Session/CSRF/backend RBAC/step-up remain mandatory. Tier3 distinct-approver requirements cannot be bypassed by claiming a second identity controlled by the implementation process. All operations still use individual approvals at actual use time; autonomous implementation is not a bulk trading instruction.
+Default access remains an SSH tunnel to the private web port; public hosting
+requires HTTPS. Exact-origin checks, sessions, CSRF, scoped authorization and
+durable rate limiting remain. `POST /api/v1/auth/consent` derives expiring,
+digest-bound consent from the current password session after effect review,
+without a second authentication factor or password prompt. It rotates the session
+and CSRF token together. Old passkey sessions, invitations and grants are revoked
+at cutover; a hash/scope-derived principal revision invalidates stale password epochs.
+Tier 3 distinct-owner policy is not bypassed: the sole shared owner cannot act as
+two independent approvers. Telegram may use an existing password session for the
+configured operator bridge, but cannot create a login or consent.
 
 ## Runtime isolation
 

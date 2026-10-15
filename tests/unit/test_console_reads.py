@@ -746,3 +746,18 @@ def test_staged_entries_are_visible_in_recovery():
     service = ReadService(store, SCOPE)
     service._read("recovery", None, {}, 50, None)
     assert any("state IN ('staged','requested'" in sql for sql, params in store.calls)
+
+
+def test_shared_password_access_projection_does_not_advertise_identity_enrollment(monkeypatch):
+    monkeypatch.setattr("fatty_trader.console.reads.set_json_loads", lambda *args, **kwargs: None)
+    store = ProjectionStore()
+    result = ReadService(store, SCOPE).read("access")
+    policy = result["data"]["policy"]
+    assert policy["authentication"] == "shared_password"
+    assert policy["consent_ttl_seconds"] == 300
+    assert "unavailable" in policy["tiers"]["D3"]
+    assert not any("console_policy_versions" in sql for sql, _ in store.calls)
+    for sql, params in store.calls:
+        if "FROM console_principals t" in sql or "FROM console_sessions t" in sql:
+            assert "console-password-owner" in params
+            assert "scopes @>" in sql

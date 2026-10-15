@@ -12,7 +12,7 @@ SCOPE = {"account_id": "configured-bitget", "venue": "bitget", "environment": "L
 
 class Store:
     def __init__(self):
-        self.linked = True
+        self.password_session_active = True
         self.preview = {
             "id": "preview-1",
             "policy_version": "policy",
@@ -20,10 +20,16 @@ class Store:
         }
 
     def one(self, sql, params=()):
-        if "console_identity_links" in sql:
+        if "FROM console_principals p JOIN console_sessions" in sql:
+            assert params == ("console-password-owner",)
+            assert "s.last_seen_at>now()" in sql and "s.principal_revision=p.revision" in sql
             return (
-                {"id": "owner", "session_id": "real-passkey-session", "roles": ["owner"]}
-                if self.linked
+                {
+                    "id": "console-password-owner",
+                    "session_id": "real-password-session",
+                    "roles": ["owner"],
+                }
+                if self.password_session_active
                 else None
             )
         if "console_previews" in sql:
@@ -82,7 +88,7 @@ def test_close_uses_same_typed_durable_preview():
     request, principal, scope = commands.previews[0]
     assert request["action"] == "position.close"
     assert request["arguments"] == {"client_oid": "owned-root"}
-    assert principal["session_id"] == "real-passkey-session"
+    assert principal["session_id"] == "real-password-session"
     assert scope == SCOPE
     assert "preview-1" in reply
     assert commands.enqueues == []
@@ -108,10 +114,10 @@ def test_unsafe_account_wide_and_legacy_tokens_prohibited(text):
     assert commands.previews == []
 
 
-def test_unlinked_identity_cannot_fabricate_passkey_session():
+def test_telegram_cannot_fabricate_password_session():
     service, store, commands = adapter()
-    store.linked = False
-    with pytest.raises(CommandError, match="passkey"):
+    store.password_session_active = False
+    with pytest.raises(CommandError, match="shared password"):
         handle(service, "/close BTCUSDT")
     assert commands.previews == []
 

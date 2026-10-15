@@ -149,7 +149,6 @@ class HostOperationsRunner:
             "CODEX_HOST_UID",
             "CODEX_HOST_GID",
             "CONSOLE_ORIGIN",
-            "CONSOLE_WEBAUTHN_RP_ID",
             "CONSOLE_ACCOUNT_ID",
             "BITGET_ACCOUNT_ID",
         }

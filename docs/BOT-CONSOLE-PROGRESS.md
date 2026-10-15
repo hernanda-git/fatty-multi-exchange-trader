@@ -20,7 +20,7 @@ Fresh isolated clone of origin/main `ea0114e136ec1ba4adc547f10a61aa533934221d` a
 |---|---|---|---|
 | P0 Capability/safety | ACCEPTED | Source-backed capability inventory, policy prohibitions and shared adapter boundaries documented and implemented | Natural live trade is separate provider evidence, not a development acceptance gate |
 | P1 UI/API contracts | ACCEPTED | All 15 screens, typed actions, scoped evidence, jobs/approvals, SSE and host boundary implemented; operator guide published with source | Runtime receipts below remain separate from specification |
-| P2 Authenticated read console | DEPLOYED | Passkey/session/CSRF and all 15 responsive screens verified locally; actual private production HTML/health 200 and unauthenticated API 401; restricted web SQL role and credential isolation observed | Owner enrolls a personal passkey through the privately delivered invitation; no fabricated production authenticator |
+| P2 Authenticated read console | ACTIVE | Existing console deployed; owner's subsequent password-only login/session/CSRF cutover locally exercised with no other login fields or factors | Publish and verify password-only production rollout; historical passkey receipts below are superseded for current auth |
 | P3 Durable shared commands | DEPLOYED | Schema 26, shared Telegram/web commands, fenced worker and approvals; complete 2305-test Linux suite, real PostgreSQL races and browser job/readback proofs | Normal action-specific consent and distinct-owner Tier 3 approval remain enforced |
 | P4 Trading/protection controls | DEPLOYED | Current copied source/image identity proved across all nine applications; ownership, risk, cancellation, protection and replay regressions passed | No synthetic live trade authorized; existing incident latch and independent mutation flags remain unchanged |
 | P5 Recovery/operations | DEPLOYED | Separate host executor active, fresh actual service/log/schedule evidence, immutable current release catalog and verified pre-rollout backups; allowlist/restore/replay refusal regressions passed | Dangerous host/provider effects require their normal approvals; no production restore or test rollback was performed |
@@ -65,7 +65,7 @@ Planning/specification commit `883f9a4` (`docs(console): approve master plan and
 
 ## Current operator gate
 
-Engineering implementation and private rollout are complete; the final receipts below supersede historical checkpoints. Enroll a personal passkey through the private first-access invitation, then use fresh previews and per-action approvals. The existing sticky clock incident remains a separate recovery decision; console access never authorizes blanket resume, new risk or historical signal replay.
+Owner superseded passkey enrollment with password-only sign-in. No username, invitation, OTP or external identity is required. The password-only cutover and current verification receipts are recorded at the end of this tracker. Existing financial confirmations and the sticky clock incident remain separate from authentication; console access never authorizes blanket resume, risk expansion or historical signal replay.
 
 
 ## Durable control-plane implementation
@@ -343,4 +343,42 @@ temporary source archives/directories and the newly created local smoke harness
 were removed; acceptance receipts, private backups, rollback images and the running
 release were retained. Final documentation link smoke checked **88 links**, none
 broken. Owner passkey enrollment is normal first use, not an implementation stub.
+
+## Owner-requested password-only authentication cutover
+
+Owner explicitly replaced passkey/invitation authentication with one shared password
+and no other login factor. The supplied secret is not reproduced in repository
+source, docs, tests or tool output. Web uses only a private salted scrypt verifier
+file; provisioning reads plaintext from stdin and never stores it. Hash-file mode
+0640/read-only mount and a fresh random salt on replacement were exercised against
+a temporary deployment directory; plaintext was absent from files and output.
+
+The sign-in UI has exactly one password input and one submit button; no username,
+WebAuthn, enrollment, OTP or external sign-in remains. Real Chromium/FastAPI/isolated
+PostgreSQL smoke proved wrong-password refusal, cleared input after submission,
+correct-password login, logout/protected read 401, removed WebAuthn route refusal
+and missing-CSRF consent refusal (403). An actual isolated Tier 2 `admission.pause`
+preview/consent/enqueue/worker/readback reached `succeeded` without another password
+or factor prompt. Session consent rotates the session and CSRF token together;
+browser smoke caught and corrected missing frontend token/session refresh.
+
+The fixed scoped `console-password-owner` is created transactionally after correct
+password verification. Hash/scope-derived principal revision binds sessions to the
+configured password epoch. Old enrollment/passkey routes and dependency were
+removed; historical tables remain inert. Existing session, rate-limit, origin,
+CSRF, immutable consent, worker/effect/idempotency and financial ownership gates
+remain. A shared owner cannot forge a distinct approver; existing Tier 3 financial
+policy remains unavailable rather than being silently weakened. Telegram retains
+the typed preview/job bridge only through a current password-authenticated session
+and cannot create login or consent.
+
+Initial focused integrated tests returned 187 passed with one removed-route
+status assertion failure (static routing rejects POST with 405 rather than 404);
+the contract now accepts either unavailable-route response. The first Linux
+auth/console/policy/health/PostgreSQL selection returned 250 passed and two obsolete
+two-owner approval expectations. Updated those tests to prove shared-owner refusal
+without consuming consent and preserve immutable job/receipt tests using supported
+Tier 2 authority. No live trade, latch release or other provider mutation was used.
+Ruff and strict Linux-platform mypy passed; TypeScript/Vite production build passed.
+The complete isolated Linux suite is running before deployment.
 

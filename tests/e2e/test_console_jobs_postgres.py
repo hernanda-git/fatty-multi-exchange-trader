@@ -145,44 +145,19 @@ async def test_concurrent_same_key_commits_one_job_and_one_grant(console_db):
 
 
 @pytest.mark.asyncio
-async def test_two_person_approval_and_database_binding(console_db):
+async def test_shared_password_cannot_create_distinct_approver_authority(console_db):
     store, service, principals, *_ = console_db
-    p, request = await prepared(console_db, "release.deploy")
-    job = service.enqueue(request, principals[0], str(uuid4()))
-    assert job["state"] == "awaiting_approval"
-    control = {
-        "preview_digest": p["preview_digest"],
-        "resource_version": job["resource_version"],
-        "reason": "distinct owner reviewed",
-    }
+    _, request = await prepared(console_db, "release.deploy")
     with pytest.raises(CommandError) as refused:
-        service.approve(job["id"], control, principals[0])
-    assert refused.value.code == "distinct_approver_required"
-    grant(store, principals[1], p)
-    approved = service.approve(job["id"], control, principals[1])
-    assert approved["state"] == "queued"
-    with pytest.raises(psycopg.errors.RaiseException):
-        store.execute(
-            (
-                "INSERT INTO console_approvals\n"
-                "                      "
-                "(id,job_id,principal_id,session_id,preview_digest,policy_version,reso"
-                "urce_version,\n"
-                "                      decision,reason,step_up_at,expires_at)\n"
-                "                      "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,'approved','forbidden self "
-                "approval',now(),now()+interval '1 minute')"
-            ),
-            (
-                str(uuid4()),
-                job["id"],
-                principals[0]["id"],
-                principals[0]["session_id"],
-                p["preview_digest"],
-                POLICY_VERSION,
-                p["resource_version"],
-            ),
-        )
+        service.enqueue(request, principals[0], str(uuid4()))
+    assert refused.value.code == "gate_closed"
+    assert store.one("SELECT count(*) AS count FROM console_jobs")["count"] == 0
+    assert (
+        store.one(
+            "SELECT count(*) AS count FROM console_step_up_grants WHERE consumed_at IS NOT NULL"
+        )["count"]
+        == 0
+    )
 
 
 @pytest.mark.asyncio
@@ -324,22 +299,11 @@ async def test_ambiguous_financial_job_allows_authorized_readback_and_access_rec
 @pytest.mark.asyncio
 async def test_consumed_consent_and_job_authority_cannot_be_rewritten(console_db):
     store, service, principals, *_ = console_db
-    p, body = await prepared(console_db, "release.deploy")
+    p, body = await prepared(console_db, "position.close")
     created = service.enqueue(body, principals[0], str(uuid4()))
-    grant(store, principals[1], p)
-    service.approve(
-        created["id"],
-        {
-            "preview_digest": p["preview_digest"],
-            "resource_version": created["resource_version"],
-            "reason": "distinct review",
-        },
-        principals[1],
-    )
-    claimed = store.claim_job("fixture-worker", {"release.deploy"})
+    claimed = store.claim_job("fixture-worker", {"position.close"})
     await service.validate_worker_start(claimed)
     for sql, params in (
-        ("UPDATE console_approvals SET consumed_at=NULL WHERE job_id=%s", (created["id"],)),
         (
             "UPDATE console_step_up_grants SET consumed_at=NULL,job_id=NULL WHERE job_id=%s",
             (created["id"],),

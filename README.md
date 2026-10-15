@@ -40,13 +40,14 @@ claiming readiness.
 The console is private by default. After its approved deployment, establish the
 existing host tunnel with `ssh -N -L 18081:127.0.0.1:18081 fspmi-hostinger`, then
 open `http://localhost:18081`. Use the exact configured origin; an IP address or
-different port is not interchangeable for passkey verification.
+different port is not interchangeable for exact-origin request checks.
 
-Initial enrollment uses a short-lived one-use token delivered privately to the
-configured Telegram owner. Enter it in the enrollment form and register a
-user-verified passkey; no enrollment token belongs in a URL or browser storage.
-Subsequent login and action-specific consent use that passkey. Two-person actions
-require a distinct enrolled scoped owner and cannot be self-approved.
+Sign in using only the owner-configured console password. No username, passkey,
+invitation, one-time code or external identity provider is required. The server
+stores a salted scrypt hash in a private read-only-mounted file, never plaintext.
+Action review obtains digest-bound consent from the existing password session
+without another authentication prompt. Financial confirmations and safety policies
+remain independent; a shared identity cannot supply a distinct second approver.
 
 All 15 screens share authenticated observations and durable action jobs. A preview
 is not execution; only provider or host readback proves an outcome. A blocked

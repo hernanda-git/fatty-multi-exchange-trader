@@ -834,10 +834,19 @@ class ReadService:
             return {
                 "principals": self._table("access/principals", resource, filters, limit, cursor),
                 "sessions": self._table("access/sessions", None, {}, limit, None),
-                "policy": self._query(
-                    "SELECT * FROM console_policy_versions ORDER BY created_at DESC LIMIT 1",
-                    name="policy",
-                ),
+                "policy": {
+                    "version": "console-password-v2",
+                    "authentication": "shared_password",
+                    "session_idle_seconds": 1800,
+                    "session_absolute_seconds": 43200,
+                    "consent_ttl_seconds": 300,
+                    "tiers": {
+                        "D0": "password-session read-only",
+                        "D1": "explicit review",
+                        "D2": "exact preview-bound session consent and confirmation phrase",
+                        "D3": "unavailable: requires a distinct independent owner",
+                    },
+                },
             }
         if section == "artifacts":
             raise ReadError(
@@ -871,6 +880,20 @@ class ReadService:
         )
         predicates: list[str] = []
         args: list[Any] = []
+        if section in {"access/principals", "access/sessions"}:
+            from fatty_trader.console.auth import OWNER_ID
+
+            identity = "t.id" if section == "access/principals" else "t.principal_id"
+            predicates.append(f"{identity}=%s")
+            args.append(OWNER_ID)
+            if section == "access/principals":
+                predicates.append("t.scopes @> %s::jsonb")
+            else:
+                predicates.append(
+                    "EXISTS(SELECT 1 FROM console_principals p "
+                    "WHERE p.id=t.principal_id AND p.scopes @> %s::jsonb)"
+                )
+            args.append(json.dumps([self.scope]))
         if section in {
             "dispatches",
             "orders",

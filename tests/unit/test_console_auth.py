@@ -1,21 +1,25 @@
-"""Offline cryptographic passkey and console boundary regressions; no live endpoints."""
+"""Offline shared-password/session boundary regressions; no live endpoints."""
 
 import hashlib
-import json
 from contextlib import contextmanager
 from datetime import timedelta
 from unittest.mock import Mock
 
-import cbor2
 import httpx
 import pytest
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import FastAPI
-from webauthn.helpers import bytes_to_base64url
 
 from fatty_trader.console.api import mount_console
-from fatty_trader.console.auth import AuthConfig, AuthError, AuthService, digest, utcnow
+from fatty_trader.console.auth import OWNER_ID, AuthConfig, AuthError, AuthService, digest, utcnow
+
+TEST_PASSWORD = "synthetic-test-password-not-a-deployed-secret"
+TEST_SALT = bytes(range(16))
+TEST_HASH = (
+    "scrypt$16384$8$1$"
+    + TEST_SALT.hex()
+    + "$"
+    + hashlib.scrypt(TEST_PASSWORD.encode(), salt=TEST_SALT, n=16384, r=8, p=1, dklen=32).hex()
+)
 
 ENV = {
     "CONSOLE_ENABLED": "1",
@@ -23,6 +27,7 @@ ENV = {
     "CONSOLE_ALLOW_LOCALHOST_HTTP": "1",
     "CONSOLE_ACCOUNT_ID": "account-one",
     "BITGET_MODE": "LIVE",
+    "CONSOLE_PASSWORD_HASH": TEST_HASH,
 }
 SCOPE = {"account_id": "account-one", "venue": "bitget", "environment": "LIVE"}
 
@@ -51,7 +56,7 @@ def test_secure_cookie_and_localhost_cookie_names():
     assert public.secure and public.cookie_name == "__Host-console_session"
 
 
-def test_csrf_origin_role_stepup_and_missing_sessions():
+def test_csrf_origin_role_and_missing_sessions():
     service = AuthService(Mock(), AuthConfig.from_environ(ENV))
     with pytest.raises(AuthError):
         service.origin_check("https://evil.example", "application/json")
@@ -62,213 +67,8 @@ def test_csrf_origin_role_stepup_and_missing_sessions():
     with pytest.raises(AuthError):
         service.require_role({"roles": ["ops_admin"]}, "operator")
     with pytest.raises(AuthError):
-        service.require_stepup({"step_up_at": utcnow() - timedelta(seconds=301)})
-    with pytest.raises(AuthError):
         service.principal(None)
     assert digest("opaque-secret") != "opaque-secret"
-
-
-def test_discoverable_auth_options_require_user_verification():
-    store = Mock()
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    result = service.start("authenticate")
-    assert result["options"]["userVerification"] == "required"
-    assert result["options"]["rpId"] == "localhost"
-    assert "challenge" in result["options"]
-    assert store.execute.call_args.args[1][1] != b""
-
-
-def test_enrollment_options_require_discoverable_uv_passkey():
-    store = Mock()
-    store.one.return_value = {"display_name": "Invited operator"}
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    options = service.start("bootstrap", "one-use-token")["options"]
-    assert options["authenticatorSelection"]["residentKey"] == "required"
-    assert options["authenticatorSelection"]["userVerification"] == "required"
-    assert options["user"]["name"] != "Invited operator"
-    assert store.one.call_args.args[1] == (digest("one-use-token"),)
-
-
-def assertion(private_key, challenge, *, flags=5, origin="http://localhost:18081", count=1):
-    client = json.dumps(
-        {
-            "type": "webauthn.get",
-            "challenge": bytes_to_base64url(challenge),
-            "origin": origin,
-            "crossOrigin": False,
-        },
-        separators=(",", ":"),
-    ).encode()
-    authenticator = (
-        hashlib.sha256(b"localhost").digest() + bytes([flags]) + count.to_bytes(4, "big")
-    )
-    signature = private_key.sign(
-        authenticator + hashlib.sha256(client).digest(), ec.ECDSA(hashes.SHA256())
-    )
-    return {
-        "id": bytes_to_base64url(b"credential-test"),
-        "rawId": bytes_to_base64url(b"credential-test"),
-        "type": "public-key",
-        "response": {
-            "clientDataJSON": bytes_to_base64url(client),
-            "authenticatorData": bytes_to_base64url(authenticator),
-            "signature": bytes_to_base64url(signature),
-            "userHandle": bytes_to_base64url(b"principal-test"),
-        },
-    }
-
-
-@pytest.mark.parametrize(
-    "flags,origin,challenge_ok,succeeds",
-    [
-        (5, "http://localhost:18081", True, True),
-        (1, "http://localhost:18081", True, False),
-        (5, "https://evil.example", True, False),
-        (5, "http://localhost:18081", False, False),
-    ],
-)
-def test_real_signed_authentication_verifies_uv_origin_challenge(
-    monkeypatch, flags, origin, challenge_ok, succeeds
-):
-    key = ec.generate_private_key(ec.SECP256R1())
-    public = key.public_key().public_numbers()
-    cose = cbor2.dumps(
-        {1: 2, 3: -7, -1: 1, -2: public.x.to_bytes(32, "big"), -3: public.y.to_bytes(32, "big")}
-    )
-    challenge = b"a real server-generated challenge"
-    store = Mock()
-
-    @contextmanager
-    def connection():
-        yield object()
-
-    store.connection = connection
-    records = iter(
-        [
-            {"challenge": challenge, "purpose": "authenticate", "binding": {}},
-            {
-                "id": bytes_to_base64url(b"credential-test"),
-                "principal_id": "principal-test",
-                "public_key": cose,
-                "sign_count": 0,
-                "enabled": True,
-            },
-        ]
-    )
-
-    def execute_one(conn, sql, params=()):
-        if sql.lstrip().startswith("SELECT"):
-            return next(records)
-        return None
-
-    monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    service._session = Mock(return_value="opaque-server-session")
-    credential = assertion(key, challenge if challenge_ok else b"wrong", flags=flags, origin=origin)
-    if succeeds:
-        assert service.finish("authenticate", "challenge-id", credential) == "opaque-server-session"
-    else:
-        with pytest.raises(AuthError, match="Passkey verification failed"):
-            service.finish("authenticate", "challenge-id", credential)
-        service._session.assert_not_called()
-
-
-@pytest.mark.parametrize("flags,succeeds", [(0x45, True), (0x41, False)])
-def test_real_none_attestation_enrollment_requires_uv(monkeypatch, flags, succeeds):
-    key = ec.generate_private_key(ec.SECP256R1())
-    public = key.public_key().public_numbers()
-    cose = cbor2.dumps(
-        {1: 2, 3: -7, -1: 1, -2: public.x.to_bytes(32, "big"), -3: public.y.to_bytes(32, "big")}
-    )
-    challenge, cid = b"registration challenge", b"unique-registration-credential"
-    client = json.dumps(
-        {
-            "type": "webauthn.create",
-            "challenge": bytes_to_base64url(challenge),
-            "origin": ENV["CONSOLE_ORIGIN"],
-            "crossOrigin": False,
-        }
-    ).encode()
-    authenticator = (
-        hashlib.sha256(b"localhost").digest()
-        + bytes([flags])
-        + bytes(4)
-        + bytes(16)
-        + len(cid).to_bytes(2, "big")
-        + cid
-        + cose
-    )
-    attestation = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": authenticator})
-    credential = {
-        "id": bytes_to_base64url(cid),
-        "rawId": bytes_to_base64url(cid),
-        "type": "public-key",
-        "response": {
-            "clientDataJSON": bytes_to_base64url(client),
-            "attestationObject": bytes_to_base64url(attestation),
-            "transports": ["internal"],
-        },
-    }
-    store = Mock()
-
-    @contextmanager
-    def connection():
-        yield object()
-
-    store.connection = connection
-    writes = []
-
-    def execute_one(conn, sql, params=()):
-        if "FROM console_auth_challenges" in sql:
-            return {
-                "challenge": challenge,
-                "principal_id": "invited-principal",
-                "invitation_hash": "token-hash",
-                "binding": {},
-            }
-        if "FROM console_invitations" in sql:
-            return {
-                "token_hash": "token-hash",
-                "bootstrap": True,
-                "display_name": "Owner",
-                "roles": ["owner"],
-                "scopes": [SCOPE],
-            }
-        if sql.startswith("INSERT"):
-            writes.append((sql, params))
-        return None
-
-    monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    service._session = Mock(return_value="session-secret")
-    if succeeds:
-        assert service.finish("bootstrap", "challenge-id", credential) == "session-secret"
-        assert any("console_credentials" in sql for sql, params in writes)
-    else:
-        with pytest.raises(AuthError, match="Passkey verification failed"):
-            service.finish("bootstrap", "challenge-id", credential)
-        assert not writes
-
-
-def test_used_or_expired_challenge_never_creates_session(monkeypatch):
-    store = Mock()
-
-    @contextmanager
-    def connection():
-        yield object()
-
-    store.connection = connection
-    monkeypatch.setattr("fatty_trader.console.auth.execute_one", lambda *args: None)
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    service._session = Mock()
-    credential = {
-        "response": {
-            "clientDataJSON": bytes_to_base64url(json.dumps({"crossOrigin": False}).encode())
-        }
-    }
-    with pytest.raises(AuthError):
-        service.finish("authenticate", "already-used-challenge", credential)
-    service._session.assert_not_called()
 
 
 class BoundaryStore:
@@ -347,44 +147,6 @@ async def test_api_denies_csrf_role_and_revoked_session_sanitizes_validation():
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_failure_never_returns_or_persists_plaintext_token(monkeypatch):
-    store = Mock()
-
-    @contextmanager
-    def connection():
-        yield object()
-
-    store.connection = connection
-    captured = []
-
-    def execute_one(conn, sql, params=()):
-        captured.append((sql, params))
-        return None
-
-    monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
-
-    async def failed_send(self, text):
-        raise RuntimeError("transport includes secret body")
-
-    monkeypatch.setattr("fatty_trader.notifications.TelegramBotSender.send", failed_send)
-    monkeypatch.setattr(
-        "fatty_trader.console.auth.secrets.token_urlsafe", lambda _: "ONE_TIME_SECRET"
-    )
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    with pytest.raises(AuthError, match="Owner enrollment delivery failed") as error:
-        await service.issue_invitation(
-            {**ENV, "TG_OPERATOR_ID": "1234", "TG_BOT_TOKEN": "bot-secret"},
-            "Owner",
-            ["owner"],
-            [SCOPE],
-        )
-    assert "ONE_TIME_SECRET" not in str(error.value)
-    assert all("ONE_TIME_SECRET" not in repr(params) for sql, params in captured)
-    assert digest("ONE_TIME_SECRET") in repr(captured)
-    assert store.execute.called
-
-
-@pytest.mark.asyncio
 async def test_sse_revalidates_session_before_any_event():
     class RevokedStore(BoundaryStore):
         calls = 0
@@ -427,7 +189,7 @@ def test_session_rotation_preserves_absolute_deadline_and_auth_time(monkeypatch)
 
     monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
     service = AuthService(Mock(), AuthConfig.from_environ(ENV))
-    token = service._session(object(), "principal", stepped=True, old_session="old-session")
+    token = service._session(object(), OWNER_ID, consented=True, old_session="old-session")
     inserted = next(params for sql, params in captured if "INSERT INTO console_sessions" in sql)
     assert inserted[0] == digest(token) and token not in inserted
     assert inserted[4] == old_auth
@@ -440,37 +202,12 @@ def test_session_rotation_preserves_absolute_deadline_and_auth_time(monkeypatch)
     assert rotation_params == ("old-session",)
 
 
-def test_last_owner_and_self_grant_denied(monkeypatch):
-    store = Mock()
-
-    @contextmanager
-    def connection():
-        yield object()
-
-    store.connection = connection
-
-    def execute_one(conn, sql, params=()):
-        if "SELECT * FROM console_principals" in sql:
-            return {"id": "owner", "roles": ["owner"], "enabled": True, "scopes": [SCOPE]}
-        if "SELECT count(*)" in sql:
-            return {"n": 0}
-        return None
-
-    monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    actor = {"id": "owner", "roles": ["owner"], "step_up_at": utcnow()}
-    with pytest.raises(AuthError, match="last enrolled owner"):
-        service.update_account(actor, "owner", ["viewer"], False)
-    with pytest.raises(AuthError, match="Self-granting"):
-        service.update_account(actor, "owner", ["owner", "operator"], True)
-
-
 def test_rate_limit_fails_closed_and_scope_never_inferred():
     store = Mock()
     store.one.return_value = {"attempts": 21}
     service = AuthService(store, AuthConfig.from_environ(ENV))
     with pytest.raises(AuthError) as limit:
-        service.rate_limit("127.0.0.1", "authenticate")
+        service.rate_limit("127.0.0.1", "password-login")
     assert limit.value.status == 429
     store.one.return_value = {"scopes": [{**SCOPE, "account_id": "different-account"}]}
     with pytest.raises(AuthError) as mismatch:
@@ -517,7 +254,7 @@ def test_rotation_query_rechecks_principal_revision_and_idle_expiry(monkeypatch)
     monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
     service = AuthService(Mock(), AuthConfig.from_environ(ENV))
     with pytest.raises(AuthError):
-        service._session(object(), "principal", stepped=True, old_session="old-session")
+        service._session(object(), "principal", consented=True, old_session="old-session")
     sql, params = queries[0]
     assert "s.principal_id=%s" in sql and "s.principal_revision=p.revision" in sql
     assert "s.last_seen_at>now()" in sql and "FOR UPDATE OF s,p" in sql
@@ -610,46 +347,6 @@ async def test_sse_checks_each_job_and_filters_privileged_observations():
         assert '"resource_id":"private"' not in result.text
 
 
-@pytest.mark.parametrize(
-    "challenge_principal,challenge_session", [("other", "session"), ("principal", "other")]
-)
-def test_stepup_challenge_rejects_different_principal_or_session(
-    monkeypatch, challenge_principal, challenge_session
-):
-    store = Mock()
-
-    @contextmanager
-    def connection():
-        yield object()
-
-    store.connection = connection
-    monkeypatch.setattr(
-        "fatty_trader.console.auth.execute_one",
-        lambda *args: {"principal_id": challenge_principal, "session_id": challenge_session},
-    )
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    service._session = Mock()
-    credential = {
-        "response": {
-            "clientDataJSON": bytes_to_base64url(json.dumps({"crossOrigin": False}).encode())
-        }
-    }
-    with pytest.raises(AuthError):
-        service.finish(
-            "stepup", "challenge", credential, {"id": "principal", "session_id": "session"}
-        )
-    service._session.assert_not_called()
-
-
-def test_identity_effect_uses_shared_authority_fence():
-    store = Mock()
-    service = AuthService(store, AuthConfig.from_environ(ENV))
-    connection, job = object(), {"id": "job"}
-    service.effect_authority(connection, job)
-    store.cursor.assert_called_once_with(connection)
-    store.effect_authority.assert_called_once_with(store.cursor.return_value, job)
-
-
 @pytest.mark.asyncio
 async def test_enqueue_and_replay_return_durable_location_headers():
     store, commands = BoundaryStore(), Mock()
@@ -678,3 +375,274 @@ async def test_enqueue_and_replay_return_durable_location_headers():
         assert response.status_code == 202
         assert response.headers["Location"] == "/api/v1/jobs/job-id"
         assert response.headers["Idempotency-Replayed"] == "true"
+
+
+@pytest.fixture
+def password_service(monkeypatch):
+    store = Mock()
+
+    @contextmanager
+    def connection():
+        yield object()
+
+    store.connection = connection
+    calls = []
+
+    def execute_one(conn, sql, params=()):
+        calls.append((sql, params))
+        if "SELECT revision,enabled" in sql:
+            return {"revision": 3, "enabled": True}
+        return None
+
+    monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
+    return AuthService(store, AuthConfig.from_environ(ENV)), store, calls
+
+
+def test_password_login_creates_only_scoped_owner_and_hashes_opaque_session(password_service):
+    service, store, calls = password_service
+    token = service.login(TEST_PASSWORD, "old-browser-token")
+    owner_sql, owner = next(item for item in calls if "INSERT INTO console_principals" in item[0])
+    assert owner == (
+        OWNER_ID,
+        '[{"account_id": "account-one", "venue": "bitget", "environment": "LIVE"}]',
+        service.config.password_revision,
+    )
+    assert "ON CONFLICT(id)" in owner_sql and "revision=EXCLUDED.revision" in owner_sql
+    session = next(params for sql, params in calls if "INSERT INTO console_sessions" in sql)
+    assert session[0] == digest(token) and session[2] == OWNER_ID
+    assert session[3] != token and len(token) >= 32 and session[5] is None
+    assert TEST_PASSWORD not in repr(calls) and TEST_HASH not in repr(calls)
+    assert (
+        "UPDATE console_sessions SET revoked_at=now() WHERE token_hash=%s",
+        (digest("old-browser-token"),),
+    ) in calls
+
+
+def test_wrong_password_never_touches_session_or_principal(password_service):
+    service, store, calls = password_service
+    with pytest.raises(AuthError) as error:
+        service.login("synthetic-wrong-password")
+    assert error.value.code == "authentication_rejected"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "encoded", ["", "plaintext-is-not-a-hash", "scrypt$32768$8$1$00$00", "scrypt$16384$8$1$00$00"]
+)
+def test_missing_or_invalid_password_hash_refuses_login(encoded):
+    store = Mock()
+    service = AuthService(store, AuthConfig.from_environ({**ENV, "CONSOLE_PASSWORD_HASH": encoded}))
+    with pytest.raises(AuthError) as error:
+        service.login(TEST_PASSWORD)
+    assert error.value.status == 503 and TEST_PASSWORD not in str(error.value)
+    store.connection.assert_not_called()
+
+
+def test_hash_file_and_password_epoch_are_scoped_and_fail_closed(tmp_path):
+    hash_file = tmp_path / "password.hash"
+    hash_file.write_text(TEST_HASH + "\n", encoding="utf-8")
+    values = {**ENV, "CONSOLE_PASSWORD_HASH": "", "CONSOLE_PASSWORD_HASH_FILE": str(hash_file)}
+    config = AuthConfig.from_environ(values)
+    assert config.password_hash == TEST_HASH
+    assert TEST_HASH not in repr(config)
+    assert config.password_revision == AuthConfig.from_environ(ENV).password_revision
+    changed = AuthConfig.from_environ({**ENV, "CONSOLE_PASSWORD_HASH": TEST_HASH + "00"})
+    rescoped = AuthConfig.from_environ({**ENV, "CONSOLE_ACCOUNT_ID": "different-account"})
+    assert (
+        len({config.password_revision, changed.password_revision, rescoped.password_revision}) == 3
+    )
+    hash_file.unlink()
+    assert AuthConfig.from_environ(values).password_hash == ""
+
+
+def test_session_query_rejects_old_identity_and_password_epoch():
+    store = Mock()
+    store.one.return_value = None
+    service = AuthService(store, AuthConfig.from_environ(ENV))
+    with pytest.raises(AuthError):
+        service.principal("opaque-session")
+    sql, params = store.one.call_args.args
+    assert "p.id=%s" in sql and "p.revision=%s" in sql
+    assert params == (digest("opaque-session"), OWNER_ID, service.config.password_revision, 1800)
+
+
+def test_consent_rotates_and_mints_exact_expiring_grant_without_password(
+    password_service, monkeypatch
+):
+    service, store, calls = password_service
+    binding = {"preview_digest": "review-digest", "action": "position.close", "scope": SCOPE}
+
+    def execute_one(conn, sql, params=()):
+        calls.append((sql, params))
+        if "FROM console_previews" in sql:
+            return binding
+        if "SELECT id FROM console_sessions" in sql:
+            return {"id": "rotated-session"}
+        return None
+
+    monkeypatch.setattr("fatty_trader.console.auth.execute_one", execute_one)
+    service._session = Mock(return_value="new-opaque-token")
+    assert service.consent({"id": OWNER_ID, "session_id": "old-session"}, binding) == (
+        "new-opaque-token"
+    )
+    service._session.assert_called_once_with(
+        service._session.call_args.args[0], OWNER_ID, consented=True, old_session="old-session"
+    )
+    sql, params = next(item for item in calls if "INSERT INTO console_step_up_grants" in item[0])
+    assert params[1:5] == (OWNER_ID, "rotated-session", "review-digest", "position.close")
+    assert params[-1] == 300 and "expires_at" in sql
+    assert "expires_at>now()" in calls[0][0] and "actor_id=%s" in calls[0][0]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"scope": {**SCOPE, "account_id": "other"}},
+        {"action": "trade.open"},
+        {"preview_digest": "different-review"},
+    ],
+)
+def test_consent_cannot_substitute_scope_action_or_digest(password_service, monkeypatch, change):
+    service, store, calls = password_service
+    binding = {"preview_digest": "review-digest", "action": "position.close", "scope": SCOPE}
+    monkeypatch.setattr("fatty_trader.console.auth.execute_one", lambda *args: binding)
+    service._session = Mock()
+    with pytest.raises(AuthError):
+        service.consent({"id": OWNER_ID, "session_id": "session"}, {**binding, **change})
+    service._session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_login_api_exact_origin_rate_limit_and_no_old_ceremony_routes(monkeypatch):
+    store = BoundaryStore()
+    app = FastAPI()
+    mount_console(app, ENV, store=store, commands=Mock(), reads=Mock())
+    login = Mock(return_value="new-opaque-session")
+    monkeypatch.setattr(app.state.console_auth, "login", login)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=ENV["CONSOLE_ORIGIN"]
+    ) as client:
+        denied = await client.post("/api/v1/auth/login", json={"password": TEST_PASSWORD})
+        assert denied.status_code == 403
+        login.assert_not_called()
+        result = await client.post(
+            "/api/v1/auth/login",
+            json={"password": TEST_PASSWORD},
+            headers={"Origin": ENV["CONSOLE_ORIGIN"]},
+        )
+        assert result.status_code == 200
+        cookie = result.headers["set-cookie"]
+        assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+        assert result.json()["csrf_token"] == "csrf"
+        assert TEST_PASSWORD not in result.text
+        obsolete = await client.post("/api/v1/auth/authenticate/start", json={})
+        assert obsolete.status_code in {404, 405}
+        invalid = await client.post(
+            "/api/v1/auth/login",
+            json={"password": TEST_PASSWORD, "username": "not-supported"},
+            headers={"Origin": ENV["CONSOLE_ORIGIN"]},
+        )
+        assert invalid.status_code == 422 and TEST_PASSWORD not in invalid.text
+
+
+@pytest.mark.asyncio
+async def test_consent_api_requires_current_session_csrf_and_one_bound_target(monkeypatch):
+    class ConsentStore(BoundaryStore):
+        def one(self, sql, params=()):
+            if "FROM console_previews" in sql:
+                return {
+                    "actor_id": "principal",
+                    "preview_digest": "review-digest",
+                    "action": "position.close",
+                    "scope": SCOPE,
+                }
+            return super().one(sql, params)
+
+    store, app = ConsentStore(), FastAPI()
+    mount_console(app, ENV, store=store, commands=Mock(), reads=Mock())
+    consent = Mock(return_value="rotated-session-token")
+    monkeypatch.setattr(app.state.console_auth, "consent", consent)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=ENV["CONSOLE_ORIGIN"]
+    ) as client:
+        headers = {"Origin": ENV["CONSOLE_ORIGIN"], "X-CSRF-Token": "csrf"}
+        target = {"preview_digest": "review-digest"}
+        assert (
+            await client.post("/api/v1/auth/consent", json=target, headers=headers)
+        ).status_code == 401
+        client.cookies.set("console_session_local", "active-token")
+        assert (
+            await client.post(
+                "/api/v1/auth/consent", json=target, headers={"Origin": ENV["CONSOLE_ORIGIN"]}
+            )
+        ).status_code == 403
+        assert (
+            await client.post("/api/v1/auth/consent", json={}, headers=headers)
+        ).status_code == 400
+        assert (
+            await client.post(
+                "/api/v1/auth/consent", json={**target, "job_id": "job"}, headers=headers
+            )
+        ).status_code == 400
+        consent.assert_not_called()
+        result = await client.post("/api/v1/auth/consent", json=target, headers=headers)
+        assert result.status_code == 200
+        assert consent.call_args.args[1] == {
+            "preview_digest": "review-digest",
+            "action": "position.close",
+            "scope": SCOPE,
+        }
+
+
+def test_expired_preview_or_old_identity_cannot_receive_consent(password_service, monkeypatch):
+    service, store, calls = password_service
+    binding = {"preview_digest": "expired-review", "action": "position.close", "scope": SCOPE}
+    monkeypatch.setattr("fatty_trader.console.auth.execute_one", lambda *args: None)
+    service._session = Mock()
+    for principal in (
+        {"id": OWNER_ID, "session_id": "active"},
+        {"id": "former-identity", "session_id": "old"},
+    ):
+        with pytest.raises(AuthError):
+            service.consent(principal, binding)
+    service._session.assert_not_called()
+
+
+def test_session_revocation_is_self_owned_only():
+    store = Mock()
+    service = AuthService(store, AuthConfig.from_environ(ENV))
+    principal = {"id": OWNER_ID, "roles": ["owner"]}
+    store.one.return_value = {"principal_id": "former-identity"}
+    with pytest.raises(AuthError) as error:
+        service.revoke(principal, "other-session")
+    assert error.value.status == 404
+    store.execute.assert_not_called()
+    store.one.return_value = {"principal_id": OWNER_ID}
+    service.revoke(principal, "own-session")
+    assert store.execute.call_args.args[1] == ("own-session",)
+
+
+@pytest.mark.asyncio
+async def test_password_api_durable_rate_limit_precedes_password_verification(monkeypatch):
+    class LimitedStore(BoundaryStore):
+        def one(self, sql, params=()):
+            if "console_auth_rates" in sql:
+                assert params[0] != TEST_PASSWORD
+                return {"attempts": 11}
+            return super().one(sql, params)
+
+    app = FastAPI()
+    mount_console(app, ENV, store=LimitedStore(), commands=Mock(), reads=Mock())
+    login = Mock()
+    monkeypatch.setattr(app.state.console_auth, "login", login)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=ENV["CONSOLE_ORIGIN"]
+    ) as client:
+        result = await client.post(
+            "/api/v1/auth/login",
+            json={"password": TEST_PASSWORD},
+            headers={"Origin": ENV["CONSOLE_ORIGIN"]},
+        )
+        assert result.status_code == 429 and result.json()["code"] == "rate_limited"
+        assert TEST_PASSWORD not in result.text
+    login.assert_not_called()

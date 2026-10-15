@@ -17,6 +17,12 @@ states are maintained in the progress tracker, not inferred from this plan.
 
 Specifications describe proposed behavior unless explicitly identified as inspected existing behavior. Approved design, source implementation, local verification, deployment, current provider evidence and a real trade are separate evidence tracks. The progress tracker must never label one as another.
 
+Owner's later password-only directive supersedes the authentication/enrollment
+design below: one password, no username/passkey/OTP/invitation/external sign-in.
+Scoped sessions, CSRF, origin checks, password rate limits and digest-bound effect
+review remain. This login simplification does not authorize provider mutations,
+relax ownership/risk/latches or supply two independent financial approvers.
+
 ## 1. Outcome and complete scope
 
 Deliver one responsive operator console for tracing signals, managing positions/orders/protection, controlled recovery, configuration, notifications, account performance, and deployment operations. A read-only dashboard is a delivery phase, not the final accepted scope. Every action must have server-enforced permission, capability, ownership, evidence and outcome semantics; unsupported actions are visibly unavailable with a reason, never fake buttons or silent fallbacks.

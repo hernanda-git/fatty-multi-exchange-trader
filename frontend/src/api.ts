@@ -17,26 +17,15 @@ export async function api<T=RecordData>(path:string,body?:unknown,headers:Record
  }
  return data as T;
 }
-function decode(value:string):ArrayBuffer {
- const normalized=value.replace(/-/g,'+').replace(/_/g,'/');
- const padded=normalized+'='.repeat((4-normalized.length%4)%4);
- return Uint8Array.from(atob(padded),c=>c.charCodeAt(0)).buffer;
+export async function passwordLogin(password:string):Promise<RecordData>{
+ const session=await api<RecordData>('/auth/login',{password});
+ const principal=session.principal as Principal|undefined;
+ setCsrf(String(session.csrf_token||principal?.csrf_token||''));
+ window.dispatchEvent(new CustomEvent('console-session',{detail:session}));
+ return session;
 }
-function encode(value:ArrayBuffer):string {let binary='';for(const byte of new Uint8Array(value))binary+=String.fromCharCode(byte);return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-export async function passkey(kind:'authenticate'|'bootstrap'|'stepup',input:RecordData={}):Promise<RecordData>{
- if(!window.isSecureContext||!window.PublicKeyCredential||!navigator.credentials)throw new Error('Passkeys require a supported browser and a secure origin (HTTPS or localhost).');
- const start=await api<RecordData>(`/auth/${kind}/start`,input);
- const options=(start.publicKey||start.options||start) as RecordData;
- const publicKey={...options,challenge:decode(String(options.challenge))} as unknown as PublicKeyCredentialRequestOptions & PublicKeyCredentialCreationOptions;
- if(kind==='bootstrap'){
-  const user=options.user as RecordData;publicKey.user={...user,id:decode(String(user.id))} as PublicKeyCredentialUserEntity;
-  publicKey.excludeCredentials=((options.excludeCredentials||[]) as RecordData[]).map(c=>({...c,id:decode(String(c.id))})) as PublicKeyCredentialDescriptor[];
- }else publicKey.allowCredentials=((options.allowCredentials||[]) as RecordData[]).map(c=>({...c,id:decode(String(c.id))})) as PublicKeyCredentialDescriptor[];
- const credential=await (kind==='bootstrap'?navigator.credentials.create({publicKey}):navigator.credentials.get({publicKey})) as PublicKeyCredential|null;
- if(!credential)throw new Error('Passkey request was cancelled.');
- const response=credential.response;const serialized:RecordData={id:credential.id,rawId:encode(credential.rawId),type:credential.type,clientExtensionResults:credential.getClientExtensionResults(),response:{clientDataJSON:encode(response.clientDataJSON)}};
- if(response instanceof AuthenticatorAttestationResponse){serialized.response={...(serialized.response as RecordData),attestationObject:encode(response.attestationObject),transports:typeof response.getTransports==='function'?response.getTransports():[]};}else{const r=response as AuthenticatorAssertionResponse;serialized.response={...(serialized.response as RecordData),authenticatorData:encode(r.authenticatorData),signature:encode(r.signature),userHandle:r.userHandle?encode(r.userHandle):null};}
- const session=await api<RecordData>(`/auth/${kind}/finish`,{challenge_id:start.challenge_id,credential:serialized});
+export async function authorize(input:{preview_digest?:string;job_id?:string}):Promise<RecordData>{
+ const session=await api<RecordData>('/auth/consent',input);
  const principal=session.principal as Principal|undefined;
  setCsrf(String(session.csrf_token||principal?.csrf_token||''));
  window.dispatchEvent(new CustomEvent('console-session',{detail:session}));

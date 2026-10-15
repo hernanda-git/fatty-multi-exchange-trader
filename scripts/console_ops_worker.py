@@ -106,59 +106,11 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--register-release")
-    parser.add_argument("--enroll-owner", action="store_true")
-    parser.add_argument("--invite-approver", action="store_true")
-    parser.add_argument("--display-name")
-    parser.add_argument("--recipient")
     parser.add_argument("--image")
     parser.add_argument("--approval-reference")
     args = parser.parse_args()
-    if (
-        sum(
-            bool(value)
-            for value in (args.register_release, args.enroll_owner, args.invite_approver)
-        )
-        > 1
-    ):
-        parser.error("choose exactly one administrative operation")
-    if args.enroll_owner or args.invite_approver:
-        if not args.display_name or args.image:
-            parser.error("enrollment requires --display-name and forbids release --image")
-        if args.invite_approver and (not args.recipient or not args.approval_reference):
-            parser.error(
-                "distinct approver invitation requires --recipient and --approval-reference"
-            )
-        if args.enroll_owner and (args.recipient or args.approval_reference):
-            parser.error("initial owner delivery uses only the configured TG_OPERATOR_ID")
-    elif args.display_name or args.recipient:
-        parser.error("enrollment options require --enroll-owner or --invite-approver")
     env = prepare_host_environment(os.environ)
     os.environ.update(env)
-    if args.enroll_owner or args.invite_approver:
-        from fatty_trader.console.auth import AuthConfig, AuthService
-        from fatty_trader.console.store import ConsoleStore
-
-        service = AuthService(ConsoleStore(), AuthConfig.from_environ(env))
-        if service.config.scope != {
-            "account_id": env.get("CONSOLE_ACCOUNT_ID")
-            or env.get("BITGET_ACCOUNT_ID")
-            or "configured-bitget",
-            "venue": "bitget",
-            "environment": "LIVE",
-        }:
-            raise ValueError("enrollment requires the exact configured LIVE account")
-        metadata = asyncio.run(
-            service.issue_invitation(
-                env,
-                args.display_name,
-                ["owner"],
-                [service.config.scope],
-                approval_reference=args.approval_reference,
-                recipient=args.recipient,
-            )
-        )
-        print(json.dumps(metadata, sort_keys=True))
-        return
     if args.register_release:
         if not args.image or not args.approval_reference:
             parser.error("immutable --image and --approval-reference required")

@@ -7,12 +7,14 @@ No secret value is printed. Existing bot credentials and risk settings are retai
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import secrets
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -39,6 +41,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Replace the console login password using one line from standard input",
+    )
     parser.add_argument("--account-id", required=True)
     parser.add_argument("--origin", default="http://localhost:18081")
     parser.add_argument("--project", default="fatty-multi-exchange-trader")
@@ -60,6 +67,14 @@ def main() -> int:
     env_path = root / ".env"
     if env_path.is_symlink() or not env_path.is_file():
         raise ValueError("approved existing deployment environment required")
+    encoded_password: str | None = None
+    if args.password_stdin:
+        login_password = sys.stdin.buffer.readline(4098).removesuffix(b"\n").removesuffix(b"\r")
+        if not login_password or len(login_password) > 4096:
+            raise ValueError("a bounded nonempty login password is required")
+        salt = secrets.token_bytes(16)
+        derived = hashlib.scrypt(login_password, salt=salt, n=16384, r=8, p=1, dklen=32)
+        encoded_password = f"scrypt$16384$8$1${salt.hex()}${derived.hex()}"
     content = env_path.read_text()
     existing: dict[str, str] = {}
     for line in content.splitlines():
@@ -79,7 +94,6 @@ def main() -> int:
         "CONSOLE_DB_PASSWORD": password,
         "CONSOLE_ACCOUNT_ID": args.account_id,
         "CONSOLE_ORIGIN": args.origin,
-        "CONSOLE_RP_ID": origin.hostname,
         "CONSOLE_ALLOW_LOCALHOST_HTTP": "1" if origin.scheme == "http" else "0",
         "CONSOLE_HOST_GID": str(os.getgid()),
         "CONSOLE_COMPOSE_PROJECT": args.project,
@@ -89,9 +103,14 @@ def main() -> int:
         line
         for line in content.splitlines()
         if not any(re.match(r"^\s*" + re.escape(key) + r"\s*=", line) for key in updates)
+        and not re.match(r"^\s*CONSOLE_RP_ID\s*=", line)
     ]
     lines.extend(key + "=" + json.dumps(value) for key, value in updates.items())
     atomic_private(env_path, ("\n".join(lines) + "\n").encode())
+    if encoded_password is not None:
+        login_file = root / "runtime" / "console-password.hash"
+        login_file.parent.mkdir(exist_ok=True)
+        atomic_private(login_file, (encoded_password + "\n").encode(), 0o640)
     runtime = root / "runtime"
     runtime.mkdir(exist_ok=True)
     stages = runtime / "console-stages"

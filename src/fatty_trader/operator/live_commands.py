@@ -68,7 +68,7 @@ class OperatorReadService:
         if isinstance(command, HelpCommand):
             return (
                 "Read-only /health /status /positions /orders /balance /price. "
-                "Mutations use durable console previews and preview-bound passkey approval."
+                "Mutations use durable console previews and exact password-session consent."
             )
         if isinstance(command, DiagnosticCommand) and self.diagnostic_reader:
             return self.diagnostic_reader(command.kind)

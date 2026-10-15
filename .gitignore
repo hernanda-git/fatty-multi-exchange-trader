@@ -27,6 +27,7 @@ frontend/dist/
 frontend/*.tsbuildinfo
 runtime/console-*/
 runtime/console-*.env
+runtime/console-password.hash
 runtime/console-public.pem
 runtime/*.compose.json
 runtime/*.pem

@@ -127,6 +127,19 @@ Standalone `PostgresLiveIntentStore.get()` and `remaining_owned_quantity()` clos
 
 ## Console host operations boundary
 
+Authentication now uses only the owner-configured console password, not passkeys
+or enrollment tokens. To set/rotate it through trusted SSH, run
+`runtime/console-ops-venv/bin/python scripts/provision_console.py --confirm --prepare-only --account-id VERIFIED_ACCOUNT_ID --password-stdin`
+and pass one password line on stdin; never place it in arguments or shell history.
+The private 0640 `runtime/console-password.hash` is the only stored verifier and is
+mounted read-only into web. Restart web after rotation. Quiesce console/Telegram
+mutation admission, revoke existing console sessions and expire bound consent
+grants during rotation before reopening access; do not clear incident latches.
+The hash/scope-derived principal revision additionally rejects stale password
+epochs. Old enrollment/challenge tables are retained as inert history, not login
+routes. No password or verifier belongs in exports, config drafts or logs.
+
+
 The web process has no Docker socket, exchange credentials, private secret key,
 or host command runner. `deploy/systemd/fatty-console-ops-worker.service` runs
 `scripts/console_ops_worker.py` in a dedicated host virtual environment.

@@ -1,7 +1,7 @@
 """Private Telegram transport for the same durable console command authority.
 
-Telegram is an identity channel, not passkey step-up evidence. Confirmation is
-bound to persisted previews and real console sessions; no process-local tokens.
+Telegram never authenticates a console identity or creates consent. The configured
+operator can reuse active password-session authority and exact browser consent.
 """
 
 from __future__ import annotations
@@ -47,20 +47,21 @@ class TelegramCommandAdapter:
         self.health_reader, self.diagnostic_reader = health_reader, diagnostic_reader
 
     def _principal(self, sender_id: int) -> Any:
+        from fatty_trader.console.auth import OWNER_ID
+
+        if sender_id != self.operator_id:
+            raise CommandError("unauthorized operator command")
         row = self.store.one(
             """SELECT p.*,s.id AS session_id,s.csrf_token,s.authenticated_at,s.step_up_at
-            FROM console_identity_links l JOIN console_principals p ON p.id=l.principal_id
-            JOIN console_sessions s ON s.principal_id=p.id
-            WHERE l.issuer='telegram' AND l.subject=%s AND p.enabled
-              AND s.revoked_at IS NULL AND s.expires_at>now() AND s.absolute_expires_at>now()
-              AND s.principal_revision=p.revision ORDER BY s.authenticated_at DESC LIMIT 1""",
-            (str(sender_id),),
+            FROM console_principals p JOIN console_sessions s ON s.principal_id=p.id
+            WHERE p.id=%s AND p.enabled AND s.revoked_at IS NULL
+              AND s.expires_at>now() AND s.absolute_expires_at>now()
+              AND s.last_seen_at>now()-interval '1800 seconds'
+              AND s.principal_revision=p.revision ORDER BY s.created_at DESC LIMIT 1""",
+            (OWNER_ID,),
         )
         if not row:
-            raise CommandError(
-                "Telegram identity requires a verified owner link "
-                "and an active passkey console session"
-            )
+            raise CommandError("Sign in to the console with the shared password first")
         return row
 
     def _root(self, symbol: str) -> str:
@@ -155,7 +156,7 @@ class TelegramCommandAdapter:
                 "Mutations /open /trade /cancel /close "
                 "/setsl /settp create the same durable preview as the console. "
                 "/confirm PREVIEW DIGEST PHRASE "
-                "enqueues only after a fresh preview-bound passkey step-up in the console. "
+                "enqueues only after exact preview-bound consent in the password console. "
                 "/job ID tracks evidence. "
                 "Account-wide/manual/baseline mutations are prohibited. "
                 "No legacy confirmation tokens."

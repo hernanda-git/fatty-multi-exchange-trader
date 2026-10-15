@@ -27,15 +27,13 @@ class Body(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class StartBody(Body):
-    token: StrictStr | None = Field(default=None, max_length=256)
+class ConsentBody(Body):
     preview_digest: StrictStr | None = Field(default=None, max_length=128)
     job_id: StrictStr | None = Field(default=None, max_length=128)
 
 
-class FinishBody(Body):
-    challenge_id: StrictStr = Field(max_length=128)
-    credential: JsonObject
+class LoginBody(Body):
+    password: StrictStr = Field(min_length=1, max_length=4096, repr=False)
 
 
 class EmptyBody(Body):
@@ -137,57 +135,38 @@ def create_router(
     def session(request: Request, principal: JsonObject = Depends(current)) -> JsonObject:
         return envelope(auth.session_dto(principal), request)
 
-    @router.post("/auth/{purpose}/start")
-    def start(
-        purpose: Literal["bootstrap", "authenticate", "stepup"], body: StartBody, request: Request
-    ) -> JsonObject:
+    @router.post("/auth/login")
+    def login(body: LoginBody, request: Request) -> JSONResponse:
         auth.origin_check(request.headers.get("origin"), request.headers.get("content-type", ""))
-        auth.rate_limit(request.client.host if request.client else "unknown", purpose)
-        principal: JsonObject | None = None
-        binding: JsonObject = {}
-        if purpose == "stepup":
-            if body.token:
-                raise AuthError("invalid_request", "Unexpected authentication fields", 400)
-            principal = current(request)
-            auth.csrf_check(principal, request.headers.get("x-csrf-token"))
-            if body.preview_digest and body.job_id:
-                raise AuthError("invalid_request", "Choose one step-up target", 400)
-            if body.job_id:
-                job = commands.get_job(body.job_id, principal)
-                row = store.one(
-                    "SELECT preview_digest,action,scope FROM console_previews WHERE id=%s",
-                    (job["preview_id"],),
-                )
-            elif body.preview_digest:
-                row = store.one(
-                    "SELECT actor_id,preview_digest,action,scope FROM console_previews "
-                    "WHERE preview_digest=%s AND expires_at>now()",
-                    (body.preview_digest,),
-                )
-                if row and row["actor_id"] != principal["id"]:
-                    row = None
-            else:
-                row = None
-            if body.preview_digest or body.job_id:
-                if not row or row["scope"] != scope:
-                    raise AuthError("not_found", "Step-up target not found", 404)
-                binding = {k: row[k] for k in ("preview_digest", "action", "scope")}
-        elif body.preview_digest or body.job_id or (purpose == "authenticate" and body.token):
-            raise AuthError("invalid_request", "Unexpected authentication fields", 400)
-        return auth.start(purpose, body.token, principal, binding)
-
-    @router.post("/auth/{purpose}/finish")
-    def finish(
-        purpose: Literal["bootstrap", "authenticate", "stepup"], body: FinishBody, request: Request
-    ) -> JSONResponse:
-        auth.origin_check(request.headers.get("origin"), request.headers.get("content-type", ""))
-        auth.rate_limit(request.client.host if request.client else "unknown", purpose)
-        principal = current(request) if purpose == "stepup" else None
-        if principal:
-            auth.csrf_check(principal, request.headers.get("x-csrf-token"))
+        auth.rate_limit(request.client.host if request.client else "unknown", "password-login", 10)
+        # A global durable bucket also bounds attempts across distributed clients.
+        auth.rate_limit("console-password", "password-login-global", 50)
         return session_response(
-            auth.finish(purpose, body.challenge_id, body.credential, principal), request
+            auth.login(body.password, request.cookies.get(auth.config.cookie_name)), request
         )
+
+    @router.post("/auth/consent")
+    def consent(
+        body: ConsentBody, request: Request, principal: JsonObject = Depends(mutation)
+    ) -> JSONResponse:
+        if bool(body.preview_digest) == bool(body.job_id):
+            raise AuthError("invalid_request", "Choose exactly one consent target", 400)
+        if body.job_id:
+            job = commands.get_job(body.job_id, principal)
+            row = store.one(
+                "SELECT actor_id,preview_digest,action,scope FROM console_previews WHERE id=%s",
+                (job["preview_id"],),
+            )
+        else:
+            row = store.one(
+                "SELECT actor_id,preview_digest,action,scope FROM console_previews "
+                "WHERE preview_digest=%s AND expires_at>now()",
+                (body.preview_digest,),
+            )
+        if not row or row["scope"] != scope or row["actor_id"] != principal["id"]:
+            raise AuthError("not_found", "Consent target not found", 404)
+        binding = {k: row[k] for k in ("preview_digest", "action", "scope")}
+        return session_response(auth.consent(principal, binding), request)
 
     @router.post("/auth/logout")
     def logout(
@@ -337,7 +316,6 @@ def create_router(
         body: SecretBody, request: Request, principal: JsonObject = Depends(mutation)
     ) -> JsonObject:
         auth.require_role(principal, "owner")
-        auth.require_stepup(principal)
         auth.rate_limit(principal["id"], "secret-stage", maximum=4)
         from fatty_trader.console.operations import OperationRefused, SecretStages
 
@@ -361,11 +339,10 @@ def create_router(
     ) -> JsonObject:
         auth.require_role(principal, "access_admin")
         rows = store.query(
-            """SELECT p.id,p.display_name,p.roles,p.scopes,p.enabled,p.created_at,
-            (SELECT count(*) FROM console_credentials c WHERE c.principal_id=p.id) AS passkey_count
-            FROM console_principals p WHERE p.scopes @> %s::jsonb AND (%s::text IS NULL OR p.id>%s)
-            ORDER BY p.id LIMIT %s""",
-            (json.dumps([scope]), cursor, cursor, limit + 1),
+            """SELECT p.id,p.display_name,p.roles,p.scopes,p.enabled,p.created_at
+            FROM console_principals p WHERE p.id=%s AND p.scopes @> %s::jsonb
+            AND (%s::text IS NULL OR p.id>%s) ORDER BY p.id LIMIT %s""",
+            (principal["id"], json.dumps([scope]), cursor, cursor, limit + 1),
         )
         page = rows[:limit]
         return envelope(
@@ -387,14 +364,14 @@ def create_router(
         cursor: str | None = None,
         principal: JsonObject = Depends(current),
     ) -> JsonObject:
-        admin = bool({"owner", "access_admin"}.intersection(principal["roles"]))
+        # Shared-password access exposes only the current owner's sessions.
         rows = store.query(
             """SELECT s.id,s.principal_id,s.authenticated_at,s.step_up_at,
             s.last_seen_at,s.absolute_expires_at,s.revoked_at FROM console_sessions s
             JOIN console_principals p ON p.id=s.principal_id WHERE p.scopes @> %s::jsonb
-            AND (%s OR s.principal_id=%s) AND (%s::text IS NULL OR s.id>%s)
+            AND s.principal_id=%s AND (%s::text IS NULL OR s.id>%s)
             ORDER BY s.id LIMIT %s""",
-            (json.dumps([scope]), admin, principal["id"], cursor, cursor, limit + 1),
+            (json.dumps([scope]), principal["id"], cursor, cursor, limit + 1),
         )
         page = rows[:limit]
         return envelope(
@@ -418,8 +395,8 @@ def create_router(
                     "roles": sorted(ROLES),
                     "idle_seconds": auth.config.idle_seconds,
                     "absolute_seconds": auth.config.absolute_seconds,
-                    "stepup_seconds": auth.config.stepup_seconds,
-                    "user_verification": "required",
+                    "consent_seconds": auth.config.consent_seconds,
+                    "authentication": "shared_password",
                 },
                 "scope": scope,
             },
@@ -435,11 +412,7 @@ def create_router(
     ) -> JsonObject:
         target = store.one("SELECT principal_id FROM console_sessions WHERE id=%s", (session_id,))
         if not target or target["principal_id"] != principal["id"]:
-            raise AuthError(
-                "preview_required",
-                "Revoking another account session requires an approved session.revoke job",
-                403,
-            )
+            raise AuthError("not_found", "Session not found", 404)
         auth.revoke(principal, session_id)
         audit(request, "access.session_revoked", principal, session_id)
         return {"revoked": True}

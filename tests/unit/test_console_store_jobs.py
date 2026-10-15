@@ -80,16 +80,9 @@ class Handler:
 def action_catalog(monkeypatch):
     schemas = {
         "position.close": {"type": "object", "properties": {}, "additionalProperties": False},
-        "access.invite": {
-            "type": "object",
-            "properties": {"roles": {"type": "array", "items": {"type": "string"}}},
-            "required": ["roles"],
-            "additionalProperties": False,
-        },
     }
     policies = {
         "position.close": {"role": "operator", "danger_tier": 2},
-        "access.invite": {"role": "access_admin", "danger_tier": 3},
     }
     monkeypatch.setattr(module, "catalog", lambda: (schemas, policies))
 
@@ -245,13 +238,13 @@ def test_mutation_gate_zero_cannot_enqueue(action_catalog):
     assert not any("INSERT INTO console_jobs" in sql for sql, _ in cursor.calls)
 
 
-def test_missing_stepup_rolls_back_job_and_receipt(action_catalog):
+def test_missing_consent_rolls_back_job_and_receipt(action_catalog):
     store, connection, cursor = store_with([preview(), actor(), None, job(), None])
     with pytest.raises(CommandError) as error:
         CommandService(store, {"position.close": Handler()}).enqueue(
             request(), PRINCIPAL, str(uuid4())
         )
-    assert error.value.code == "step_up_required"
+    assert error.value.code == "consent_required"
     assert connection.rollbacks == 1 and connection.commits == 0
     assert not any("INSERT INTO console_idempotency_receipts" in sql for sql, _ in cursor.calls)
 
@@ -270,10 +263,11 @@ def test_stale_resource_rejected_before_job_insert(action_catalog):
     assert not any("INSERT INTO console_jobs" in sql for sql, _ in cursor.calls)
 
 
-def test_owner_grants_never_downgrade_for_onboarding(action_catalog):
-    service = CommandService(None, {"access.invite": Handler()})
-    assert service._policy("access.invite", {"roles": ["owner"]})["danger_tier"] == 3
-    assert service._policy("access.invite", {"roles": ["viewer"]})["danger_tier"] == 2
+def test_shared_password_catalog_exposes_no_identity_administration():
+    schemas, policies = module.catalog()
+    assert not any(action.startswith("access.") for action in schemas)
+    assert not any(action.startswith("access.") for action in policies)
+    assert "session.revoke" not in schemas  # Self-owned session revocation has a CSRF REST route.
 
 
 def test_self_approval_refused_even_with_one_owner(action_catalog):
@@ -288,6 +282,25 @@ def test_self_approval_refused_even_with_one_owner(action_catalog):
         )
     assert error.value.code == "distinct_approver_required"
     assert not any("INSERT INTO console_approvals" in sql for sql, _ in cursor.calls)
+
+
+def test_shared_password_owner_cannot_gain_distinct_worker_authority(action_catalog):
+    record = job()
+    record.update(actor_id="console-password-owner", danger_tier=3)
+    with pytest.raises(CommandError) as error:
+        CommandService(None, {"position.close": Handler()})._authority(None, record)
+    assert error.value.code == "distinct_approver_required"
+
+
+def test_shared_password_capabilities_keep_two_person_actions_unavailable(monkeypatch):
+    schemas = {"risk.change": {"type": "object"}}
+    policies = {"risk.change": {"role": "risk_owner", "danger_tier": 3}}
+    monkeypatch.setattr(module, "catalog", lambda: (schemas, policies))
+    items = CommandService(None, {"risk.change": Handler()}).capabilities(
+        {"id": "console-password-owner", "roles": ["owner"]}, SCOPE
+    )
+    assert items[0]["enqueue_allowed"] is False
+    assert items[0]["reasons"][0]["code"] == "second_approver_required"
 
 
 def test_lost_lease_cannot_checkpoint_or_claim_effect():
@@ -577,3 +590,21 @@ async def test_pre_effect_takeover_accounts_for_no_post_without_replay():
     assert handler.posts == handler.readbacks == store.claims == 0
     assert store.outcome[0] == "cancelled"
     assert store.outcome[1]["provider_effect_claimed"] is False
+
+
+def test_bound_consent_is_consumed_once_and_cannot_be_replayed():
+    cursor = Cursor([{"id": "consent-grant"}, None])
+    service = CommandService(None, {})
+    reviewed = preview()
+    assert service._grant(cursor, PRINCIPAL, reviewed, "job-one")["id"] == "consent-grant"
+    with pytest.raises(CommandError) as error:
+        service._grant(cursor, PRINCIPAL, reviewed, "job-two")
+    assert error.value.code == "consent_required"
+    selects = [(sql, params) for sql, params in cursor.calls if sql.startswith("SELECT")]
+    assert len(selects) == 2
+    for sql, params in selects:
+        assert "consumed_at IS NULL" in sql and "expires_at>now()" in sql
+        assert "action=%s" in sql and "scope=%s" in sql and "session_id=%s" in sql
+        assert params[:4] == ("actor", "session", "digest", "position.close")
+    updates = [(sql, params) for sql, params in cursor.calls if sql.startswith("UPDATE")]
+    assert len(updates) == 1 and updates[0][1] == ("job-one", "consent-grant")
