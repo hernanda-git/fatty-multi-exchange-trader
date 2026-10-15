@@ -20,11 +20,11 @@ Fresh isolated clone of origin/main `ea0114e136ec1ba4adc547f10a61aa533934221d` a
 |---|---|---|---|
 | P0 Capability/safety | ACCEPTED | Source-backed capability inventory, policy prohibitions and shared adapter boundaries documented and implemented | Natural live trade is separate provider evidence, not a development acceptance gate |
 | P1 UI/API contracts | ACCEPTED | All 15 screens, typed actions, scoped evidence, jobs/approvals, SSE and host boundary implemented; operator guide published with source | Runtime receipts below remain separate from specification |
-| P2 Authenticated read console | LOCALLY VERIFIED | Real passkey enrollment/sign-in/sign-out; desktop/mobile navigation; scoped APIs; CSRF refusal; outage/reconnect browser proof | Private production rollout and personal owner enrollment |
-| P3 Durable shared commands | LOCALLY VERIFIED | Console unit behaviors and 11 isolated PostgreSQL job tests; real browser → durable job → worker → readback for annotations/incident acknowledgments | Final complete Linux suite receipt; production worker lineage |
-| P4 Trading/protection controls | LOCALLY VERIFIED | Integrated console trading regressions pass; ownership, gate, claim/readback and protection cases exercised without live credentials | Natural provider lifecycle remains unobserved; no test trade authorized |
-| P5 Recovery/operations | LOCALLY VERIFIED | Allowlist/exposure/refusal/restore-replay regressions, real private provisioner boundary smoke, built-image and cross-UID media isolation | Install and observe separate production host executor after safe rollout admission |
-| P6 Hardening/release | ACTIVE | Compiled frontend, strict source types, package build, security reviews and browser/API/DB/image proof recorded below | Final full-suite receipt; commit/push; fresh authenticated deployment inventory, backup, approved rollout and lineage |
+| P2 Authenticated read console | DEPLOYED | Passkey/session/CSRF and all 15 responsive screens verified locally; actual private production HTML/health 200 and unauthenticated API 401; restricted web SQL role and credential isolation observed | Owner enrolls a personal passkey through the privately delivered invitation; no fabricated production authenticator |
+| P3 Durable shared commands | DEPLOYED | Schema 26, shared Telegram/web commands, fenced worker and approvals; complete 2305-test Linux suite, real PostgreSQL races and browser job/readback proofs | Normal action-specific consent and distinct-owner Tier 3 approval remain enforced |
+| P4 Trading/protection controls | DEPLOYED | Current copied source/image identity proved across all nine applications; ownership, risk, cancellation, protection and replay regressions passed | No synthetic live trade authorized; existing incident latch and independent mutation flags remain unchanged |
+| P5 Recovery/operations | DEPLOYED | Separate host executor active, fresh actual service/log/schedule evidence, immutable current release catalog and verified pre-rollout backups; allowlist/restore/replay refusal regressions passed | Dangerous host/provider effects require their normal approvals; no production restore or test rollback was performed |
+| P6 Hardening/release | ACCEPTED | Engineering release acceptance: 2305 passed/zero skips, strict types/lint, frontend/image/package builds, source security reviews, actual private browser/API/SQL/container/host proof and published runbooks | Natural live lifecycle and unrelated sticky clock-latch recovery are separate evidence/authorization tracks |
 
 Phases are sequencing, not reduced scope. No phase is accepted because documentation exists; code and runtime gates above still apply.
 
@@ -63,9 +63,9 @@ Documentation smoke passed: 81 relative file links resolve; P0 through P6 each a
 Planning/specification commit `883f9a4` (`docs(console): approve master plan and specify capability and UI API contracts`) was pushed successfully from baseline `ea0114e` to `origin/main`. This receipt update is a separate documentation commit. Publication is not deployment; no production changes occurred.
 
 
-## Next implementation gate
+## Current operator gate
 
-After CAP1/SPEC1 integrate, start P2 authentication and first real read surface using shared DTOs. Do not attach financially mutating actions until P3 durable job/shared-command gate passes. Every later work session updates this ledger with completed behavior, exact verification, blockers and next package; do not leave successful work marked ACTIVE or future work marked implemented.
+Engineering implementation and private rollout are complete; the final receipts below supersede historical checkpoints. Enroll a personal passkey through the private first-access invitation, then use fresh previews and per-action approvals. The existing sticky clock incident remains a separate recovery decision; console access never authorizes blanket resume, new risk or historical signal replay.
 
 
 ## Durable control-plane implementation
@@ -285,4 +285,62 @@ is newly authorized for trading. New regressions preserve ASCII plus Unicode cat
 rows, refuse unsupported position adoption, and reject missing/control/markup
 identities rather than fabricating a complete inventory. The corrected release is
 under verification before superseding the initial image.
+
+## Final engineering acceptance and deployed release
+
+The catalog-corrected implementation **`580c346`** was committed, pushed and deployed.
+Its focused console selection returned **163 passed**; Ruff passed and strict mypy
+reported no issues in **120 source files**. The complete isolated Linux/PostgreSQL
+suite then returned **2305 passed, zero failures and zero skips** in **899.84 seconds**.
+The final JUnit receipt is preserved privately as
+`runtime/console-release-20261015/acceptance-catalog.xml`, SHA256
+`9b38258650e03118c7c0739328d5be433ef78f9808e9a0a373e3e5c7303e2d57`.
+
+Final rollout repeated authenticated flatness at `03:38:25Z` and `03:38:49Z`,
+with entry-capable consumers stopped between observations and monitoring kept
+running until the second proof. All ordinary and all three plan-order categories
+were empty. Before the code cutover, the integrity-checking backup completed at
+`backups/console-catalog-before-20261015/fatty_trader_20261015T033902Z.dump`,
+**3,330,391 bytes**, with retention disabled. No backup was restored.
+
+The running immutable image is
+`sha256:44b5c346a5f99f640da444f625c479b3d1493c9b242c3023cd1dccd74066084d`,
+revision label `580c346`. The copied Python source digest is
+`809f3cfec6713e7771537755d812bf189e81b7481d7b492011854cd395ce7ad1`,
+matching the published tree and **all nine healthy application containers**.
+The dedicated host executor package was upgraded to the same published source and
+the user service restarted; PostgreSQL remains at schema **26**. Rendered and actual
+effective policy still matches the pre-rollout LIVE/LIVE/1, risk and mutation-gate
+baseline. The web remains loopback-only, credential/host-key/socket isolated, with
+financial read permission but no financial UPDATE privilege.
+
+Actual worker collection at `2026-10-15T03:40:07Z` recorded **834 contracts**, complete,
+with no error and both ASCII and Unicode identities preserved. The market count
+changed naturally after the earlier 833-contract observation; no count was pinned.
+The existing mutation/ownership symbol admission rules were not widened.
+Trusted host registration enrolled current immutable artifact
+`console-20261015-580c346` with the exact image/source/schema binding.
+
+The final deployed browser surface was re-exercised through the private tunnel:
+HTML **200**, health **200**, protected overview without authentication **401**.
+Production authenticated navigation was not bypassed: the owner must register a
+personal user-verified passkey through normal first-access enrollment. Local
+authenticated desktop/mobile, preview/job/worker/readback and disconnect/reconnect
+proofs remain recorded above.
+
+**Operational boundary:** the Bitget `clock-skew-unavailable` incident remains active
+with its original reason/update time; the stream latch retains its prior inactive
+state. Engineering deployment is complete, but it is not a claim that new entries
+are currently admitted or that a natural live trade executed. No synthetic trade,
+incident-latch release, risk expansion, optional mutation-gate activation, credential
+substitution, database restore or unrelated host-service change was performed.
+
+Final onboarding refresh delivered a new one-use **600-second** invitation to the
+configured private Telegram owner, without printing its token. The executor's final
+state is active/running with **zero restarts**, and the container console worker's
+real heartbeat check exited 0. Verification-only PostgreSQL/container/image,
+temporary source archives/directories and the newly created local smoke harness
+were removed; acceptance receipts, private backups, rollback images and the running
+release were retained. Final documentation link smoke checked **88 links**, none
+broken. Owner passkey enrollment is normal first use, not an implementation stub.
 
