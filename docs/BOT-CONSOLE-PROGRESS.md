@@ -462,3 +462,32 @@ rendering expanded `MESSAGE / SETUP` cells. All ten application containers repor
 `unless-stopped` and OpenLiteSpeed is system-enabled, so the public console
 restarts with the host. The verification session was left to idle-expire.
 
+## Push notification delivery (2026-10-15)
+
+The owner requested iOS/web push because the Telegram chat was muted. Web push
+now fans out from the same durable outbox: migration 28 adds
+`web_push_subscriptions` and `web_push_deliveries`; migration 29 grants the
+console role the privileges its routes need (SELECT/INSERT/UPDATE on
+subscriptions, INSERT on the outbox for the test action). The VAPID keypair is
+provisioned by `scripts/provision_web_push.py` into `runtime/`
+(`web-push-private.pem` 0600 owned by the container UID, `web-push-public.txt`
+0644) and mounted read-only into `notification-sender` and `web` respectively.
+
+Verified before deploy: 13 push unit tests plus surrounding console/notification
+suites, ruff, strict mypy on changed modules, TypeScript build, and a
+real-crypto harness proving RFC 8291 decryption of the sent payload plus a valid
+VAPID ES256 JWT (`aud` = push origin, `k` matching the provisioned key).
+
+Verified in production after deploy (branch `feat/web-push`, based on `04a77da`):
+schema version **29**; `/api/v1/push/config` returns `enabled: true` with the
+public key; `POST /push/subscriptions` and `POST /push/test` return **200**; the
+sender's fan-out created a durable delivery row whose first attempt was
+classified `retryable` with a scheduled retry (synthetic endpoint, removed
+afterwards; the subscription row and its deliveries remain as audit evidence).
+The service worker registers at scope `/` on the public origin and the Settings
+card renders with the iOS install guidance. A push-ledger fault is isolated so
+it can never suppress the Telegram lane.
+
+Production runs this branch until `feat/web-push` is merged into `main`; the
+host checkout stays on `feat/web-push` for that reason.
+

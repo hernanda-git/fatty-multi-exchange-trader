@@ -40,8 +40,11 @@ permission may need to be granted for the browser once.
 - **Compose**: `WEB_PUSH_VAPID_SUBJECT` (default `https://trade.warga-digital.com`),
   `WEB_PUSH_TTL_SECONDS` (default 3600), `WEB_PUSH_MAX_ATTEMPTS` (5),
   `WEB_PUSH_RETRY_SECONDS` (60), `WEB_PUSH_BATCH_SIZE` (10).
-- **Schema**: migration 27 adds `web_push_subscriptions` and
-  `web_push_deliveries` (additive; applied by the `migrate` service).
+- **Schema**: migrations 28 and 29 add `web_push_subscriptions` and
+  `web_push_deliveries` (additive; applied by the `migrate` service) and grant
+  the console role `SELECT/INSERT/UPDATE` on subscriptions plus `INSERT` on
+  `notifications_outbox` for the test action. The sender runs as the
+  application role, which already owns full access.
 - **API**: `GET /api/v1/push/config`, `GET/POST /api/v1/push/subscriptions`,
   `POST /api/v1/push/subscriptions/remove`, `POST /api/v1/push/test`. All writes
   require the session, the exact origin and CSRF; every call is audited.
