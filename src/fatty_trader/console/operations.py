@@ -99,6 +99,13 @@ CONFIG_FIELDS: dict[str, Any] = {
 }
 SECRET_KINDS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE", "TG_BOT_TOKEN")
 ACTION_SCHEMAS = {
+    "config.save": object_schema(
+        {
+            "base_version": {"type": "integer", "minimum": 0},
+            "settings": object_schema(CONFIG_FIELDS),
+        },
+        ("base_version", "settings"),
+    ),
     "config.save_draft": object_schema(
         {
             "base_version": {"type": "integer", "minimum": 0},
@@ -224,7 +231,7 @@ HOST_ACTIONS = frozenset(
     name
     for name in OPERATIONS_ACTIONS
     if name.startswith(("service.", "release.", "backup.", "latch.", "baseline."))
-    or name in ("config.apply", "notification.configure_schedule")
+    or name in ("config.save", "config.apply", "notification.configure_schedule")
 )
 ACTION_POLICIES = {
     name: {
@@ -288,7 +295,48 @@ def validate_arguments(action: str, arguments: dict[str, Any]) -> None:
         and not arguments["settings"]
         and not arguments.get("secret_stage_ids")
     ):
-        raise OperationRefused("draft has no changes")
+        raise OperationRefused("configuration has no changes")
+
+
+def create_config_revision(cursor: Any, job: dict[str, Any]) -> dict[str, Any]:
+    """Create one immutable revision while holding the shared configuration lock."""
+    args = job["arguments"]
+    cursor.execute("SELECT pg_advisory_xact_lock(626026)")
+    cursor.execute(
+        "SELECT coalesce(max(version),0) FROM console_config_versions WHERE kind='runtime'"
+    )
+    row = cursor.fetchone()
+    current = int(next(iter(row.values())) if isinstance(row, dict) else row[0])
+    if current != args["base_version"]:
+        raise OperationRefused("configuration version changed; reload settings before saving")
+    payload = {
+        "settings": dict(
+            args.get("settings", {"ANALYZER_CHANNEL_IDS": args.get("live_channel_ids")})
+        ),
+        "secret_stage_ids": args.get("secret_stage_ids", []),
+    }
+    if job["action"] == "source.configure" and args.get("intake_channels"):
+        payload["settings"]["TELEGRAM_SOURCE_CHANNELS"] = args["intake_channels"]
+    revision = {
+        "id": str(uuid4()),
+        "version": current + 1,
+        "base_version": current,
+        "payload": payload,
+        "state": "draft",
+        "actor_id": job["actor_id"],
+        "account_id": job["scope"]["account_id"],
+        "environment": "LIVE",
+    }
+    cursor.execute(
+        "INSERT INTO console_config_versions"
+        "(id,kind,version,base_version,payload,state,actor_id,account_id,environment) "
+        "VALUES (%s,'runtime',%s,%s,%s::jsonb,'draft',%s,%s,'LIVE')",
+        (
+            revision["id"], current + 1, current, json.dumps(payload),
+            job["actor_id"], job["scope"]["account_id"],
+        ),
+    )
+    return revision
 
 
 class SecretStages:
@@ -549,9 +597,13 @@ class OperationsHandlers:
                 {
                     "action": action,
                     "targets": target_refs,
-                    "summary": "Analysis-only; no admission or receipt rewrite"
+                    "summary": "Apply edited settings, verify consumer environments, and restore "
+                    "the prior running posture; requires authenticated flat inventory"
+                    if action == "config.save"
+                    else "Analysis-only; no admission or receipt rewrite"
                     if action == "signal.reanalyze"
                     else "Scoped operation; no global safety latch clearing",
+                    **({"settings": arguments["settings"]} if action == "config.save" else {}),
                 }
             ],
             "gates": gates,
@@ -602,7 +654,7 @@ class OperationsHandlers:
                 or not set(arguments.get("services", [])).issubset(plan["services"])
             ):
                 raise OperationRefused("reviewed maintenance plan scope changed or expired")
-        if action in ("config.save_draft", "source.configure"):
+        if action in ("config.save", "config.save_draft", "source.configure"):
             row = self.store.one(
                 "SELECT coalesce(max(version),0) AS version FROM console_config_versions "
                 "WHERE kind='runtime'"
@@ -747,41 +799,10 @@ class OperationsHandlers:
             if current_job.get("cancellation_requested_at"):
                 raise OperationRefused("operation was cancelled before effect")
             if action in ("config.save_draft", "source.configure"):
-                cursor.execute("SELECT pg_advisory_xact_lock(626026)")
-                cursor.execute(
-                    "SELECT coalesce(max(version),0) FROM console_config_versions WHERE "
-                    "kind='runtime'"
-                )
-                row = cursor.fetchone()
-                current = int(next(iter(row.values())) if isinstance(row, dict) else row[0])
-                if current != args["base_version"]:
-                    raise OperationRefused("config version changed")
-                draft_id = str(uuid4())
-                payload: dict[str, Any] = {
-                    "settings": args.get(
-                        "settings", {"ANALYZER_CHANNEL_IDS": args.get("live_channel_ids")}
-                    ),
-                    "secret_stage_ids": args.get("secret_stage_ids", []),
-                }
-                if action == "source.configure" and args.get("intake_channels"):
-                    payload["settings"]["TELEGRAM_SOURCE_CHANNELS"] = args["intake_channels"]
-                cursor.execute(
-                    "INSERT INTO "
-                    "console_config_versions(id,kind,version,base_version,payload,state,a"
-                    "ctor_id,account_id,environment) VALUES "
-                    "(%s,'runtime',%s,%s,%s::jsonb,'draft',%s,%s,'LIVE')",
-                    (
-                        draft_id,
-                        current + 1,
-                        current,
-                        json.dumps(payload),
-                        job["actor_id"],
-                        job["scope"]["account_id"],
-                    ),
-                )
+                revision = create_config_revision(cursor, job)
                 result = {
-                    "draft_id": draft_id,
-                    "version": current + 1,
+                    "draft_id": revision["id"],
+                    "version": revision["version"],
                     "state": "draft",
                     "effective": False,
                 }

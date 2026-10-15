@@ -25,6 +25,7 @@ from fatty_trader.console.operations import (
     SERVICES,
     OperationRefused,
     SecretStages,
+    create_config_revision,
     digest,
     validate_arguments,
 )
@@ -344,6 +345,27 @@ class HostOperationsRunner:
                     evidence["source_digest"] = source
         except Exception:
             evidence["runtime_evidence_error"] = "image_or_source_observation_unavailable"
+        try:
+            raw_environment = self._run(
+                ["/usr/bin/docker", "inspect", "--format", "{{json .Config.Env}}", container]
+            )
+            environment = dict(
+                entry.split("=", 1) for entry in json.loads(raw_environment) if "=" in entry
+            )
+            fields = {
+                key: environment[key]
+                for key in CONFIG_FIELDS
+                if service_id in SETTINGS_CONSUMERS[key] and key in environment
+            }
+            if service_id == "analyzer" and "ANALYZER_CHANNEL_IDS" not in environment:
+                from fatty_trader.service import analyzer_channel_ids
+
+                fields["ANALYZER_CHANNEL_IDS"] = ",".join(
+                    str(value) for value in analyzer_channel_ids({})
+                )
+            evidence["config_fields"] = fields
+        except Exception:
+            evidence["config_evidence_error"] = "consumer_environment_unavailable"
         self._service_evidence[service_id] = evidence
 
     def _running(self) -> set[str]:
@@ -361,6 +383,9 @@ class HostOperationsRunner:
         prohibited = (running - {"postgres"}) if all_apps else (running & MUTATION_CONSUMERS)
         if prohibited:
             raise OperationRefused("mutation consumers must remain stopped through proof/apply")
+        self._idle_leases(job)
+
+    def _idle_leases(self, job: dict[str, Any]) -> None:
         active = self.store.one(
             "SELECT EXISTS(SELECT 1 FROM console_jobs WHERE id<>%s AND lease_until>now() "
             "AND state='running') OR EXISTS(SELECT 1 FROM dispatches WHERE "
@@ -511,6 +536,8 @@ class HostOperationsRunner:
             ):
                 # Broad disruptive maintenance cannot sacrifice protection when nonflat.
                 flat = self._flat()
+            if action == "config.save":
+                self._idle_leases(job)
             if action in ("backup.verify", "backup.restore", "backup.delete"):
                 self._verify_backup(resource)
             if action == "backup.restore" and self._safety_digest() != resource["safety_digest"]:
@@ -539,6 +566,8 @@ class HostOperationsRunner:
                         return self._finish(job, "reconciliation_pending", result)
                 elif action.startswith("release."):
                     result = self._release(job, resource)
+                elif action == "config.save":
+                    result = self._save_config(job)
                 elif action == "config.apply":
                     result = self._config(job, resource)
                 elif action == "backup.create":
@@ -710,7 +739,68 @@ class HostOperationsRunner:
             raise OperationRefused("health timer effective interval readback failed")
         return {**result, "effective_interval_hours": hours}
 
-    def _config(self, job: dict[str, Any], resource: dict[str, Any]) -> dict[str, Any]:
+    def _save_config(self, job: dict[str, Any]) -> dict[str, Any]:
+        # Session-level ownership spans revision commit and host readback. Draft
+        # writers use the same advisory key, so none can overtake this revision.
+        with self.store.connection() as connection:
+            cursor = self.store.cursor(connection)
+            cursor.execute("SELECT pg_advisory_lock(626026)")
+            try:
+                cursor.execute(
+                    "SELECT coalesce(max(version),0) AS version FROM "
+                    "console_config_versions WHERE kind='runtime'"
+                )
+                row = cursor.fetchone()
+                current = int(next(iter(row.values())) if isinstance(row, dict) else row[0])
+                if current != job["arguments"]["base_version"]:
+                    raise OperationRefused("configuration version changed; reload before saving")
+                connection.commit()
+                self._idle_leases(job)
+                running = self._running()
+                affected = {
+                    service
+                    for key in job["arguments"]["settings"]
+                    for service in SETTINGS_CONSUMERS[key]
+                }
+                stopped = sorted(running & (MUTATION_CONSUMERS | affected))
+                # Stop entry-capable workers before stopping protection. A signal
+                # can arrive after the initial flat observation; the second
+                # proof must run while monitoring is still active.
+                entry_workers = [service for service in stopped if service != "monitor-bitget"]
+                protection = [service for service in stopped if service == "monitor-bitget"]
+                self._flat()
+                if entry_workers:
+                    self._effect_guard(job)
+                    self._compose("stop", *entry_workers, timeout=120)
+                self._idle_leases(job)
+                self._flat()
+                if protection:
+                    self._effect_guard(job)
+                    self._compose("stop", *protection, timeout=120)
+                self._quiescent(job)
+                self._flat()
+                self.store.effect_authority(cursor, job)
+                revision = create_config_revision(cursor, job)
+                connection.commit()
+                result = self._config(job, revision, running_before=running)
+                # _config restores the original running posture, with monitor
+                # health proved before entry-capable consumers are restarted.
+                result["restored_services"] = stopped
+                result["previously_stopped_consumers"] = sorted(affected - running)
+                return result
+            finally:
+                # Release even when the transaction failed; no host mutation is
+                # replayed automatically after an ambiguous interruption.
+                connection.rollback()
+                cursor.execute("SELECT pg_advisory_unlock(626026)")
+
+    def _config(
+        self,
+        job: dict[str, Any],
+        resource: dict[str, Any],
+        *,
+        running_before: set[str] | None = None,
+    ) -> dict[str, Any]:
         payload = resource["payload"]
         settings = payload.get("settings", {})
         from jsonschema import Draft202012Validator
@@ -769,11 +859,25 @@ class HostOperationsRunner:
             if stages is not None:
                 stages.consume(stage_id)
         affected = sorted({s for key in settings for s in SETTINGS_CONSUMERS[key]})
-        self._effect_guard(job)
-        self._compose(
-            "up", "-d", "--no-build", "--no-deps", "--force-recreate", *affected, timeout=900
-        )
-        self._wait_services(affected)
+        if running_before is None:
+            self._effect_guard(job)
+            self._compose(
+                "up", "-d", "--no-build", "--no-deps", "--force-recreate", *affected, timeout=900
+            )
+            self._wait_services(affected)
+        else:
+            self._effect_guard(job)
+            self._compose(
+                "create", "--no-build", "--no-deps", "--force-recreate", *affected, timeout=900
+            )
+            restore = sorted(running_before & (MUTATION_CONSUMERS | set(affected)))
+            protection = [service for service in restore if service == "monitor-bitget"]
+            remaining = [service for service in restore if service not in protection]
+            for services in (protection, remaining):
+                if services:
+                    self._effect_guard(job)
+                    self._compose("start", *services, timeout=120)
+                    self._wait_services(services)
         effective = self._effective_config(affected, settings, resource["version"])
         if not effective["matches_desired"]:
             raise OperationRefused("consumer config readback differs from desired revision")
@@ -815,7 +919,7 @@ class HostOperationsRunner:
         items = []
         matches = True
         for service in services:
-            container = self._compose("ps", "-q", service).strip()
+            container = self._compose("ps", "--all", "-q", service).strip()
             if not re.fullmatch(r"[a-f0-9]{12,64}", container):
                 raise OperationRefused("exact consumer container identity unavailable")
             raw = self._run(
@@ -1236,10 +1340,19 @@ class HostOperationsRunner:
                 "SELECT state FROM console_backups WHERE id=%s", (args["backup_id"],)
             )
             observations["backup_catalog_state"] = row["state"] if row else "unknown"
-        elif action == "config.apply":
-            row = self.store.one(
-                "SELECT state,version FROM console_config_versions WHERE id=%s", (args["draft_id"],)
-            )
+        elif action in ("config.save", "config.apply"):
+            if action == "config.save":
+                row = self.store.one(
+                    "SELECT state,version FROM console_config_versions WHERE "
+                    "kind='runtime' AND base_version=%s AND actor_id=%s AND account_id=%s "
+                    "AND environment=%s",
+                    (args["base_version"], job["actor_id"], self.scope["account_id"], "LIVE"),
+                )
+            else:
+                row = self.store.one(
+                    "SELECT state,version FROM console_config_versions WHERE id=%s",
+                    (args["draft_id"],),
+                )
             observations["config"] = row
         elif action.startswith("latch."):
             observations["latches"] = self.store.query(

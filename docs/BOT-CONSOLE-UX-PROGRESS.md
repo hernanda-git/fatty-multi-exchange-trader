@@ -33,6 +33,36 @@
 - Bundle: `index-HFppenib.js`; web image:
   `sha256:c128aad65d03ed4b2814f84d48060b9240e095ae88a3fcd445e4209519b07511`.
 
+### Direct runtime configuration save — 2026-10-15
+
+- Replaced the primary draft dialog with a prefilled **Trading & signal settings**
+  form. Only edited fields are submitted; version and audit reason are supplied
+  by the form. Runtime-change owner confirmation remains inline.
+- Consumer environment evidence is exposed at `/config` as `consumers`; unknown
+  fields remain blank instead of adopting invented effective values.
+- Frontend production build passed (`index-Cr8CyYIZ.js`). Isolated browser
+  exercised successful save/readback, fixed-USDT mode, missing-version disable,
+  unknown-value blank inputs, accepted-request recovery after HTTP 503, recovery
+  across reload, and save blocking until reconciliation resolves.
+- At 390px the form fits its container (358px width, 356px scroll width).
+  The existing shared header overflows the viewport; whole-page mobile layout
+  is not claimed fixed.
+- Browser evidence uses synthetic API responses, not production execution.
+  Production sign-in renders through the private tunnel; authenticated production
+  save/apply remains unexercised. No LIVE order or production configuration
+  mutation was submitted during this work.
+- Backend verification: 168 console operation/read/auth/store tests passed.
+  Ruff passed for operations, runner, store and operation tests; `reads.py` retains
+  two pre-existing line-length findings outside the changed configuration response.
+- Actual adapter/executor smoke with in-memory DB and venue/Compose adapters
+  observed reviewed settings, immutable revision 1, environment readback and restored
+  service posture. Separate scenarios refused a stale revision and a racing entry
+  without writing an override, retained monitoring, and refused mismatched readback.
+  Regression coverage also preserves intentionally stopped consumers.
+- New code is locally verified, not deployed. Real PostgreSQL/Compose application
+  was not exercised: the local Docker daemon is unavailable. No claim of production
+  save/apply success follows from these adapter-based checks.
+
 ## 2. Status and evidence rules
 
 Use separate fields for package work state and proof level. Do not turn a checkmark into a deployment claim.

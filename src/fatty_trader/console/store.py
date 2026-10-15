@@ -394,7 +394,7 @@ class ConsoleStore:
                 "baseline.",
             )
         )
-        financial = financial or job["action"] in {"backup.restore", "config.apply"}
+        financial = financial or job["action"] in {"backup.restore", "config.save", "config.apply"}
         resources = (
             {prefix + ":access"} if identity else {prefix + ":account"} if financial else set()
         )

@@ -43,9 +43,9 @@ versions rather than adopting an arbitrary symbol as bot-owned.
 
 ### Automated signal sizing defaults
 
-In **Settings → Configuration**, use **Default margin & leverage**. The form loads
-the worker's effective values and the current configuration version; it does not
-pretend a draft is already effective.
+In **Settings → Configuration**, use **Trading & signal settings**. Fields show
+observed consumer settings; an unobserved value is left blank rather than guessed.
+Only edited fields are submitted, and the current revision is supplied automatically.
 
 - **Percentage** uses total USDT equity, then limits margin to available funds and
   the existing **1 USDT per-trade safety cap**. For example, 20% of 3 USDT equity
@@ -57,12 +57,18 @@ pretend a draft is already effective.
 - These defaults affect new automated signals only. Manual order-ticket defaults
   and existing positions are unchanged.
 
-**Review trading defaults draft** opens the existing reviewed command flow with
-the current `base_version`. Save, then separately review/apply the draft. Apply
-persists a private Compose override, recreates the affected dispatcher and
-console-worker services, and checks their container environments. Inspect the job
-and host effective-settings readback before treating the change as active. A
-shared-password session cannot satisfy a separate approver requirement.
+Select **Save**, review the inline runtime changes and safety gates, complete the
+required owner confirmation and approval reference, then select **Save** again.
+There is no separate draft/apply command. The durable `config.save` job performs
+the safe service transition, persists the private Compose override, and verifies
+the affected consumer environments. Unsafe or nonflat inventory refuses disruptive
+application; the existing safety cap and authorization policy remain enforced.
+
+Queued does not mean active: wait for **Saved and effective**. An interrupted
+submission retains its idempotency key; **Retry Save** recovers the same operation.
+If status observation fails, use **Check save status**, not a new save. A pending
+reconciliation is not confirmed success. Credential replacement remains a separate
+advanced encrypted staging/draft operation.
 
 ## Preview, authorize, queue, observe
 

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -221,8 +222,8 @@ def test_automated_sizing_config_persists_recreates_and_reads_back_both_consumer
 
     def compose(*args, **kwargs):
         compose_calls.append((args, kwargs))
-        if args[:2] == ("ps", "-q"):
-            return containers[args[2]]
+        if args[0] == "ps" and "-q" in args:
+            return containers[args[-1]]
         return ""
 
     def inspect(argv, **kwargs):
@@ -531,3 +532,144 @@ def test_report_redacts_before_payload_and_digest_are_persisted():
     assert "private-value" not in result["content"]
     assert "hidden" not in result["content"]
     assert result["sha256"] == hashlib.sha256(result["content"].encode()).hexdigest()
+
+
+class ConfigSaveStore(Store):
+    def __init__(self):
+        super().__init__()
+        self.version = 0
+        self.revision = None
+
+    @contextmanager
+    def connection(self):
+        yield self
+
+    def cursor(self, connection):
+        return self
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def fetchone(self):
+        return {"version": self.version}
+
+    def effect_authority(self, cursor, job):
+        pass
+
+    def execute(self, sql, params=()):
+        super().execute(sql, params)
+        if sql.startswith("INSERT INTO console_config_versions"):
+            self.version = params[1]
+            self.revision = params[0]
+
+    def one(self, sql, params=()):
+        if "AS active" in sql:
+            return {"active": False}
+        return {"version": self.version}
+
+
+def config_save_scenario(tmp_path, monkeypatch, *, race=False, mismatch=False):
+    store = ConfigSaveStore()
+    host, _ = runner(tmp_path, store)
+    running = {"dispatcher-bitget", "console-worker", "monitor-bitget", "notification-sender"}
+    before = running.copy()
+    events = []
+    settings = {"BITGET_DEFAULT_LEVERAGE": 15}
+    job = {
+        "id": str(uuid4()), "action": "config.save", "actor_id": "owner",
+        "scope": host.scope, "arguments": {"base_version": 0, "settings": settings},
+    }
+    monkeypatch.setattr(host, "_running", lambda: running.copy())
+    monkeypatch.setattr(host, "_effect_guard", lambda job: None)
+    monkeypatch.setattr(host, "_policy", lambda: None)
+
+    def flat():
+        events.append(("flat", sorted(running)))
+        if race and "dispatcher-bitget" not in running:
+            raise OperationRefused("new position appeared")
+        return {}
+
+    def compose(*args, **kwargs):
+        events.append(args)
+        if args[0] == "stop":
+            running.difference_update(args[1:])
+        elif args[0] == "start":
+            running.update(args[1:])
+        elif args[0] == "ps" and "-q" in args:
+            service = args[-1]
+            return ("1" if service == "console-worker" else "2") * 64
+        return ""
+
+    def inspect(argv, **kwargs):
+        value = "14" if mismatch else "15"
+        return json.dumps([
+            "BITGET_DEFAULT_LEVERAGE=" + value,
+            "TRADER_MODE=LIVE", "BITGET_MODE=LIVE", "BITGET_EXECUTION_ENABLED=1",
+        ])
+
+    def healthy(services):
+        events.append(("healthy", *services))
+        assert set(services).issubset(running)
+        return {}
+
+    monkeypatch.setattr(host, "_flat", flat)
+    monkeypatch.setattr(host, "_compose", compose)
+    monkeypatch.setattr(host, "_run", inspect)
+    monkeypatch.setattr(host, "_wait_services", healthy)
+    return host, job, running, before, events
+
+
+def test_direct_config_save_applies_and_restores_protection_before_entries(tmp_path, monkeypatch):
+    host, job, running, before, events = config_save_scenario(tmp_path, monkeypatch)
+    result = host._save_config(job)
+    assert result["effective"] is True
+    assert result["config_version"] == 1
+    assert running == before
+    starts = [event for event in events if event[0] == "start"]
+    assert starts[0] == ("start", "monitor-bitget")
+    assert "dispatcher-bitget" in starts[1]
+    monitor_health = events.index(("healthy", "monitor-bitget"))
+    assert monitor_health < events.index(starts[1])
+    persisted = json.loads(host.override.read_text())["services"]
+    assert persisted["dispatcher-bitget"]["environment"]["BITGET_DEFAULT_LEVERAGE"] == "15"
+    assert host.store.snapshots["host_effective_config"]["data"]["matches_desired"] is True
+
+
+def test_direct_config_save_racing_entry_never_stops_protection(tmp_path, monkeypatch):
+    host, job, running, _, events = config_save_scenario(tmp_path, monkeypatch, race=True)
+    with pytest.raises(OperationRefused, match="new position"):
+        host._save_config(job)
+    assert "monitor-bitget" in running
+    assert not host.override.exists()
+    assert host.store.version == 0
+    assert not any(event[0] == "stop" and "monitor-bitget" in event for event in events)
+
+
+def test_direct_config_save_stale_revision_has_no_service_effect(tmp_path, monkeypatch):
+    host, job, running, before, events = config_save_scenario(tmp_path, monkeypatch)
+    host.store.version = 1
+    with pytest.raises(OperationRefused, match="version changed"):
+        host._save_config(job)
+    assert running == before
+    assert events == []
+    assert not host.override.exists()
+
+
+def test_direct_config_save_mismatched_readback_is_not_effective(tmp_path, monkeypatch):
+    host, job, _, _, _ = config_save_scenario(tmp_path, monkeypatch, mismatch=True)
+    with pytest.raises(OperationRefused, match="readback differs"):
+        host._save_config(job)
+    assert not any("state='effective'" in sql for sql, _ in host.store.statements)
+
+
+def test_direct_config_save_preserves_stopped_consumers(tmp_path, monkeypatch):
+    host, job, running, _, events = config_save_scenario(tmp_path, monkeypatch)
+    running.remove("dispatcher-bitget")
+    result = host._save_config(job)
+    assert result["effective"] is True
+    assert result["previously_stopped_consumers"] == ["dispatcher-bitget"]
+    assert "dispatcher-bitget" not in running
+    assert not any(event[0] == "start" and "dispatcher-bitget" in event for event in events)

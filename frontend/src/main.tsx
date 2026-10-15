@@ -653,6 +653,7 @@ function App() {
                   readSection={currentRoute.readSection}
                   resourceId={currentRoute.resourceId}
                   principal={principal}
+                  capabilities={caps}
                   onOpenAction={handleOpenAction}
                   reload={reload}
                   render={(v) => <Value value={v} />}

@@ -831,6 +831,7 @@ class ReadService:
                 "requested": self._table("config/history", resource, filters, limit, cursor),
                 "effective": self._snapshot("effective_config"),
                 "host": self._snapshot("host_effective_config"),
+                "consumers": self._snapshot("services"),
                 "requested_is_effective": None,
             }
         if section == "jobs/steps":
