@@ -215,3 +215,15 @@ async def test_permanent_and_invalid_payloads_fail_without_retry() -> None:
 async def test_idle_when_nothing_is_due() -> None:
     worker = WebPushDeliveryWorker(FakeStore([]), Sender(), max_attempts=5, retry_seconds=60)
     assert await worker.run_once("worker", 30) == "idle"
+
+
+def test_push_migrations_are_additive_and_grant_the_console_role() -> None:
+    from fatty_trader.storage.migrations import MIGRATIONS
+
+    versions = dict(MIGRATIONS)
+    schema_sql = " ".join(versions[28].split())
+    assert "CREATE TABLE IF NOT EXISTS web_push_subscriptions" in schema_sql
+    assert "CREATE TABLE IF NOT EXISTS web_push_deliveries" in schema_sql
+    grants = " ".join(versions[29].split())
+    assert "GRANT SELECT, INSERT, UPDATE ON web_push_subscriptions TO fatty_console_web" in grants
+    assert "GRANT INSERT ON notifications_outbox TO fatty_console_web" in grants

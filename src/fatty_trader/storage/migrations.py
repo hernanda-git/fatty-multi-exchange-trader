@@ -399,6 +399,13 @@ MIGRATIONS: Final = [
         """,
     ),
     (28, WEB_PUSH_SCHEMA_SQL),
+    (
+        29,
+        """
+        GRANT SELECT, INSERT, UPDATE ON web_push_subscriptions TO fatty_console_web;
+        GRANT INSERT ON notifications_outbox TO fatty_console_web;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
