@@ -83,11 +83,19 @@ async def run(environ: Mapping[str, str]) -> None:
     last_prune = time.monotonic()
     while True:
         state = await worker.run_once("notification-sender", lease_seconds) if worker else "idle"
-        push_state = (
-            await push_worker.run_once("notification-sender", lease_seconds)
-            if push_worker
-            else "idle"
-        )
+        if push_worker is not None:
+            try:
+                push_state = await push_worker.run_once("notification-sender", lease_seconds)
+            except Exception as exc:
+                # A push-ledger or transport fault must never suppress the
+                # independent Telegram lane; surface it loudly in the log.
+                push_state = "error"
+                print(
+                    f"service=notification-sender push_error={type(exc).__name__}",
+                    flush=True,
+                )
+        else:
+            push_state = "idle"
         if state in {"idle", "sent"} and push_state in {"idle", "delivered"}:
             worker_progress()
         print(
