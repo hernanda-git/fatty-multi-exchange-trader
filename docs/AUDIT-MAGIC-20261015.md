@@ -1,4 +1,8 @@
-# MAGIC signal audit and configuration-console deployment — 2026-10-15
+# MAGIC signal audit, remediation and production deployment — 2026-10-15
+
+**Remediation status:** code release `4f76c49` is deployed and runtime verification
+passed. The incident findings below describe the pre-remediation failure;
+section 10 and `BOT-CONSOLE-UX-PROGRESS.md` record the correction and release proof.
 
 ## Verdict
 
@@ -105,6 +109,10 @@ It does not include the full exchange response.
 ## 4. Confirmed validation defect
 
 Code path:
+
+These source paths/line numbers describe the
+[pre-remediation revision `5ec53c8`](https://github.com/hernanda-git/fatty-multi-exchange-trader/tree/5ec53c8/src/fatty_trader),
+not the corrected implementation:
 
 1. `BitgetDispatcher.run_once()` in
    `src/fatty_trader/execution/bitget_dispatcher.py:116-184` claims the dispatch,
@@ -291,6 +299,18 @@ test-double failure. The ambiguous-path canary release was corrected and focused
 checks passed; obsolete source-text assertions were removed rather than repinned.
 No claim that the complete cross-platform suite passes is made.
 
-Production activation and release identity are recorded in
-`BOT-CONSOLE-UX-PROGRESS.md`. The historical MAGIC dispatch is not replayed by
-this remediation; source freshness, edit vetoes and all trading risk gates remain.
+Code release **4f76c49 is deployed**, with migration 27 applied at
+**2026-10-15T14:41:22.996112Z**. The complete runtime verifier passed policy,
+health, ledger readiness, source lineage and read-only provider probes.
+The deployed MAGIC smoke reached the account-read boundary with
+`target_validated`; no order or account mutation was used for proof.
+
+Actual web-role signal/dispatch readbacks returned the new related-record
+projections without warnings. The historical MAGIC dispatch still has state
+`REJECTED`, attempt count `1`, zero linked intents/reservations/fills, and its
+original reason/evidence unchanged. All application containers are healthy and
+the host operations worker is active.
+
+See `BOT-CONSOLE-UX-PROGRESS.md` for immutable image identities and rollout receipts.
+This remediation does not replay the historical signal; source freshness, edit
+vetoes and all trading risk gates remain enforced.

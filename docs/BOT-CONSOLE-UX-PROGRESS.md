@@ -97,6 +97,27 @@
   unchanged. Release bundle: `index-DZ3lM1Vx.js`.
 - Full Windows unit sweep was not green (1,991 passed, 107 failed, 2 skipped);
   details and limits are recorded in [the audit](AUDIT-MAGIC-20261015.md).
+- Deployed code release: `4f76c49`. Migration 27 applied at
+  `2026-10-15T14:41:22.996112Z`; all nine application containers plus PostgreSQL
+  are healthy, and the reinstalled host operations worker is active.
+- Entry-capable workers were stopped before a fresh authenticated flat proof
+  across USDT/USDC/COIN futures and all four pending-order families. Monitoring
+  was upgraded and healthy before entry workers resumed. No latches were cleared.
+- `scripts/verify_bitget_runtime.sh` passed: production policy, complete health,
+  ledger readiness, all-container source lineage and authenticated read-only API
+  probe. Runtime source digest:
+  `ac8335d926eca952c06e395a795bcf61da1ef19d462e582c580535a0311b229e`.
+- Deployed dispatcher MAGIC smoke passed against the live 834-row catalog and
+  stopped deliberately at account-read entry. Actual web-role signal/dispatch
+  projections returned their linked trace with no warnings.
+- Historical MAGIC remains `REJECTED`, attempts `1`, zero linked intents,
+  reservations and fills; its old diagnostic gaps were not fabricated. Public
+  sign-in and `index-DZ3lM1Vx.js` were verified; authenticated browser detail was
+  not exercised without the owner password.
+- Web image digest:
+  `sha256:39dcfb523d3f73a700ac6e1991188830f24764af9829cbb8ed62f4f000e67323`;
+  dispatcher image:
+  `sha256:bd762f30786a54647a29987cfbebd6557d282afc14d956989ee0941d5de3302c`.
 
 ## 2. Status and evidence rules
 
