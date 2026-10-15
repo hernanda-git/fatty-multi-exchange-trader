@@ -4,15 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from inspect import isawaitable
+from time import monotonic
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal, InstrumentSpec, VenueRiskConfig
 from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
-from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
+from fatty_trader.execution.bitget_dispatch_repository import (
+    BitgetDispatch,
+    dispatch_evidence,
+    sanitize_audit_evidence,
+)
 from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.entry_routing import EntryRoute, LimitEntryContext, route_entry
 from fatty_trader.intake.freshness import SourceFreshnessExpired
@@ -28,6 +34,7 @@ class DispatchRepository(Protocol):
         expected_state: str,
         target_state: str,
         reason: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> None: ...
 
     def alert(self, dispatch_id: UUID, reason: str) -> None: ...
@@ -117,27 +124,68 @@ class BitgetDispatcher:
         dispatch = self._repository.claim(worker_id, lease_seconds)
         if dispatch is None:
             return "idle"
-        dispatch = replace(dispatch, pair_token=_bitget_symbol(dispatch.pair_token))
+        audit = dispatch_evidence(dispatch)
+        audit["source_symbol"] = dispatch.pair_token
+        stage = "gates"
+        stage_started = monotonic()
+        provider_effect = "not_submitted"
+
+        def transition(expected: str, target: str, reason: str | None = None) -> None:
+            self._repository.transition(
+                dispatch.id,
+                expected_state=expected,
+                target_state=target,
+                reason=reason,
+                evidence={
+                    **audit,
+                    "stage": stage,
+                    "outcome": target.lower(),
+                    "reason_code": reason,
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "elapsed_ms": round((monotonic() - stage_started) * 1000, 3),
+                    "provider_effect": provider_effect,
+                    "provider_effect_scope": "entry_submission",
+                },
+            )
+
+        def reject(current: str, reason: str, exc: Exception | None = None) -> None:
+            nonlocal stage
+            if exc is not None:
+                diagnostics = sanitize_audit_evidence(getattr(exc, "audit_evidence", {}))
+                audit.update(_exception_evidence(exc))
+                if isinstance(diagnostics.get("stage"), str):
+                    stage = diagnostics["stage"]
+            transition(current, "REJECTED", reason)
+            if reason != "cutover-gated":
+                self._repository.alert(dispatch.id, reason)
+
+        try:
+            dispatch = replace(dispatch, pair_token=_bitget_symbol(dispatch.pair_token))
+            audit["symbol"] = dispatch.pair_token
+        except ValueError as exc:
+            stage = "canonical_validation"
+            reject("QUEUED", "invalid-dispatch-symbol", exc)
+            return "rejected"
         if self._kill_switch is not None and self._kill_switch.is_active("bitget"):
-            self._reject(dispatch, "kill-switch-latched")
+            reject("QUEUED", "kill-switch-latched")
             return "kill-switch-latched"
-        # A dead protection stream blocks entries on its own scope. It is kept
-        # separate from the venue scope so that latching it cannot disable the
-        # bot-managed fallback TP/SL path in bitget_monitor.
+        # Keep stream admission separate from the venue fallback-protection scope.
         if self._kill_switch is not None and self._kill_switch.is_active(PROTECTION_STREAM_SCOPE):
-            self._reject(dispatch, "protection-stream-latched")
+            reject("QUEUED", "protection-stream-latched")
             return "protection-stream-latched"
         if not self._gate.execution_enabled:
-            self._reject(dispatch, "cutover-gated")
+            reject("QUEUED", "cutover-gated")
             return "cutover-gated"
         if (
             self._gate.canary_max_orders > 0
             and self._gate.canary_symbol is not None
             and dispatch.pair_token != self._gate.canary_symbol
         ):
-            self._reject(dispatch, "canary-symbol-mismatch")
+            reject("QUEUED", "canary-symbol-mismatch")
             return "rejected"
         if self._protection_admission is not None:
+            stage = "protection_admission"
+            stage_started = monotonic()
             try:
                 admission = self._protection_admission(dispatch.pair_token)
                 if isawaitable(admission):
@@ -146,11 +194,13 @@ class BitgetDispatcher:
                 if not isinstance(allowed, bool) or not isinstance(reason, str):
                     raise ValueError("protection admission response is invalid")
             except Exception as exc:
-                self._reject(dispatch, f"protection-admission-error:{type(exc).__name__}")
+                reject("QUEUED", f"protection-admission-error:{type(exc).__name__}", exc)
                 return "rejected"
             if not allowed:
-                self._reject(dispatch, reason.strip() or "protection-admission-denied")
+                reject("QUEUED", _safe_reason_code(reason, "protection-admission-denied"))
                 return "rejected"
+        stage = "canonical_validation"
+        stage_started = monotonic()
         try:
             CanonicalSignal(
                 source_message_id=1,
@@ -162,14 +212,34 @@ class BitgetDispatcher:
                 take_profits=dispatch.take_profits,
             )
         except ValueError as exc:
-            self._reject(dispatch, _reason(exc))
+            reject("QUEUED", "invalid-canonical-signal", exc)
             return "rejected"
-        self._transition(dispatch, "QUEUED", "PREFLIGHT")
+        transition("QUEUED", "PREFLIGHT")
+        stage = "preflight"
+        stage_started = monotonic()
+        catalog_observation: dict[str, Any] = {}
         try:
-            preflight = await _resolve_preflight(self._preflight, dispatch)
+            from fatty_trader.exchanges.bitget.metadata import catalog_audit_context
+
+            with catalog_audit_context(catalog_observation):
+                preflight = await _resolve_preflight(self._preflight, dispatch)
             if isinstance(preflight, BitgetAdmission):
                 submission = preflight.submission
                 plan_quantity = submission.quantity
+                audit["sizing"] = {
+                    "quantity": str(submission.quantity),
+                    "effective_leverage": submission.effective_leverage,
+                    "planned_margin_usdt": str(submission.planned_margin_usdt),
+                    "planned_notional_usdt": str(submission.planned_notional_usdt),
+                    "margin_mode": submission.margin_mode,
+                    "balance_snapshot_id": str(submission.balance_snapshot_id),
+                    "margin_reservation_id": str(submission.margin_reservation_id),
+                    "observed_at": submission.observed_at.astimezone(UTC).isoformat(),
+                    "planned_stop_loss": str(submission.planned_stop_loss),
+                    "planned_take_profits": [str(p) for p in submission.planned_take_profits],
+                }
+                if submission.entry_route is not None:
+                    audit["routing"] = _route_evidence(submission.entry_route)
             else:
                 spec, risk = preflight
                 plan = minimum_safe_plan(
@@ -177,13 +247,33 @@ class BitgetDispatcher:
                 )
                 submission = None
                 plan_quantity = plan.quantity
+                audit["sizing"] = {
+                    "quantity": str(plan_quantity),
+                    "effective_leverage": plan.effective_leverage,
+                    "planned_margin_usdt": str(plan.effective_margin_usdt),
+                    "planned_notional_usdt": str(plan.notional_usdt),
+                    "required_min_notional_usdt": str(plan.required_min_notional_usdt),
+                    "qty_step": str(spec.qty_step),
+                    "min_qty": str(spec.min_qty),
+                    "min_notional": str(spec.min_notional),
+                }
         except SourceFreshnessExpired:
+            # The source guard commits its own EXPIRED transition and evidence.
             return "expired"
         except Exception as exc:
-            self._reject_from(dispatch, "PREFLIGHT", _reason(exc))
+            audit["contract_catalog"] = sanitize_audit_evidence(
+                catalog_observation.get("contract_catalog", {})
+            )
+            reject("PREFLIGHT", _reason(exc), exc)
             return "rejected"
+        audit["contract_catalog"] = sanitize_audit_evidence(
+            catalog_observation.get("contract_catalog", {})
+        )
+        audit["preflight_elapsed_ms"] = round((monotonic() - stage_started) * 1000, 3)
         route: EntryRoute | None = None
         if self._entry_routing is not None:
+            stage = "entry_routing"
+            stage_started = monotonic()
             try:
                 snapshot = self._entry_routing(dispatch.pair_token)
                 if isawaitable(snapshot):
@@ -199,47 +289,62 @@ class BitgetDispatcher:
                     near_limit_threshold_pct=snapshot.near_limit_threshold_pct,
                     limit_context=snapshot.limit_context,
                 )
+                audit["routing"] = {
+                    **_route_evidence(route),
+                    "market_price": str(snapshot.market_price),
+                    "signal_entry": str(dispatch.entry_price),
+                    "late_threshold_pct": str(snapshot.late_threshold_pct),
+                    "near_limit_threshold_pct": (
+                        str(snapshot.near_limit_threshold_pct)
+                        if snapshot.near_limit_threshold_pct is not None else None
+                    ),
+                }
             except Exception as exc:
-                self._release_admission(submission)
-                self._reject_from(
-                    dispatch, "PREFLIGHT", f"entry-routing-error:{type(exc).__name__}"
-                )
+                self._release_admission(dispatch, submission)
+                reject("PREFLIGHT", f"entry-routing-error:{type(exc).__name__}", exc)
                 return "rejected"
-        self._transition(dispatch, "PREFLIGHT", "SIZED")
-        self._transition(dispatch, "SIZED", "VALIDATED")
+        transition("PREFLIGHT", "SIZED")
+        stage = "execution_admission"
+        stage_started = monotonic()
+        transition("SIZED", "VALIDATED")
         if self._execution is None:
-            self._release_admission(submission)
-            self._reject_from(dispatch, "VALIDATED", "missing-execution-client")
+            self._release_admission(dispatch, submission)
+            reject("VALIDATED", "missing-execution-client")
             return "rejected"
         if route is not None and not callable(getattr(self._execution, "submit_entry_route", None)):
-            self._release_admission(submission)
-            self._reject_from(dispatch, "VALIDATED", "entry-routing-unsupported")
+            self._release_admission(dispatch, submission)
+            reject("VALIDATED", "entry-routing-unsupported")
             return "rejected"
         if self._gate.canary_max_orders > 0 and not self._repository.reserve_canary_entry(
             dispatch.id, "bitget", self._gate.canary_max_orders
         ):
-            self._release_admission(submission)
-            self._reject_from(dispatch, "VALIDATED", "canary-order-cap-reached")
+            self._release_admission(dispatch, submission)
+            reject("VALIDATED", "canary-order-cap-reached")
             return "rejected"
-        self._transition(dispatch, "VALIDATED", "SUBMITTING")
+        stage = "provider_submission"
+        stage_started = monotonic()
+        # Persist the boundary before invoking code that may POST. It is not
+        # proof a POST occurred; subsequent failures cannot prove none occurred.
+        provider_effect = "submission_may_have_occurred"
+        transition("VALIDATED", "SUBMITTING")
         try:
             if route is None:
                 if submission is None:
-                    # Compatibility only: the production service always returns BitgetAdmission.
                     status = await cast(Any, self._execution).submit_entry(dispatch, plan_quantity)
                 else:
                     status = await self._execution.submit_entry(dispatch, submission)
             else:
                 routed_submit = cast(RoutedEntryExecution, self._execution).submit_entry_route
                 status = await routed_submit(dispatch, plan_quantity, route)
-        except TimeoutError:
-            self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
+        except TimeoutError as exc:
+            audit.update(_exception_evidence(exc))
+            transition("SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
         except Exception as exc:
+            audit.update(_exception_evidence(exc))
             reason = f"provider-readback-error:{type(exc).__name__}"
-            self._transition(dispatch, "SUBMITTING", "UNKNOWN", reason)
+            transition("SUBMITTING", "UNKNOWN", reason)
             self._repository.alert(dispatch.id, reason)
-            self._repository.release_canary_entry(dispatch.id, "bitget")
             return "unknown"
         if status == "EXPIRED":
             return "expired"
@@ -253,10 +358,12 @@ class BitgetDispatcher:
             "REJECTED": "REJECTED",
         }.get(status)
         if target is None:
-            self._transition(dispatch, "SUBMITTING", "UNKNOWN", "provider-unknown")
+            audit["provider_status"] = "unrecognized"
+            transition("SUBMITTING", "UNKNOWN", "provider-unknown")
             return "unknown"
-        self._transition(
-            dispatch,
+        provider_effect = "provider_response_observed"
+        audit["provider_status"] = status
+        transition(
             "SUBMITTING",
             target,
             (
@@ -274,7 +381,9 @@ class BitgetDispatcher:
             "REJECTED": "rejected",
         }[target]
 
-    def _release_admission(self, submission: BitgetEntrySubmission | None) -> None:
+    def _release_admission(
+        self, dispatch: BitgetDispatch, submission: BitgetEntrySubmission | None
+    ) -> None:
         """Return margin only for a local rejection proven to precede provider POST."""
         if submission is None or self._execution is None:
             return
@@ -286,28 +395,8 @@ class BitgetDispatcher:
         except Exception as exc:
             # A release failure must not make a rejected pre-POST admission spendable.
             self._repository.alert(
-                submission.margin_reservation_id, f"margin-release-error:{type(exc).__name__}"
+                dispatch.id, f"margin-release-error:{type(exc).__name__}"
             )
-
-    def _transition(
-        self, dispatch: BitgetDispatch, expected: str, target: str, reason: str | None = None
-    ) -> None:
-        self._repository.transition(
-            dispatch.id, expected_state=expected, target_state=target, reason=reason
-        )
-
-    def _reject(self, dispatch: BitgetDispatch, reason: str) -> None:
-        self._repository.transition(
-            dispatch.id, expected_state="QUEUED", target_state="REJECTED", reason=reason
-        )
-        if reason != "cutover-gated":
-            self._repository.alert(dispatch.id, reason)
-
-    def _reject_from(self, dispatch: BitgetDispatch, current: str, reason: str) -> None:
-        self._repository.transition(
-            dispatch.id, expected_state=current, target_state="REJECTED", reason=reason
-        )
-        self._repository.alert(dispatch.id, reason)
 
 
 async def _resolve_preflight(
@@ -335,8 +424,92 @@ def _bitget_symbol(pair_token: str) -> str:
     )
 
 
+def _safe_reason_code(value: str, fallback: str) -> str:
+    if 0 < len(value) <= 96 and all(c.isalnum() or c in "-_:" for c in value):
+        return value
+    return fallback
+
+
 def _reason(exc: Exception) -> str:
-    message = str(exc)
-    if "take_profits" in message:
-        return "missing-take-profits"
-    return message or "invalid-dispatch"
+    diagnostics = sanitize_audit_evidence(getattr(exc, "audit_evidence", {}))
+    code = diagnostics.get("code")
+    if isinstance(code, str):
+        return _safe_reason_code(code, "preflight-error")
+    # Match only known local invariant messages. Never copy arbitrary provider
+    # exception text into persisted reason, notifications, or logs.
+    known = {
+        "required margin exceeds auto margin cap": "auto-margin-cap-exceeded",
+        "required margin exceeds safe free-margin headroom": "free-margin-headroom-exceeded",
+        "required notional exceeds position cap": "position-notional-cap-exceeded",
+        "rounded quantity exceeds position cap": "rounded-position-cap-exceeded",
+        "Bitget account margin mode must be isolated": "margin-mode-not-isolated",
+        "Bitget account has unsupported position mode": "unsupported-position-mode",
+        "Bitget isolated long/short leverage must match": "isolated-leverage-mismatch",
+        "Bitget symbol has an active position": "active-symbol-position",
+        "Bitget clock skew exceeds safety limit": "clock-skew-exceeded",
+        "Bitget position-lever response must be a non-empty list": "mmr-tiers-unavailable",
+        "Bitget client cannot read position-lever MMR tiers": "mmr-reader-unavailable",
+        "Bitget ticker response must be an object": "market-price-response-invalid",
+        "Bitget ticker response has invalid lastPr": "market-price-invalid",
+        "Bitget ticker price must be finite and positive": "market-price-invalid",
+    }
+    if exc.args and isinstance(exc.args[0], str) and exc.args[0] in known:
+        return known[exc.args[0]]
+    if exc.args and isinstance(exc.args[0], str):
+        message = exc.args[0]
+        sizing_prefix = "Bitget live sizing rejected: "
+        if message.startswith(sizing_prefix):
+            detail = message[len(sizing_prefix):]
+            for prefix, reason in (
+                ("position-cap:", "position-cap-exceeded"),
+                ("sl-guard:", "liquidation-stop-guard-refused"),
+                ("min-notional", "minimum-notional-unmeetable"),
+                ("no live leverage", "live-leverage-unavailable"),
+                ("no stop-loss", "stop-loss-unavailable"),
+                ("split-", "split-sizing-refused"),
+            ):
+                if detail.startswith(prefix):
+                    return reason
+            return "live-sizing-refused"
+        admission_prefix = "Bitget margin admission rejected: "
+        if message.startswith(admission_prefix):
+            detail = message[len(admission_prefix):]
+            allowed = {
+                "unsupported-exchange", "invalid-balance-snapshot", "invalid-balance-headroom",
+                "invalid-margin-cap", "margin-cap-exceeded", "invalid-reservation-ttl",
+                "missing-position-admission-evidence", "invalid-snapshot-age-policy",
+                "stale-balance-snapshot", "future-balance-snapshot", "legacy-unowned-reservation",
+                "symbol-already-owned", "position-cap-exceeded", "insufficient-reserved-headroom",
+            }
+            return detail if detail in allowed else "margin-admission-refused"
+    if isinstance(exc, KeyError):
+        return "contract-not-found"
+    if isinstance(exc, ValueError):
+        return "preflight-validation-failed"
+    if isinstance(exc, TimeoutError):
+        return "preflight-timeout"
+    return "preflight-error"
+
+
+def _route_evidence(route: EntryRoute) -> dict[str, Any]:
+    return {
+        "mode": str(route.mode),
+        "market_quantity": str(route.market_quantity),
+        "limit_quantity": str(route.limit_quantity),
+        "limit_price": str(route.limit_price) if route.limit_price is not None else None,
+        "reason": route.reason,
+    }
+
+
+def _exception_evidence(exc: Exception) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "exception_type": type(exc).__name__,
+        "audit_evidence": sanitize_audit_evidence(getattr(exc, "audit_evidence", {})),
+    }
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.isascii() and code.isdecimal() and len(code) <= 16:
+        evidence["provider_code"] = code
+    status = getattr(exc, "http_status", None)
+    if type(status) is int and 100 <= status <= 599:
+        evidence["http_status"] = status
+    return evidence

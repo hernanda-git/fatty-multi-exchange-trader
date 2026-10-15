@@ -386,6 +386,17 @@ MIGRATIONS: Final = [
         """,
     ),
     (26, CONSOLE_SCHEMA_SQL),
+    (
+        27,
+        """
+        ALTER TABLE dispatch_transitions
+            ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '{}'::jsonb;
+        ALTER TABLE telegram_messages ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ;
+        ALTER TABLE telegram_messages ALTER COLUMN ingested_at SET DEFAULT clock_timestamp();
+        ALTER TABLE telegram_messages
+            ADD COLUMN IF NOT EXISTS edit_veto_recorded_at TIMESTAMPTZ;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

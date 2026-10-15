@@ -1249,7 +1249,9 @@ class ReadService:
         linked: dict[str, Any] = {}
         if section == "signals":
             linked["revisions"] = self._query(
-                "SELECT id,revision_hash,received_at,intake_state FROM telegram_messages "
+                "SELECT id,revision_hash,received_at,intake_state,ingestion_origin,"
+                "entry_expires_at,entry_rejection_reason,ingested_at,edit_veto_recorded_at "
+                "FROM telegram_messages "
                 "WHERE channel_id=%s AND message_id=%s ORDER BY received_at,id",
                 (record["channel_id"], record["message_id"]),
                 "signal_revisions",
@@ -1265,6 +1267,22 @@ class ReadService:
                 "WHERE cs.message_id=%s::uuid AND cs.revision=%s ORDER BY d.created_at,d.id",
                 (identifier, record["revision_hash"]),
                 "signal_dispatches",
+            )
+            linked["transitions"] = self._query(
+                "SELECT dt.* FROM dispatch_transitions dt "
+                "JOIN dispatches d ON d.id=dt.dispatch_id "
+                "JOIN canonical_signals cs ON cs.id=d.source_id "
+                "WHERE cs.message_id=%s::uuid AND cs.revision=%s AND d.exchange='bitget' "
+                "ORDER BY dt.created_at,dt.id",
+                (identifier, record["revision_hash"]),
+                "signal_dispatch_transitions",
+            )
+            linked["analysis_notifications"] = self._query(
+                "SELECT id,dedup_key,attempts,created_at,sent_at,failed_at,next_attempt_at,"
+                "payload->>'status' AS analysis_status FROM notifications_outbox "
+                "WHERE dedup_key=%s ORDER BY created_at,id",
+                (f"analysis:{identifier}:{record['revision_hash'].strip()}",),
+                "signal_analysis_notifications",
             )
             linked["management"] = self._query(
                 "SELECT * FROM source_management_updates WHERE source_message_id=%s::uuid "
@@ -1312,8 +1330,25 @@ class ReadService:
                 (identifier,),
                 "dispatch_reservations",
             )
+            linked["fills"] = self._query(
+                "SELECT f.* FROM fills f JOIN live_order_intents i "
+                "ON i.exchange=f.exchange AND i.client_order_id=f.client_order_id "
+                "WHERE i.dispatch_id=%s::uuid ORDER BY f.filled_at,f.id",
+                (identifier,),
+                "dispatch_fills",
+            )
+            linked["notifications"] = self._query(
+                "SELECT id,dedup_key,attempts,created_at,sent_at,failed_at,next_attempt_at,"
+                "payload->>'kind' AS kind,payload->>'reason' AS reason "
+                "FROM notifications_outbox WHERE dedup_key LIKE %s OR dedup_key LIKE %s "
+                "ORDER BY created_at,id",
+                (f"dispatch-transition:{identifier}:%", f"bitget-dispatch:{identifier}:%"),
+                "dispatch_notifications",
+            )
             linked["canonical_signal"] = self._query(
-                "SELECT cs.*,tm.channel_id,tm.message_id AS telegram_message_id,tm.received_at "
+                "SELECT cs.*,tm.channel_id,tm.message_id AS telegram_message_id,tm.received_at,"
+                "tm.revision_hash,tm.ingestion_origin,tm.entry_expires_at,"
+                "tm.entry_rejection_reason,tm.raw_text,tm.ingested_at,tm.edit_veto_recorded_at "
                 "FROM canonical_signals cs JOIN telegram_messages tm ON tm.id=cs.message_id "
                 "WHERE cs.id=%s::uuid",
                 (record["source_id"],),

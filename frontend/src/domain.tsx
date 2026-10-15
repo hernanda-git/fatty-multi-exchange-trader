@@ -863,6 +863,71 @@ export function DomainTable({
 // Domain Detail Card Stack
 // --------------------------------------------------------------------------
 
+function ExecutionTimeline({events}: {events: unknown}) {
+  const rows = Array.isArray(events) ? events.filter(isObjectRecord) : [];
+  return (
+    <section className="card" data-testid="execution-timeline">
+      <div className="card-header">
+        <div><span className="eyebrow">DURABLE EXECUTION TRACE</span><h2>Execution timeline</h2></div>
+      </div>
+      <p className="text-secondary text-sm">
+        Recorded state changes, not inferred trade outcomes. Expand diagnostics for the
+        captured stage, source, worker, market evidence and entry-order submission boundary.
+        This boundary does not describe preflight account preparation.
+      </p>
+      {rows.length === 0 ? (
+        <p className="text-muted">No execution transitions were recorded for this source revision.</p>
+      ) : (
+        <ol style={{paddingLeft: '1.5rem'}}>
+          {rows.map((event, index) => {
+            const evidence = isObjectRecord(event.evidence) ? event.evidence : {};
+            const captured = Object.keys(evidence).length > 0;
+            const rejected = event.to_state === 'REJECTED';
+            const summaryKeys = ['stage', 'attempt', 'worker_id', 'elapsed_ms', 'provider_effect'];
+            const diagnostics = Object.fromEntries(Object.entries(evidence)
+              .filter(([key]) => !summaryKeys.includes(key)));
+            return (
+              <li key={String(event.id ?? index)} style={{marginBottom: '1.25rem', overflowWrap: 'anywhere'}}>
+                <div style={{display: 'flex', gap: '.5rem', flexWrap: 'wrap', alignItems: 'center'}}>
+                  <StatusBadge status={rejected ? 'danger' : 'neutral'}
+                    label={`${String(event.from_state ?? 'Not recorded')} → ${String(event.to_state ?? 'Not recorded')}`} />
+                  <time dateTime={String(event.created_at ?? '')} className="font-mono text-xs">
+                    {String(event.created_at ?? 'Time not recorded')}
+                  </time>
+                </div>
+                {event.dispatch_id != null && (
+                  <p className="text-xs"><Link to={`/signals/dispatches/${encodeURIComponent(String(event.dispatch_id))}`}>
+                    Dispatch {String(event.dispatch_id)}
+                  </Link></p>
+                )}
+                {event.reason != null && <p className={rejected ? 'text-danger' : 'text-secondary'}>{String(event.reason)}</p>}
+                {captured ? (
+                  <>
+                    <dl className="record-grid">
+                      {summaryKeys.filter(key => key in evidence).map(key => (
+                        <div key={key} className="record-field">
+                          <dt>{key === 'provider_effect' ? 'Entry-order boundary' : human(key)}</dt>
+                          <dd><Value value={evidence[key]} /></dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <details>
+                      <summary>Captured diagnostics</summary>
+                      <Value value={diagnostics} />
+                    </details>
+                  </>
+                ) : (
+                  <p className="text-muted text-xs">Structured diagnostics were not captured for this historical transition.</p>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
+  );
+}
+
 export function DomainDetail({
   section,
   data,
@@ -877,6 +942,8 @@ export function DomainDetail({
   }
 
   const record = data as RecordData;
+  const linked = isObjectRecord(record.linked) ? record.linked : null;
+  const executionDetail = section === 'signals' || section === 'dispatches';
 
   if (section.startsWith('account')) {
     return <AccountDetailsView data={record} />;
@@ -892,6 +959,7 @@ export function DomainDetail({
   }
   return (
     <div className="detail-container">
+      {executionDetail && <ExecutionTimeline events={linked?.transitions} />}
       <div className="card">
         <div className="card-header">
           <div>
@@ -905,7 +973,8 @@ export function DomainDetail({
 
         <dl className="record-grid">
           {Object.entries(record)
-            .filter(([k]) => !['linked', 'data', 'evidence', 'items'].includes(k))
+            .filter(([k]) => !['linked', 'data', 'evidence', 'items'].includes(k) &&
+              !(section === 'signals' && k === 'raw_text'))
             .map(([k, v]) => (
               <div key={k} className="record-field">
                 <dt>{human(k)}</dt>
@@ -931,7 +1000,14 @@ export function DomainDetail({
             <span className="eyebrow">LINKED TRACE TIMELINE</span>
             <h2>Related Events &amp; Transitions</h2>
           </div>
-          <Value value={record.linked} />
+          {executionDetail && linked ? Object.entries(linked)
+            .filter(([key]) => key !== 'transitions')
+            .map(([key, value]) => (
+              <details key={key} style={{marginBottom: '1rem', overflowWrap: 'anywhere'}}>
+                <summary>{human(key)}{Array.isArray(value) ? ` (${value.length})` : ''}</summary>
+                <Value value={value} />
+              </details>
+            )) : <Value value={record.linked} />}
         </div>
       )}
     </div>

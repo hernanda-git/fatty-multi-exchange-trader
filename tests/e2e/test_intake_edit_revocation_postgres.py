@@ -247,3 +247,50 @@ def test_same_revision_media_retrieval_does_not_revoke_entry(postgres_schema):
             "SELECT count(*) FROM telegram_messages tm WHERE "
             + SOURCE_ELIGIBLE_SQL.format(alias="tm")
         ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("forward", [False, True])
+def test_ingestion_and_edit_veto_times_survive_duplicate_observation(postgres_schema, forward):
+    factory = setup(postgres_schema)
+    with factory() as connection:
+        before = connection.execute("SELECT clock_timestamp()").fetchone()[0]
+    seed(factory)
+    with factory() as connection:
+        source_id, ingested_at, veto_at = connection.execute(
+            "SELECT id,ingested_at,edit_veto_recorded_at FROM telegram_messages"
+        ).fetchone()
+    assert ingested_at >= before
+    assert veto_at is None
+    edit(factory, forward=forward)
+    with factory() as connection:
+        rows = connection.execute(
+            "SELECT id,ingested_at,edit_veto_recorded_at FROM telegram_messages ORDER BY id"
+        ).fetchall()
+    assert all(row[1] is not None and row[2] is not None for row in rows)
+    original = next(row for row in rows if row[0] == source_id)
+    assert original[1] == ingested_at
+    assert original[2] >= ingested_at
+    seed(factory)
+    with factory() as connection:
+        assert connection.execute(
+            "SELECT id,ingested_at,edit_veto_recorded_at FROM telegram_messages ORDER BY id"
+        ).fetchall() == rows
+
+
+def test_reobserving_legacy_edit_does_not_invent_historical_timestamps(postgres_schema):
+    factory = setup(postgres_schema)
+    seed(factory)
+    edit(factory)
+    with factory() as connection:
+        connection.execute(
+            "UPDATE telegram_messages SET ingested_at=NULL,edit_veto_recorded_at=NULL"
+        )
+        old_ids = [row[0] for row in connection.execute("SELECT id FROM telegram_messages")]
+    seed(factory)
+    edit(factory)
+    with factory() as connection:
+        rows = connection.execute(
+            "SELECT ingested_at,edit_veto_recorded_at FROM telegram_messages WHERE id=ANY(%s)",
+            (old_ids,),
+        ).fetchall()
+    assert rows == [(None, None)] * len(old_ids)

@@ -725,7 +725,11 @@ class TradingHandlers:
         runtime = self._graph()
         args = job["arguments"]
         identifier = UUID(str(job["id"]))
-        dispatch = self._dispatch(identifier, args, _decimal(args["entry_price"]))
+        dispatch = replace(
+            self._dispatch(identifier, args, _decimal(args["entry_price"])),
+            source_id=identifier,
+            source_revision=job["preview_digest"],
+        )
         entry_oid = BitgetDispatchExecution.client_oid(dispatch)
         if reconcile or self._intents.get(entry_oid) is not None:
             await runtime.execution.recover_entry_lifecycles()

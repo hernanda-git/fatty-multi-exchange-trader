@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS dispatch_transitions (
     from_state TEXT NOT NULL,
     to_state TEXT NOT NULL,
     reason TEXT,
+    evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS dispatch_transitions_dispatch_time

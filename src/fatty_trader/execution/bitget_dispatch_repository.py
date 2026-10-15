@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -63,6 +63,9 @@ class BitgetDispatch:
     manual_margin: Decimal | None = None
     manual_leverage: int | None = None
     is_manual: bool = False
+    source_id: UUID | None = None
+    canonical_signal_id: UUID | None = None
+    source_revision: str | None = None
 
 
 _CLAIM_SQL = (
@@ -92,7 +95,8 @@ SET claimed_by = %s,
 FROM next_dispatch n, canonical_signals s, telegram_messages tm
 WHERE d.id = n.id AND s.id = d.source_id AND tm.id = s.message_id
 RETURNING d.id, d.state, d.claimed_by, d.attempts, s.pair_token, s.direction,
-          s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id, tm.received_at;
+          s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id,
+          tm.received_at, d.source_id, s.id, s.revision;
 """
 )
 
@@ -223,7 +227,8 @@ class PostgresBitgetDispatchRepository:
             cursor.execute(
                 """SELECT d.id, d.state, d.claimed_by, d.attempts,
                           s.pair_token, s.direction, s.entry_price, s.stop_loss,
-                          s.take_profits, tm.channel_id, tm.message_id, i.client_order_id
+                          s.take_profits, tm.channel_id, tm.message_id, i.client_order_id,
+                          tm.received_at, d.source_id, s.id, d.revision
                    FROM live_order_intents i
                    JOIN bitget_margin_reservations m ON m.exchange = i.exchange
                        AND m.client_order_id = i.client_order_id
@@ -269,13 +274,16 @@ class PostgresBitgetDispatchRepository:
                                         Decimal(str(manual[3])),
                                         tuple(Decimal(str(p)) for p in targets),
                                         order_type=manual[5],
+                                        is_manual=True,
+                                        source_id=row[13],
+                                        source_revision=row[15],
                                     ),
                                     str(row[11]),
                                 )
                             )
                             continue
                     raise ValueError("recovery canonical source missing")
-                rows.append((_dispatch_from_row(row[:11]), str(row[11])))
+                rows.append((_dispatch_from_row(row[:11] + row[12:]), str(row[11])))
             connection.commit()
             return rows
         except Exception:
@@ -413,7 +421,32 @@ class PostgresBitgetDispatchRepository:
         expected_state: str,
         target_state: str,
         reason: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> None:
+        reason = safe_transition_reason(reason)
+        event_evidence = {
+            "schema_version": 1,
+            "exchange": "bitget",
+            "dispatch_id": str(dispatch_id),
+            "stage": expected_state.lower(),
+            "outcome": target_state.lower(),
+            "observed_at": datetime.now(UTC).isoformat(),
+            "reason_code": reason,
+            "provider_effect_scope": "entry_submission",
+            "provider_effect": (
+                "submission_may_have_occurred"
+                if expected_state not in {"QUEUED", "PREFLIGHT", "SIZED", "VALIDATED"}
+                or target_state == "SUBMITTING" else "not_submitted"
+            ),
+            **(evidence or {}),
+        }
+        event_evidence["dispatch_id"] = str(dispatch_id)
+        event_evidence["exchange"] = "bitget"
+        event_evidence["reason_code"] = reason
+        for field in ("audit_evidence", "contract_catalog"):
+            if field in event_evidence:
+                event_evidence[field] = sanitize_audit_evidence(event_evidence[field])
+        serialized_evidence = json.dumps(event_evidence, allow_nan=False)
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
@@ -430,10 +463,11 @@ class PostgresBitgetDispatchRepository:
                 raise ValueError("dispatch state changed concurrently or does not exist")
             cursor.execute(
                 """
-                INSERT INTO dispatch_transitions (id, dispatch_id, from_state, to_state, reason)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO dispatch_transitions
+                    (id, dispatch_id, from_state, to_state, reason, evidence)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                 """,
-                (uuid4(), dispatch_id, expected_state, target_state, reason),
+                (uuid4(), dispatch_id, expected_state, target_state, reason, serialized_evidence),
             )
             if target_state in {"FILLED", "REJECTED", "CANCELLED", "RECONCILED"}:
                 cursor.execute(
@@ -460,6 +494,7 @@ class PostgresBitgetDispatchRepository:
                             "from_state": expected_state,
                             "to_state": target_state,
                             "reason": reason or "none",
+                            "evidence": event_evidence,
                         }
                     ),
                 ),
@@ -468,8 +503,22 @@ class PostgresBitgetDispatchRepository:
         except Exception:
             connection.rollback()
             raise
+        print(
+            json.dumps(
+                {
+                    "event": "bitget-dispatch-transition",
+                    "from_state": expected_state,
+                    "to_state": target_state,
+                    "reason": reason,
+                    **event_evidence,
+                },
+                allow_nan=False,
+            ),
+            flush=True,
+        )
 
     def alert(self, dispatch_id: UUID, reason: str) -> None:
+        reason = safe_transition_reason(reason) or "invalid-alert-reason"
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
@@ -514,6 +563,9 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
             "source_channel_id": row[9] if len(row) > 9 else None,
             "source_message_id": row[10] if len(row) > 10 else None,
             "source_received_at": row[11] if len(row) > 11 else None,
+            "source_id": row[12] if len(row) > 12 else None,
+            "canonical_signal_id": row[13] if len(row) > 13 else None,
+            "source_revision": row[14] if len(row) > 14 else None,
         }
     )
     raw_take_profits = values["take_profits"] or []
@@ -540,4 +592,87 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
             else None
         ),
         source_received_at=values.get("source_received_at"),
+        source_id=values.get("source_id"),
+        canonical_signal_id=values.get("canonical_signal_id"),
+        source_revision=values.get("source_revision"),
     )
+
+
+def dispatch_evidence(dispatch: BitgetDispatch) -> dict[str, Any]:
+    """Public identifiers only; never include account payloads or source text."""
+    return {
+        "schema_version": 1,
+        "exchange": "bitget",
+        "dispatch_id": str(dispatch.id),
+        "source_id": str(dispatch.source_id) if dispatch.source_id else None,
+        "canonical_signal_id": (
+            str(dispatch.canonical_signal_id) if dispatch.canonical_signal_id else None
+        ),
+        "source_channel_id": dispatch.source_channel_id,
+        "source_message_id": dispatch.source_message_id,
+        "source_revision": dispatch.source_revision,
+        "source_received_at": (
+            dispatch.source_received_at.astimezone(UTC).isoformat()
+            if dispatch.source_received_at else None
+        ),
+        "worker_id": dispatch.claimed_by,
+        "attempt": dispatch.attempts,
+        "symbol": dispatch.pair_token,
+        "direction": dispatch.direction,
+    }
+
+
+_PUBLIC_AUDIT_KEYS = frozenset({
+    "stage", "code", "requested_symbol", "row_count", "invalid_rows", "invalid_row_indexes",
+    "index", "row_index", "field", "field_types", "type", "row_type", "payload_type",
+    "payload_sha256", "response_hash", "public_response_hash", "offending_symbols",
+    "public_symbols", "symbols", "symbol", "symbol_type", "selected_metadata",
+    "target_metadata", "target_field_types", "target_metadata_types", "selected_symbol",
+    "symbolStatus", "minTradeNum", "minTradeUSDT", "volumePlace", "pricePlace",
+    "priceEndStep", "sizeMultiplier", "maxLever", "minLever", "productType",
+    "status", "count", "truncated", "invalid_count", "duplicate_count", "match_count",
+    "hash_encoding", "invalid_row_count", "matching_row_count", "matching_row_indexes",
+    "unicode_symbol_count", "unicode_symbols", "maxOrderQty", "maxMarketOrderQty",
+    "contractValue", "contractSize",
+})
+
+
+def sanitize_audit_evidence(value: object) -> dict[str, Any]:
+    """Copy only bounded public diagnostics; never stringify arbitrary objects."""
+    remaining = 160
+
+    def clean(item: object, depth: int) -> Any:
+        nonlocal remaining
+        if depth > 5 or remaining <= 0:
+            return None
+        remaining -= 1
+        if item is None or isinstance(item, (bool, int)):
+            return item
+        if isinstance(item, str):
+            # Public symbols/type names/codes are tokens, not messages, URLs,
+            # headers, credentials, JSON bodies, or prompts.
+            if len(item) > 128 or not all(c.isalnum() or c in "_-.:" for c in item):
+                return "[redacted]"
+            return item
+        if isinstance(item, dict):
+            result = {}
+            for key, child in item.items():
+                if remaining <= 0 or len(result) >= 24:
+                    break
+                if isinstance(key, str) and key in _PUBLIC_AUDIT_KEYS:
+                    result[key] = clean(child, depth + 1)
+            return result
+        if isinstance(item, (list, tuple)):
+            return [clean(child, depth + 1) for child in item[:12] if remaining > 0]
+        return None
+
+    result = clean(value, 0)
+    return result if isinstance(result, dict) else {}
+
+
+def safe_transition_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    if 0 < len(reason) <= 160 and all(c.isalnum() or c in "-_:." for c in reason):
+        return reason
+    return "redacted-transition-reason"

@@ -1,6 +1,7 @@
 """Database-clock SOURCE entry eligibility, never ingest-clock freshness."""
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -37,19 +38,42 @@ def expire_source_dispatch(cursor: Any, dispatch_id: UUID, state: str) -> None:
     if cursor.fetchone()[0]:
         return
     reason = "stale-source-message"
+    transition_id = uuid4()
+    evidence = {
+        "schema_version": 1,
+        "exchange": "bitget",
+        "dispatch_id": str(dispatch_id),
+        "stage": "source_freshness",
+        "outcome": "expired",
+        "reason_code": reason,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "provider_effect": "not_submitted",
+        "provider_effect_scope": "entry_submission",
+        "entry_intent_guard": "no_active_or_filled_intent_or_unknown_consumed_reservation",
+    }
+    cursor.execute(
+        """INSERT INTO dispatch_transitions
+            (id,dispatch_id,from_state,to_state,reason,evidence)
+        SELECT %s,d.id,%s,'EXPIRED',%s,%s::jsonb || jsonb_build_object(
+            'source_id',d.source_id,'canonical_signal_id',s.id,
+            'source_channel_id',tm.channel_id,'source_message_id',tm.message_id,
+            'source_revision',s.revision,'source_received_at',tm.received_at,
+            'worker_id',d.claimed_by,'attempt',d.attempts,
+            'symbol',s.pair_token,'direction',s.direction)
+        FROM dispatches d
+        LEFT JOIN canonical_signals s ON s.id=d.source_id
+        LEFT JOIN telegram_messages tm ON tm.id=s.message_id WHERE d.id=%s""",
+        (transition_id, state, reason, json.dumps(evidence), dispatch_id),
+    )
     cursor.execute(
         "UPDATE dispatches SET state='EXPIRED', terminal_reason=%s, claimed_by=NULL, "
         "lease_until=NULL, updated_at=clock_timestamp() WHERE id=%s",
         (reason, dispatch_id),
     )
     cursor.execute(
-        "INSERT INTO dispatch_transitions (id,dispatch_id,from_state,to_state,reason) "
-        "VALUES (%s,%s,%s,'EXPIRED',%s)",
-        (uuid4(), dispatch_id, state, reason),
-    )
-    cursor.execute(
-        "INSERT INTO notifications_outbox (id,dedup_key,payload) VALUES "
-        "(%s,%s,%s::jsonb) ON CONFLICT (dedup_key) DO NOTHING",
+        "INSERT INTO notifications_outbox (id,dedup_key,payload) SELECT "
+        "%s,%s,%s::jsonb || jsonb_build_object('evidence',evidence) "
+        "FROM dispatch_transitions WHERE id=%s ON CONFLICT (dedup_key) DO NOTHING",
         (
             uuid4(),
             f"dispatch-transition:{dispatch_id}:{state}:EXPIRED:{reason}",
@@ -62,6 +86,7 @@ def expire_source_dispatch(cursor: Any, dispatch_id: UUID, state: str) -> None:
                     "reason": reason,
                 }
             ),
+            transition_id,
         ),
     )
     cursor.execute(

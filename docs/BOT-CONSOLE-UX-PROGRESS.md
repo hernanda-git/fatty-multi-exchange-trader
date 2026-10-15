@@ -73,6 +73,31 @@
   [the full audit](AUDIT-MAGIC-20261015.md); this trading defect was not changed by
   the configuration-console release.
 
+### Contract validation and durable execution diagnostics — 2026-10-15
+
+- Legitimate Unicode catalog neighbors no longer reject valid ASCII targets.
+  Malformed catalog rows, missing/ambiguous targets and invalid target metadata
+  still fail closed. Public catalog hash, shape, bounded samples and selected
+  metadata are captured for diagnosis without account bodies or credentials.
+- Migration 27 adds atomic transition evidence plus ingestion/edit-veto timestamps;
+  historical reasons/states are preserved and unknown timestamps remain null.
+  Structured JSON transition logs emit only after commit.
+- Signal/dispatch pages show exact transition timestamps, stage/attempt/worker,
+  duration and entry-order boundary, with expandable diagnostics and linked
+  analysis-notification, intent, reservation, fill and alert records.
+- Verification: 257 focused unit tests passed; 53 final dispatch/repository/manual
+  regressions passed; 60 real-PostgreSQL migration/freshness/edit/recovery tests
+  passed in isolated schemas. Frontend build and affected-code Ruff passed.
+- Actual public-catalog smoke passed MAGIC against 834 rows including three Unicode
+  symbols. An actual ingestion/analyzer/dispatcher/DB smoke wrote correlated audit
+  evidence and after-commit JSON logs in a disposable schema, then removed it.
+  No account mutation, order POST or historical source replay occurred.
+- Browser verified new/legacy evidence distinction, exact timestamps, expandable
+  details and a 390px trace fitting its container. Shared-header mobile layout is
+  unchanged. Release bundle: `index-DZ3lM1Vx.js`.
+- Full Windows unit sweep was not green (1,991 passed, 107 failed, 2 skipped);
+  details and limits are recorded in [the audit](AUDIT-MAGIC-20261015.md).
+
 ## 2. Status and evidence rules
 
 Use separate fields for package work state and proof level. Do not turn a checkmark into a deployment claim.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -25,6 +26,7 @@ class DispatchRepository:
         expected_state: str,
         target_state: str,
         reason: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> None:
         self.transitions.append((expected_state, target_state, reason))
 

@@ -94,6 +94,31 @@ GET-only readback is still needed; do not place a replacement order. Cancellatio
 can prevent unclaimed work, but cannot undo an accepted provider effect or abandon
 its reconciliation.
 
+## Signal execution audit trail
+
+Open a signal or its linked dispatch to see the **Execution timeline**. Each new
+Bitget transition records source/revision and dispatch IDs, worker/attempt, UTC
+observation, stage duration, outcome and a machine-readable reason. Expand
+**Captured diagnostics** for bounded public catalog evidence, selected contract
+metadata, catalog SHA-256, and available sizing/routing observations.
+
+The **Entry-order boundary** distinguishes `not_submitted`,
+`submission_may_have_occurred`, and `provider_response_observed`. It does not
+describe preflight account preparation, and a provider response does not mean a
+fill. An ambiguous submission retains its ownership/reservation evidence; do not
+retry it as a new operation.
+
+Related records expose original analysis-notification status separately from
+execution alerts, source revisions, intents, reservations and fills. A sent
+notification is not a trade fill. New `ingested_at` and
+`edit_veto_recorded_at` timestamps distinguish database ingestion and edit-veto
+recording from source time. Historical unknown timestamps remain null.
+
+Structured JSON transition logs are emitted after the state/evidence/outbox
+transaction commits. Raw provider account bodies, credentials and model prompts
+are not captured. Historical transitions without structured evidence are labeled
+explicitly; diagnostics are never reconstructed as if they had been observed.
+
 ## Incident handling
 
 `incident.acknowledge` records who reviewed the current latch reason. It does not

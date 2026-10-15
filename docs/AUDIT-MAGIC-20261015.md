@@ -240,10 +240,11 @@ recovered. The existing application's trusted `/bin/uv` binary was copied into t
 private host runtime and used to reinstall the host worker package. Only web and
 the host operations worker were restarted; no trading consumers were restarted.
 
-## 9. Remediation boundary
+## 9. Remediation boundary at the initial audit
 
-The requested console deployment is complete. The separate catalog-validation
-bug remains present and was **not silently changed** during a read-only audit.
+At the initial audit checkpoint, the console deployment was complete and the
+separate catalog-validation defect had not yet been changed. The following
+recommendation describes that checkpoint; subsequent remediation is recorded below.
 
 Recommended code change: validate the catalog's structure without requiring every
 unrelated exchange symbol to be ASCII; locate the requested symbol exactly and
@@ -254,3 +255,42 @@ covering a valid MAGIC contract alongside legitimate Unicode contracts.
 A correction must not bypass account/protection/risk gates, replay expired/edited
 messages, or auto-submit this rejected signal. Clearing latches or altering margin
 and leverage would not repair the demonstrated parser defect.
+
+## 10. Owner-requested remediation verification
+
+The contract lookup now accepts legitimate unrelated Unicode symbols while
+rejecting malformed catalog identities, ambiguous targets and invalid selected
+metadata. A read-only smoke using the live 834-contract catalog reached the
+account-read boundary for `MAGICUSDT` and recorded `target_validated`, without
+account mutations or order submission.
+
+Migration 27 adds durable transition evidence and new ingestion/edit-veto timestamps
+without inventing historical observations. Transitions and their notification
+outbox evidence commit atomically; structured JSON logs follow commit. Unknown
+submission outcomes retain the entry-submission uncertainty and canary reservation.
+Signal/dispatch detail pages expose exact recorded timestamps and expandable
+diagnostics, analysis notifications, linked intents, reservations and fills.
+
+Verification before deployment:
+
+- Frontend build and affected-code Ruff checks passed.
+- 257 focused unit tests passed; 53 dispatch/repository/manual-console regressions
+  passed again after final correlation and ambiguous-submission changes.
+- 60 real-PostgreSQL migration, edit-veto, freshness and recovery tests passed
+  in disposable isolated schemas.
+- An actual intake → analyzer → dispatcher → PostgreSQL smoke recorded correlated
+  JSON transitions and catalog evidence, reached the deliberate account-read
+  boundary, wrote no order intents, and removed its isolated schema afterward.
+- Browser exercised new and legacy transition rendering, expanded diagnostics,
+  and a 390px timeline fitting its container.
+
+The broad Windows unit run was not green: 1,991 passed, 107 failed, 2 skipped.
+It exposed Linux-only `/proc`/process/permission/Docker assumptions, a websocket
+timing assertion, an obsolete Compose-source assertion, and a new ambiguous-path
+test-double failure. The ambiguous-path canary release was corrected and focused
+checks passed; obsolete source-text assertions were removed rather than repinned.
+No claim that the complete cross-platform suite passes is made.
+
+Production activation and release identity are recorded in
+`BOT-CONSOLE-UX-PROGRESS.md`. The historical MAGIC dispatch is not replayed by
+this remediation; source freshness, edit vetoes and all trading risk gates remain.

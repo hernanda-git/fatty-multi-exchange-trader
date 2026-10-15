@@ -61,6 +61,20 @@ def test_claim_retires_unsafe_source_with_audit(postgres_schema, invalid):
         assert c.execute(
             "SELECT count(*) FROM notifications_outbox WHERE payload->>'to_state'='EXPIRED'"
         ).fetchone() == (1,)
+        evidence = c.execute(
+            "SELECT evidence FROM dispatch_transitions WHERE dispatch_id=%s", (dispatch_id,)
+        ).fetchone()[0]
+        assert evidence["stage"] == "source_freshness"
+        assert evidence["reason_code"] == "stale-source-message"
+        assert evidence["provider_effect"] == "not_submitted"
+        assert evidence["source_channel_id"] == CHANNEL
+        assert evidence["source_message_id"] == 101
+        assert evidence["attempt"] == 0
+        assert evidence["source_revision"]
+        assert c.execute(
+            "SELECT payload->'evidence' FROM notifications_outbox "
+            "WHERE payload->>'to_state'='EXPIRED'"
+        ).fetchone()[0] == evidence
 
 
 def reserve(factory, dispatch_id, client_oid="offline-entry"):
@@ -491,3 +505,42 @@ async def test_source_ageing_during_async_leverage_setup_blocks_actual_post(post
     except RuntimeError as exc:
         assert str(exc) == "offline-recorded-entry-post"
     assert client.posts == []
+
+
+def test_transition_audit_failure_rolls_back_state_outbox_and_preserves_old_evidence(
+    postgres_schema, capsys,
+):
+    from uuid import uuid4
+
+    import psycopg
+
+    from fatty_trader.execution.bitget_dispatch_repository import PostgresBitgetDispatchRepository
+
+    factory = setup(postgres_schema)
+    dispatch_id = queued(factory)
+    with factory() as c:
+        c.execute(
+            "INSERT INTO dispatch_transitions (id,dispatch_id,from_state,to_state,reason) "
+            "VALUES (%s,%s,'QUEUED','QUEUED','legacy-reason')",
+            (uuid4(), dispatch_id),
+        )
+        c.execute(
+            "ALTER TABLE dispatch_transitions ADD CONSTRAINT test_refuse_new_evidence "
+            "CHECK (evidence='{}'::jsonb)"
+        )
+        before = c.execute("SELECT count(*) FROM notifications_outbox").fetchone()[0]
+    capsys.readouterr()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        PostgresBitgetDispatchRepository(factory).transition(
+            dispatch_id, expected_state="QUEUED", target_state="PREFLIGHT",
+            evidence={"stage": "canonical_validation", "worker_id": "offline", "attempt": 1},
+        )
+    assert capsys.readouterr().out == ""
+    with factory() as c:
+        assert c.execute("SELECT state FROM dispatches WHERE id=%s", (dispatch_id,)).fetchone() == (
+            "QUEUED",
+        )
+        assert c.execute(
+            "SELECT from_state,to_state,reason,evidence FROM dispatch_transitions"
+        ).fetchall() == [("QUEUED", "QUEUED", "legacy-reason", {})]
+        assert c.execute("SELECT count(*) FROM notifications_outbox").fetchone()[0] == before

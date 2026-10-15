@@ -95,7 +95,10 @@ class PostgresRawMessageRepository:
         """
         cursor.execute(
             """UPDATE telegram_messages tm
-            SET entry_rejection_reason='edited-source-message'
+            SET entry_rejection_reason='edited-source-message',
+                edit_veto_recorded_at=CASE
+                    WHEN tm.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
+                    THEN clock_timestamp() ELSE tm.edit_veto_recorded_at END
             WHERE tm.channel_id=%s AND tm.message_id=%s
               AND (tm.entry_rejection_reason IS NULL
                    OR (%s AND tm.revision_hash=%s))
@@ -154,8 +157,9 @@ class PostgresRawMessageRepository:
             INSERT INTO telegram_messages (
                 id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state,
                 has_media, media_path, media_sha256, media_mime_type, media_size_bytes,
-                ingestion_origin, entry_expires_at, entry_rejection_reason
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ingestion_origin, entry_expires_at, entry_rejection_reason, edit_veto_recorded_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      CASE WHEN %s='edited-source-message' THEN clock_timestamp() END)
             ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
         """
         with closing(self._connection_factory()) as connection:
@@ -179,6 +183,7 @@ class PostgresRawMessageRepository:
                         message.ingestion_origin,
                         message.entry_expires_at,
                         message.entry_rejection_reason,
+                        message.entry_rejection_reason,
                     ),
                 )
                 self._heal_media(cursor, message)
@@ -192,8 +197,9 @@ class PostgresRawMessageRepository:
             INSERT INTO telegram_messages (
                 id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state,
                 has_media, media_path, media_sha256, media_mime_type, media_size_bytes,
-                ingestion_origin, entry_expires_at, entry_rejection_reason
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ingestion_origin, entry_expires_at, entry_rejection_reason, edit_veto_recorded_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      CASE WHEN %s='edited-source-message' THEN clock_timestamp() END)
             ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
             RETURNING id
         """
@@ -217,6 +223,7 @@ class PostgresRawMessageRepository:
                         message.media_size_bytes,
                         message.ingestion_origin,
                         message.entry_expires_at,
+                        message.entry_rejection_reason,
                         message.entry_rejection_reason,
                     ),
                 )

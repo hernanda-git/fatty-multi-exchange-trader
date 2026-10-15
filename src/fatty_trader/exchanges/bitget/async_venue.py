@@ -4,14 +4,15 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation
 from typing import Any, Protocol, cast
 
-from fatty_trader.exchanges.bitget.client import BitgetApiError
 from fatty_trader.exchanges.bitget.metadata import (
+    BitgetCatalogError,
     find_contract,
     metadata_from_contract,
     mm_tiers_from_position_lever,
+    record_catalog_observation,
 )
 from fatty_trader.exchanges.bitget.read_model import (
     BitgetAccountState,
@@ -136,19 +137,17 @@ class AsyncBitgetVenue:
 
     async def preflight(self, symbol: str, *, read_only: bool = False) -> BitgetPreflightSnapshot:
         contracts = await self._client.get_contracts()
-        if not isinstance(contracts, list) or any(
-            not isinstance(row, dict)
-            or not isinstance(row.get("symbol"), str)
-            or not re.fullmatch(r"[A-Za-z0-9]{2,20}", row["symbol"])
-            for row in contracts
-        ):
-            raise BitgetApiError("Bitget contracts response is invalid")
-        # Only a valid lookup with no matching record proves venue ineligibility.
-        contract = find_contract(contracts, symbol)
+        evidence: dict[str, Any] = {}
+        # Validate every catalog identity, but do not apply an ASCII target
+        # restriction to unrelated public Unicode contracts.
+        contract = find_contract(contracts, symbol, audit_evidence=evidence)
         try:
             metadata = metadata_from_contract(contract)
-        except (TypeError, ValueError, OverflowError):
-            raise BitgetApiError("Bitget contract metadata is invalid") from None
+        except (TypeError, ValueError, OverflowError, DecimalException):
+            raise BitgetCatalogError(
+                "Bitget contract metadata is invalid", evidence, "target_metadata_invalid"
+            ) from None
+        record_catalog_observation(evidence, "target_validated")
         account = await read_account_state(self._client, symbol)
         position = await read_position_state(self._client, symbol)
         if account.margin_mode != "isolated":

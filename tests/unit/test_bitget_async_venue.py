@@ -1,9 +1,18 @@
+import asyncio
+import hashlib
+import json
 from decimal import Decimal
 
 import pytest
 
 from fatty_trader.exchanges.bitget.async_venue import AsyncBitgetVenue
 from fatty_trader.exchanges.bitget.client import BitgetApiError
+from fatty_trader.exchanges.bitget.metadata import (
+    BitgetCatalogError,
+    BitgetContractNotFound,
+    catalog_audit_context,
+    find_contract,
+)
 from fatty_trader.risk.liquidation import MMTier, select_mmr
 
 # Realistic /market/query-position-lever rows: ordered by size, and note that the
@@ -311,6 +320,225 @@ async def test_empty_valid_contract_lookup_proves_absence_without_account_reads(
     client = EmptyClient(margin_mode="crossed")
     with pytest.raises(KeyError, match="unknown Bitget contract"):
         await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts"]
+
+
+
+@pytest.mark.asyncio
+async def test_magic_preflight_accepts_public_unicode_catalog_neighbors() -> None:
+    class MagicClient(Client):
+        async def get_contracts(self):
+            rows = await super().get_contracts()
+            target = dict(rows[0], symbol="MAGICUSDT", pricePlace="5")
+            return [
+                {"symbol": "龙虾USDT"},
+                target,
+                {"symbol": "牛来USDT"},
+                {"symbol": "哈基米USDT"},
+            ]
+
+        async def get_position_lever(self, symbol: str):
+            self.calls.append("position-lever")
+            assert symbol == "MAGICUSDT"
+            return [dict(row, symbol=symbol) for row in POSITION_LEVER_ROWS]
+
+    client = MagicClient()
+    observation = {}
+    with catalog_audit_context(observation):
+        snapshot = await AsyncBitgetVenue(client).preflight("MAGICUSDT", read_only=True)
+
+    assert snapshot.metadata.symbol == "MAGICUSDT"
+    assert snapshot.metadata.price_tick == Decimal("0.00001")
+    assert snapshot.metadata.mm_tiers
+    assert client.calls == ["contracts", "account", "position", "clock", "position-lever", "ticker"]
+    evidence = observation["contract_catalog"]
+    assert evidence["code"] == "target_validated"
+    assert evidence["row_count"] == 4
+    assert evidence["matching_row_indexes"] == [1]
+    assert evidence["unicode_symbol_count"] == 3
+    assert evidence["unicode_symbols"] == ["龙虾USDT", "牛来USDT", "哈基米USDT"]
+    assert len(evidence["payload_sha256"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_successful_catalog_observation_survives_later_read_only_rejection() -> None:
+    client = Client(margin_mode="crossed")
+    observation = {}
+    with catalog_audit_context(observation), pytest.raises(ValueError):
+        await AsyncBitgetVenue(client).preflight("BTCUSDT", read_only=True)
+    assert client.calls == ["contracts", "account", "position"]
+    assert client._account["marginMode"] == "crossed"
+    assert observation["contract_catalog"]["code"] == "target_validated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("symbol", " BTCUSDT"),
+        ("pricePlace", None),
+        ("pricePlace", "2.5"),
+        ("pricePlace", -1),
+        ("pricePlace", 13),
+        ("priceEndStep", "NaN"),
+        ("priceEndStep", "1e999999999"),
+        ("sizeMultiplier", 0),
+        ("minTradeNum", -1),
+        ("maxOrderQty", "Infinity"),
+        ("maxMarketOrderQty", False),
+        ("minTradeUSDT", -1),
+        ("maxLever", "20.5"),
+        ("maxLever", True),
+        ("contractValue", 0),
+    ],
+)
+async def test_invalid_target_contract_is_never_admitted(field, value) -> None:
+    class InvalidTargetClient(Client):
+        async def get_contracts(self):
+            rows = await super().get_contracts()
+            rows[0][field] = value
+            return rows
+
+    client = InvalidTargetClient(margin_mode="crossed")
+    with pytest.raises(BitgetCatalogError) as error:
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts"]
+    evidence = error.value.audit_evidence
+    assert evidence["stage"] == "contract_catalog"
+    assert evidence["code"] == (
+        "catalog_rows_invalid" if field == "symbol" else "target_metadata_invalid"
+    )
+    assert evidence["requested_symbol"] == "BTCUSDT"
+    assert evidence["row_count"] == 1
+    assert len(evidence["payload_sha256"]) == 64
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_symbol", ["BTCUSDT", "btcusdt"])
+async def test_duplicate_requested_contract_is_ambiguous_before_account_reads(
+    duplicate_symbol: str,
+) -> None:
+    class DuplicateClient(Client):
+        async def get_contracts(self):
+            rows = await super().get_contracts()
+            # A bad duplicate must not be hidden by a valid first record.
+            return rows + [{"symbol": duplicate_symbol, "priceEndStep": "invalid"}]
+
+    client = DuplicateClient()
+    with pytest.raises(BitgetCatalogError) as error:
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts"]
+    assert error.value.audit_evidence["code"] == "target_ambiguous"
+    assert error.value.audit_evidence["matching_row_count"] == 2
+    assert error.value.audit_evidence["matching_row_indexes"] == [0, 1]
+
+
+def test_absent_target_is_distinct_from_malformed_or_ambiguous_catalog() -> None:
+    with pytest.raises(BitgetContractNotFound) as error:
+        find_contract([{"symbol": "龙虾USDT"}, {"symbol": "BTCUSDT"}], "MAGICUSDT")
+    assert error.value.audit_evidence["code"] == "target_missing"
+    assert error.value.audit_evidence["matching_row_count"] == 0
+
+
+def test_unicode_case_mapping_cannot_impersonate_ascii_requested_target() -> None:
+    with pytest.raises(BitgetContractNotFound) as error:
+        find_contract([{"symbol": "ſUSDT"}], "SUSDT")
+    assert error.value.audit_evidence["code"] == "target_missing"
+
+
+def test_catalog_diagnostics_are_bounded_and_do_not_dump_untrusted_fields() -> None:
+    secret = "Bearer private-provider-secret"
+    payload = [
+        {"symbol": secret, "Authorization": secret, "private_prompt": secret}
+        for _ in range(300)
+    ]
+    observation = {}
+    with catalog_audit_context(observation), pytest.raises(BitgetCatalogError) as error:
+        find_contract(payload, "MAGICUSDT")
+    evidence = error.value.audit_evidence
+    serialized = json.dumps(evidence, ensure_ascii=False)
+    assert evidence["code"] == "catalog_rows_invalid"
+    assert evidence["invalid_row_count"] == 300
+    assert len(evidence["invalid_rows"]) == 8
+    assert [row["index"] for row in evidence["invalid_rows"]] == list(range(8))
+    assert all(row["symbol_type"] == "str" for row in evidence["invalid_rows"])
+    expected_hash = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+        .encode("ascii")
+    ).hexdigest()
+    assert evidence["payload_sha256"] == expected_hash
+    assert secret not in serialized
+    assert "Authorization" not in serialized
+    assert "private_prompt" not in serialized
+    assert len(serialized) < 4096
+    assert observation["contract_catalog"] == evidence
+
+
+@pytest.mark.asyncio
+async def test_malformed_neighbor_cannot_hide_behind_valid_requested_target() -> None:
+    class InvalidNeighborClient(Client):
+        async def get_contracts(self):
+            return await super().get_contracts() + [{"symbol": None}]
+
+    client = InvalidNeighborClient()
+    with pytest.raises(BitgetCatalogError) as error:
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    assert client.calls == ["contracts"]
+    assert error.value.audit_evidence["code"] == "catalog_rows_invalid"
+    assert error.value.audit_evidence["invalid_rows"] == [
+        {"index": 1, "row_type": "dict", "symbol_type": "null"}
+    ]
+
+
+def test_catalog_audit_context_restores_outer_and_does_not_collect_outside_scope() -> None:
+    outer = {}
+    inner = {}
+    with catalog_audit_context(outer):
+        find_contract([{"symbol": "BTCUSDT"}], "BTCUSDT")
+        with catalog_audit_context(inner):
+            find_contract([{"symbol": "MAGICUSDT"}], "MAGICUSDT")
+    find_contract([{"symbol": "ETHUSDT"}], "ETHUSDT")
+    assert outer["contract_catalog"]["requested_symbol"] == "BTCUSDT"
+    assert inner["contract_catalog"]["requested_symbol"] == "MAGICUSDT"
+
+
+@pytest.mark.asyncio
+async def test_catalog_observations_are_isolated_between_concurrent_tasks() -> None:
+    async def observe(symbol):
+        observation = {}
+        with catalog_audit_context(observation):
+            await asyncio.sleep(0)
+            find_contract([{"symbol": symbol}], symbol)
+            await asyncio.sleep(0)
+        return observation["contract_catalog"]
+
+    btc, magic = await asyncio.gather(observe("BTCUSDT"), observe("MAGICUSDT"))
+    assert btc["requested_symbol"] == "BTCUSDT"
+    assert magic["requested_symbol"] == "MAGICUSDT"
+
+
+@pytest.mark.asyncio
+async def test_invalid_selected_metadata_exposes_types_not_untrusted_values() -> None:
+    secret = "Bearer private-provider-secret"
+
+    class InvalidMetadataClient(Client):
+        async def get_contracts(self):
+            rows = await super().get_contracts()
+            rows[0]["priceEndStep"] = secret
+            rows[0]["Authorization"] = secret
+            return rows
+
+    client = InvalidMetadataClient()
+    with pytest.raises(BitgetCatalogError) as error:
+        await AsyncBitgetVenue(client).preflight("BTCUSDT")
+    evidence = error.value.audit_evidence
+    assert evidence["code"] == "target_metadata_invalid"
+    assert evidence["field_types"]["priceEndStep"] == "str"
+    assert evidence["selected_metadata"]["symbol"] == "BTCUSDT"
+    assert evidence["selected_metadata"]["sizeMultiplier"] == "0.001"
+    assert "priceEndStep" not in evidence["selected_metadata"]
+    assert secret not in json.dumps(evidence)
+    assert "Authorization" not in json.dumps(evidence)
     assert client.calls == ["contracts"]
 
 

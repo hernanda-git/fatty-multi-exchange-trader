@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -20,7 +21,7 @@ from fatty_trader.exchanges.bitget.live import (
     LiveOrderStatus,
 )
 from fatty_trader.execution.bitget_admission import BitgetEntrySubmission
-from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
+from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch, dispatch_evidence
 from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
@@ -149,7 +150,25 @@ class BitgetDispatchExecution:
                 "REJECTED": "REJECTED",
             }.get(status, "UNKNOWN")
             repository.transition(
-                dispatch.id, expected_state=dispatch.state, target_state=target, reason=reason
+                dispatch.id,
+                expected_state=dispatch.state,
+                target_state=target,
+                reason=reason,
+                evidence={
+                    **dispatch_evidence(dispatch),
+                    "stage": "recovery_readback",
+                    "outcome": target.lower(),
+                    "reason_code": reason,
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "provider_effect": (
+                        "submission_may_have_occurred"
+                        if target == "UNKNOWN" else "provider_response_observed"
+                    ),
+                    "provider_effect_scope": "entry_submission",
+                    "client_order_id": client_oid,
+                    "provider_status": status,
+                    "filled_quantity": str(result.filled_qty),
+                },
             )
             self._resolve_reservation(intent, status)
             count += 1

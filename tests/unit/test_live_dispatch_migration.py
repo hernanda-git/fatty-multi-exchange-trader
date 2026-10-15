@@ -82,3 +82,19 @@ def test_provider_reconciliation_migration_is_additive_and_idempotent() -> None:
     assert "provider_fill_id" in sql
     assert "SYSTEM_LIQUIDATION" in sql
     assert "UNIQUE (exchange, provider_fill_id)" in sql
+
+
+def test_dispatch_audit_migration_preserves_unknown_history_and_is_additive() -> None:
+    from fatty_trader.storage.migrations import _iter_statements
+    from fatty_trader.storage.schema import BITGET_DISPATCH_SCHEMA_SQL
+
+    sql = dict(MIGRATIONS)[27]
+    statements = _iter_statements(sql)
+    assert "ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
+    assert "evidence JSONB NOT NULL DEFAULT '{}'::jsonb" in BITGET_DISPATCH_SCHEMA_SQL
+    assert "UPDATE " not in sql and "DROP " not in sql
+    assert "ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ" in statements[1]
+    assert "DEFAULT" not in statements[1]
+    assert "ALTER COLUMN ingested_at SET DEFAULT clock_timestamp()" in statements[2]
+    assert "ADD COLUMN IF NOT EXISTS edit_veto_recorded_at TIMESTAMPTZ" in statements[3]
+    assert "DEFAULT" not in statements[3]
