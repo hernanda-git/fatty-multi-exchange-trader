@@ -10,7 +10,7 @@ import {
   isObjectRecord,
 } from './types';
 import {parseRoute, navigate, Link, PRIMARY_DESTINATIONS} from './nav';
-import {ErrorBox, AttentionBanner, StateView} from './primitives';
+import {Value, ErrorBox, AttentionBanner, StateView} from './primitives';
 import {ActionPanel} from './command';
 import {Filters} from './forms';
 import {OverviewPage} from './pages/OverviewPage';
@@ -614,7 +614,7 @@ function App() {
                   readSection={currentRoute.readSection}
                   resourceId={currentRoute.resourceId}
                   onOpenAction={handleOpenAction}
-                  render={(v) => <span className="font-mono">{String(v)}</span>}
+                  render={(v) => <Value value={v} />}
                 />
               )}
               {currentRoute.destination === 'trading' && (
@@ -625,7 +625,7 @@ function App() {
                   currentScreen={currentRoute.screen}
                   capabilities={caps}
                   onOpenAction={handleOpenAction}
-                  render={(v) => <span className="font-mono">{String(v)}</span>}
+                  render={(v) => <Value value={v} />}
                 />
               )}
               {currentRoute.destination === 'signals' && (
@@ -634,7 +634,7 @@ function App() {
                   readSection={currentRoute.readSection}
                   resourceId={currentRoute.resourceId}
                   onOpenAction={handleOpenAction}
-                  render={(v) => <span className="font-mono">{String(v)}</span>}
+                  render={(v) => <Value value={v} />}
                 />
               )}
               {currentRoute.destination === 'activity' && (
@@ -644,7 +644,7 @@ function App() {
                   resourceId={currentRoute.resourceId}
                   onOpenAction={handleOpenAction}
                   reload={reload}
-                  render={(v) => <span className="font-mono">{String(v)}</span>}
+                  render={(v) => <Value value={v} />}
                 />
               )}
               {currentRoute.destination === 'settings' && (
@@ -655,7 +655,7 @@ function App() {
                   principal={principal}
                   onOpenAction={handleOpenAction}
                   reload={reload}
-                  render={(v) => <span className="font-mono">{String(v)}</span>}
+                  render={(v) => <Value value={v} />}
                 />
               )}
             </>

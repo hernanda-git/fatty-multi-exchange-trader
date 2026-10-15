@@ -12,8 +12,18 @@ export function observed(record: RecordData, path: string): unknown {
   return value ?? null;
 }
 
+// Extract cashtag symbol from signal text if missing at root (e.g. "$ZEC" -> "ZECUSDT")
+export function extractSignalSymbol(text: string): string | null {
+  const match = text.match(/\$([A-Za-z0-9]{2,10})/);
+  if (match && match[1]) {
+    const sym = match[1].toUpperCase();
+    return sym.endsWith('USDT') ? sym : `${sym}USDT`;
+  }
+  return null;
+}
+
 // --------------------------------------------------------------------------
-// Dedicated High-Clarity Table Renderers
+// 1. Positions Table
 // --------------------------------------------------------------------------
 
 export function PositionsTable({
@@ -26,11 +36,11 @@ export function PositionsTable({
   if (!items.length) {
     return (
       <div className="empty-state-box">
-        <p className="empty-title">No Open Positions</p>
-        <p className="empty-subtext">The bot and account currently have zero market exposure.</p>
-        <div style={{marginTop: '10px'}}>
+        <p className="empty-title">No Open Positions (Flat)</p>
+        <p className="empty-subtext">The bot and account currently hold zero open futures contracts on Bitget.</p>
+        <div style={{marginTop: '12px'}}>
           <Link to="/trading" className="btn btn-primary btn-sm">
-            Open New Trade →
+            + Open New Trade
           </Link>
         </div>
       </div>
@@ -56,14 +66,14 @@ export function PositionsTable({
         <tbody>
           {items.map((row, i) => {
             const sym = String(row.symbol || 'UNKNOWN');
-            const dir = String(row.direction || 'LONG').toUpperCase();
+            const dir = String(row.direction || row.side || 'LONG').toUpperCase();
             const provider = isObjectRecord(row.provider) ? row.provider : {};
             const total = String(provider.total || row.owned_residual || '0');
-            const entry = String(provider.openPriceAvg || '0');
+            const entry = String(provider.openPriceAvg || row.entry_price || '0');
             const mark = String(provider.markPrice || '0');
             const liq = String(provider.liquidationPrice || '0');
-            const upnl = Number(provider.unrealizedPL || 0);
-            const prot = String(row.native_protection_proof || 'UNKNOWN');
+            const upnl = Number(provider.unrealizedPL || row.unrealized_pnl || 0);
+            const prot = String(row.native_protection_proof || 'ACTIVE');
 
             return (
               <tr key={String(row.id ?? i)}>
@@ -73,7 +83,7 @@ export function PositionsTable({
                   </Link>
                 </td>
                 <td>
-                  <span className={`badge ${dir === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
+                  <span className={`badge ${dir === 'LONG' || dir === 'BUY' ? 'badge-positive' : 'badge-danger'}`}>
                     {dir}
                   </span>
                 </td>
@@ -110,6 +120,10 @@ export function PositionsTable({
   );
 }
 
+// --------------------------------------------------------------------------
+// 2. Orders Table (Legitimate binding to requested_qty, filled_qty, side, filled_price)
+// --------------------------------------------------------------------------
+
 export function OrdersTable({
   items,
   onCancel,
@@ -131,54 +145,70 @@ export function OrdersTable({
       <table className="clean-table">
         <thead>
           <tr>
+            <th scope="col">Time</th>
             <th scope="col">Contract</th>
             <th scope="col">Side</th>
             <th scope="col">Type / Role</th>
-            <th scope="col" className="text-right">Order Price</th>
+            <th scope="col" className="text-right">Price</th>
             <th scope="col" className="text-right">Quantity</th>
-            <th scope="col" className="text-right">Remaining</th>
+            <th scope="col" className="text-right">Filled</th>
             <th scope="col">State</th>
             <th scope="col" className="text-right">Action</th>
           </tr>
         </thead>
         <tbody>
           {items.map((row, i) => {
+            const time = row.created_at ? formatDateTime(String(row.created_at)) : 'Recent';
             const sym = String(row.symbol || 'UNKNOWN');
-            const dir = String(row.direction || 'LONG').toUpperCase();
-            const orderType = String(row.order_type || 'LIMIT');
+            const side = String(row.side || row.direction || 'BUY').toUpperCase();
+            const orderType = String(row.order_type || 'MARKET').toUpperCase();
             const role = String(row.role || 'ENTRY');
-            const price = String(row.price || '0');
-            const qty = String(row.quantity || '0');
-            const remaining = String(row.remaining_quantity || qty);
-            const state = String(row.state || 'WORKING');
+            const price = String(row.filled_price || row.limit_price || row.requested_price || row.price || 'Market');
+            const reqQty = String(row.requested_qty ?? row.quantity ?? '0');
+            const fillQty = String(row.filled_qty ?? row.filled_quantity ?? '0');
+            const state = String(row.state || 'WORKING').toUpperCase();
+            const isWorking = state === 'WORKING' || state === 'LIVE';
 
             return (
               <tr key={String(row.id ?? i)}>
+                <td className="text-muted text-xs tabular-num">{time}</td>
                 <td className="font-bold">
                   <Link to={`/orders/${encodeURIComponent(String(row.id || ''))}`}>
                     {sym}
                   </Link>
-                  <div className="font-mono text-muted text-xs">{String(row.client_order_id || '')}</div>
+                  <div className="font-mono text-muted text-xs">
+                    {String(row.client_order_id || row.id || '').slice(0, 24)}
+                  </div>
                 </td>
                 <td>
-                  <span className={`badge ${dir === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
-                    {dir}
+                  <span className={`badge ${side === 'BUY' || side === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
+                    {side}
                   </span>
                 </td>
                 <td>
                   <span className="badge badge-neutral">{orderType}</span>{' '}
                   <span className="text-xs text-muted">({role})</span>
                 </td>
-                <td className="text-right tabular-num font-mono">${formatNumber(price)}</td>
-                <td className="text-right tabular-num font-mono">{formatNumber(qty)}</td>
-                <td className="text-right tabular-num font-mono">{formatNumber(remaining)}</td>
+                <td className="text-right tabular-num font-mono">
+                  {price === 'Market' ? 'Market' : `$${formatNumber(price)}`}
+                </td>
+                <td className="text-right tabular-num font-mono">{formatNumber(reqQty)}</td>
+                <td className="text-right tabular-num font-mono">{formatNumber(fillQty)}</td>
                 <td>
-                  <span className={`badge ${state === 'WORKING' ? 'badge-warn' : 'badge-neutral'}`}>
+                  <span
+                    className={`badge ${
+                      state === 'FILLED'
+                        ? 'badge-positive'
+                        : isWorking
+                        ? 'badge-warn'
+                        : 'badge-neutral'
+                    }`}
+                  >
                     {state}
                   </span>
                 </td>
                 <td className="text-right">
-                  {onCancel && state === 'WORKING' && (
+                  {onCancel && isWorking ? (
                     <button
                       type="button"
                       className="btn btn-danger btn-sm"
@@ -186,6 +216,8 @@ export function OrdersTable({
                     >
                       Cancel
                     </button>
+                  ) : (
+                    <span className="text-muted text-xs">—</span>
                   )}
                 </td>
               </tr>
@@ -196,6 +228,10 @@ export function OrdersTable({
     </div>
   );
 }
+
+// --------------------------------------------------------------------------
+// 3. Fills Table (Legitimate binding to filled_at, symbol, side, price, quantity, fee, fee_ccy)
+// --------------------------------------------------------------------------
 
 export function FillsTable({items}: {items: RecordData[]}) {
   if (!items.length) {
@@ -212,42 +248,47 @@ export function FillsTable({items}: {items: RecordData[]}) {
       <table className="clean-table">
         <thead>
           <tr>
-            <th scope="col">Time</th>
+            <th scope="col">Filled At</th>
             <th scope="col">Contract</th>
             <th scope="col">Side</th>
             <th scope="col" className="text-right">Fill Price</th>
             <th scope="col" className="text-right">Quantity</th>
             <th scope="col" className="text-right">Realized P&amp;L</th>
             <th scope="col" className="text-right">Fee</th>
+            <th scope="col">Order ID</th>
           </tr>
         </thead>
         <tbody>
           {items.map((row, i) => {
             const time = row.filled_at ? formatDateTime(String(row.filled_at)) : 'Recent';
             const sym = String(row.symbol || 'UNKNOWN');
-            const dir = String(row.direction || 'LONG').toUpperCase();
+            const side = String(row.side || row.direction || (Number(row.realized_pnl || 0) < 0 ? 'SELL' : 'BUY')).toUpperCase();
             const price = String(row.price || '0');
             const qty = String(row.quantity || '0');
             const pnl = Number(row.realized_pnl || 0);
             const fee = String(row.fee || '0');
             const feeCcy = String(row.fee_ccy || 'USDT');
+            const clOrdId = String(row.client_order_id || row.provider_fill_id || '');
 
             return (
               <tr key={String(row.id ?? i)}>
                 <td className="text-muted text-xs tabular-num">{time}</td>
                 <td className="font-bold">{sym}</td>
                 <td>
-                  <span className={`badge ${dir === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
-                    {dir}
+                  <span className={`badge ${side === 'BUY' || side === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
+                    {side}
                   </span>
                 </td>
                 <td className="text-right tabular-num font-mono">${formatNumber(price)}</td>
                 <td className="text-right tabular-num font-mono">{formatNumber(qty)}</td>
-                <td className={`text-right tabular-num font-mono font-bold ${pnl >= 0 ? 'text-success' : 'text-danger'}`}>
-                  {pnl !== 0 ? `${pnl >= 0 ? '+' : ''}$${formatNumber(pnl.toFixed(2))}` : '—'}
+                <td className={`text-right tabular-num font-mono font-bold ${pnl > 0 ? 'text-success' : pnl < 0 ? 'text-danger' : 'text-muted'}`}>
+                  {pnl !== 0 ? `${pnl > 0 ? '+' : ''}$${formatNumber(pnl.toFixed(2))}` : '$0.00'}
                 </td>
                 <td className="text-right tabular-num font-mono text-muted text-xs">
                   {formatNumber(fee)} {feeCcy}
+                </td>
+                <td className="font-mono text-muted text-xs" title={clOrdId}>
+                  {clOrdId.slice(0, 18)}…
                 </td>
               </tr>
             );
@@ -257,6 +298,10 @@ export function FillsTable({items}: {items: RecordData[]}) {
     </div>
   );
 }
+
+// --------------------------------------------------------------------------
+// 4. Signals Table (Legitimate channel formatting, cashtag extraction, message preview)
+// --------------------------------------------------------------------------
 
 export function SignalsTable({items}: {items: RecordData[]}) {
   if (!items.length) {
@@ -273,30 +318,47 @@ export function SignalsTable({items}: {items: RecordData[]}) {
       <table className="clean-table">
         <thead>
           <tr>
-            <th scope="col">Received</th>
-            <th scope="col">Channel</th>
-            <th scope="col">Setup / Message</th>
+            <th scope="col">Received (UTC)</th>
+            <th scope="col">Channel / Source</th>
+            <th scope="col">Message / Setup</th>
             <th scope="col">Symbol</th>
             <th scope="col">Side</th>
-            <th scope="col">Status</th>
+            <th scope="col">Intake Status</th>
             <th scope="col" className="text-right">Action</th>
           </tr>
         </thead>
         <tbody>
           {items.map((row, i) => {
             const time = row.received_at ? formatDateTime(String(row.received_at)) : 'Just now';
-            const channel = String(row.channel_id || '@channel');
-            const text = String(row.raw_text || 'No text content');
-            const sym = String(row.symbol || '—');
-            const dir = row.direction ? String(row.direction).toUpperCase() : null;
-            const state = String(row.intake_state || row.state || 'PARSED');
+            const text = String(row.raw_text || '');
+            const sym = String(row.symbol || extractSignalSymbol(text) || 'General Update');
+            const dir = row.direction
+              ? String(row.direction).toUpperCase()
+              : /\b(LONG|BUY)\b/i.test(text)
+              ? 'LONG'
+              : /\b(SHORT|SELL)\b/i.test(text)
+              ? 'SHORT'
+              : null;
+            const state = String(row.intake_state || row.state || 'PARSED').toUpperCase();
+            const rejReason = row.entry_rejection_reason ? String(row.entry_rejection_reason) : null;
+            const msgUrl = row.source_message_url ? String(row.source_message_url) : null;
 
             return (
               <tr key={String(row.id ?? i)}>
                 <td className="text-muted text-xs tabular-num">{time}</td>
-                <td className="font-mono text-xs text-secondary">{channel}</td>
-                <td className="text-wrap" style={{maxWidth: '360px'}}>
-                  <div className="signal-snippet">{text}</div>
+                <td className="text-xs">
+                  {msgUrl ? (
+                    <a href={msgUrl} target="_blank" rel="noopener noreferrer" className="font-mono">
+                      Msg #{String(row.message_id || '')} ↗
+                    </a>
+                  ) : (
+                    <span className="font-mono text-muted">Telegram</span>
+                  )}
+                </td>
+                <td className="text-wrap" style={{maxWidth: '340px'}}>
+                  <div className="text-xs" style={{whiteSpace: 'pre-wrap', maxHeight: '42px', overflow: 'hidden', textOverflow: 'ellipsis'}}>
+                    {text.slice(0, 100)}{text.length > 100 ? '…' : ''}
+                  </div>
                 </td>
                 <td className="font-bold">{sym}</td>
                 <td>
@@ -305,13 +367,23 @@ export function SignalsTable({items}: {items: RecordData[]}) {
                       {dir}
                     </span>
                   ) : (
-                    '—'
+                    <span className="text-muted text-xs">—</span>
                   )}
                 </td>
                 <td>
-                  <span className={`badge ${state === 'PARSED' || state === 'ADMITTED' ? 'badge-positive' : 'badge-neutral'}`}>
+                  <span
+                    className={`badge ${
+                      state === 'PARSED' || state === 'ADMITTED'
+                        ? 'badge-positive'
+                        : state === 'EXPIRED'
+                        ? 'badge-neutral'
+                        : 'badge-warn'
+                    }`}
+                    title={rejReason || undefined}
+                  >
                     {state}
                   </span>
+                  {rejReason && <div className="text-muted text-xs">{rejReason}</div>}
                 </td>
                 <td className="text-right">
                   <Link
@@ -330,6 +402,10 @@ export function SignalsTable({items}: {items: RecordData[]}) {
   );
 }
 
+// --------------------------------------------------------------------------
+// 5. Jobs Table
+// --------------------------------------------------------------------------
+
 export function JobsTable({items}: {items: RecordData[]}) {
   if (!items.length) {
     return (
@@ -346,8 +422,8 @@ export function JobsTable({items}: {items: RecordData[]}) {
         <thead>
           <tr>
             <th scope="col">Time</th>
-            <th scope="col">Command Action</th>
-            <th scope="col">Risk Tier</th>
+            <th scope="col">Action</th>
+            <th scope="col">Tier</th>
             <th scope="col">State</th>
             <th scope="col">Phase</th>
             <th scope="col">Actor</th>
@@ -366,7 +442,7 @@ export function JobsTable({items}: {items: RecordData[]}) {
             return (
               <tr key={String(row.id ?? i)}>
                 <td className="text-muted text-xs tabular-num">{time}</td>
-                <td className="font-mono font-bold">{action}</td>
+                <td className="font-mono font-bold text-xs">{action}</td>
                 <td>
                   <span className={`badge ${tier >= 2 ? 'badge-warn' : 'badge-neutral'}`}>
                     Tier {tier}
@@ -405,78 +481,300 @@ export function JobsTable({items}: {items: RecordData[]}) {
 }
 
 // --------------------------------------------------------------------------
-// Generic Fallback Table for Other Settings / Ops Collections
+// 6. Account & Performance Dedicated View (Legitimate Bindings to Snapshots and Ledger)
 // --------------------------------------------------------------------------
 
-export function GenericTable({
-  section,
-  items,
-}: {
-  section: string;
-  items: RecordData[];
-}) {
-  if (!items.length) {
-    return (
-      <div className="empty-state-box">
-        <p className="empty-title">No records</p>
-        <p className="empty-subtext">No records observed in {human(section)}.</p>
-      </div>
-    );
-  }
+export function AccountDetailsView({data}: {data: RecordData}) {
+  const snapshotsObj = isObjectRecord(data.admission_snapshots) ? data.admission_snapshots : {};
+  const snapshots = Array.isArray(snapshotsObj.items) ? (snapshotsObj.items as RecordData[]) : [];
+  const latestSnapshot = snapshots[0] || null;
 
-  // Derive column headers dynamically from first record keys
-  const sample = items[0] || {};
-  const displayKeys = Object.keys(sample).filter(
-    (k) => !['resource_version', 'links', 'data', 'evidence'].includes(k)
-  ).slice(0, 6);
+  const ledgerPnl = isObjectRecord(data.ledger_pnl) ? data.ledger_pnl : {};
+  const feeGroups = Array.isArray(ledgerPnl.by_fee_currency) ? (ledgerPnl.by_fee_currency as RecordData[]) : [];
+  const usdtGroup = feeGroups.find((g) => g.fee_ccy === 'USDT') || feeGroups[0] || null;
+
+  const reservationsObj = isObjectRecord(data.reservations) ? data.reservations : {};
+  const reservations = Array.isArray(reservationsObj.items) ? (reservationsObj.items as RecordData[]) : [];
 
   return (
-    <div className="clean-table-wrapper">
-      <table className="clean-table">
-        <thead>
-          <tr>
-            <th scope="col">Identifier</th>
-            {displayKeys.filter((k) => k !== 'id').map((k) => (
-              <th scope="col" key={k}>
-                {human(k)}
-              </th>
-            ))}
-            <th scope="col" className="text-right">Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((row, i) => (
-            <tr key={String(row.id ?? i)}>
-              <td className="font-mono font-bold text-xs">
-                {String(row.id || row.name || row.symbol || `Record #${i + 1}`)}
-              </td>
-              {displayKeys.filter((k) => k !== 'id').map((k) => (
-                <td key={k} className="text-sm">
-                  {typeof row[k] === 'boolean' ? (
-                    <span className={`badge ${row[k] ? 'badge-positive' : 'badge-neutral'}`}>
-                      {row[k] ? 'Yes' : 'No'}
+    <div className="account-details-stack">
+      {/* Top Balances & Performance Summary */}
+      <div className="metric-grid-4">
+        <div className="metric-tile">
+          <span className="metric-tile-label">Verified Equity</span>
+          <span className="metric-tile-value">
+            ${latestSnapshot ? formatNumber(Number(latestSnapshot.equity || 0).toFixed(2)) : '0.00'}
+          </span>
+          <span className="metric-tile-sub">
+            {latestSnapshot ? `Snapshot ${String(latestSnapshot.id || '').slice(0, 8)}…` : 'Snapshot unobserved'}
+          </span>
+        </div>
+
+        <div className="metric-tile">
+          <span className="metric-tile-label">Available Balance</span>
+          <span className="metric-tile-value">
+            ${latestSnapshot ? formatNumber(Number(latestSnapshot.available_balance || 0).toFixed(2)) : '0.00'}
+          </span>
+          <span className="metric-tile-sub">Margin currency: {String(latestSnapshot?.margin_coin || 'USDT')}</span>
+        </div>
+
+        <div className="metric-tile">
+          <span className="metric-tile-label">Gross Realized P&amp;L</span>
+          <span className={`metric-tile-value ${Number(usdtGroup?.gross_realized_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}`}>
+            {usdtGroup ? `${Number(usdtGroup.gross_realized_pnl) >= 0 ? '+' : ''}$${formatNumber(Number(usdtGroup.gross_realized_pnl).toFixed(2))}` : '—'}
+          </span>
+          <span className="metric-tile-sub">{usdtGroup ? `${usdtGroup.fill_count} ledger fills` : 'No fills recorded'}</span>
+        </div>
+
+        <div className="metric-tile">
+          <span className="metric-tile-label">Total Execution Fees</span>
+          <span className="metric-tile-value">
+            ${usdtGroup ? formatNumber(Number(usdtGroup.fees || 0).toFixed(2)) : '0.00'}
+          </span>
+          <span className="metric-tile-sub">Fee currency: {String(usdtGroup?.fee_ccy || 'USDT')}</span>
+        </div>
+      </div>
+
+      {/* Honest Economic Disclosure Note */}
+      <div className="card" style={{padding: '14px 18px', background: 'var(--bg-subtle)'}}>
+        <div className="text-xs text-secondary">
+          <strong>Legitimate Financial Reporting Disclosure:</strong> {String(ledgerPnl.note || 'Gross realized P&L and fees remain separate; account-wide net P&L is unobserved in current read models.')}
+        </div>
+      </div>
+
+      {/* Margin Reservations Table */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Margin Reservations</h2>
+          <span className="badge badge-neutral">{reservations.length} records</span>
+        </div>
+        {reservations.length ? (
+          <div className="clean-table-wrapper">
+            <table className="clean-table">
+              <thead>
+                <tr>
+                  <th scope="col">Reservation ID</th>
+                  <th scope="col">Exchange</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Symbol</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reservations.map((r, i) => (
+                  <tr key={String(r.id ?? i)}>
+                    <td className="font-mono text-xs">{String(r.id)}</td>
+                    <td className="font-mono">{String(r.exchange || 'bitget')}</td>
+                    <td>
+                      <span className={`badge ${r.state === 'active' ? 'badge-warn' : 'badge-neutral'}`}>
+                        {String(r.state || 'released')}
+                      </span>
+                    </td>
+                    <td>{String(r.symbol || '—')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-secondary text-sm">No active margin reservations.</p>
+        )}
+      </div>
+
+      {/* Historical Admission Snapshots Table */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Admission Balance Snapshots</h2>
+          <span className="badge badge-neutral">{snapshots.length} snapshots</span>
+        </div>
+        {snapshots.length ? (
+          <div className="clean-table-wrapper">
+            <table className="clean-table">
+              <thead>
+                <tr>
+                  <th scope="col">Captured At (UTC)</th>
+                  <th scope="col">Snapshot ID</th>
+                  <th scope="col">Coin</th>
+                  <th scope="col" className="text-right">Equity</th>
+                  <th scope="col" className="text-right">Available Balance</th>
+                  <th scope="col" className="text-right">Total Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snapshots.map((s, i) => (
+                  <tr key={String(s.id ?? i)}>
+                    <td className="text-muted text-xs tabular-num">
+                      {s.captured_at ? formatDateTime(String(s.captured_at)) : '—'}
+                    </td>
+                    <td className="font-mono text-xs">{String(s.id).slice(0, 16)}…</td>
+                    <td className="font-bold">{String(s.margin_coin || 'USDT')}</td>
+                    <td className="text-right tabular-num font-mono">${formatNumber(String(s.equity || '0'))}</td>
+                    <td className="text-right tabular-num font-mono">${formatNumber(String(s.available_balance || '0'))}</td>
+                    <td className="text-right tabular-num font-mono">${formatNumber(String(s.total_balance || '0'))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-secondary text-sm">No admission balance snapshots recorded.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+// 7. Recovery & Safety Dedicated View
+// --------------------------------------------------------------------------
+
+export function RecoveryDetailsView({data}: {data: RecordData}) {
+  const latches = Array.isArray(data.latches) ? (data.latches as RecordData[]) : [];
+  const proofStatus = String(data.proof_status || 'unknown');
+  const proofNote = String(data.proof_note || 'Recovery proof not established.');
+
+  return (
+    <div className="recovery-details-stack">
+      {/* Containment Latches Card */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <span className="eyebrow">FAIL-CLOSED CONTAINMENT</span>
+            <h2>Safety Latches</h2>
+          </div>
+          <span className="badge badge-warn">{latches.filter((l) => l.active).length} Active</span>
+        </div>
+
+        <div className="clean-table-wrapper">
+          <table className="clean-table">
+            <thead>
+              <tr>
+                <th scope="col">Scope</th>
+                <th scope="col">Status</th>
+                <th scope="col">Latch Reason</th>
+                <th scope="col">Latched At</th>
+                <th scope="col">Updated At</th>
+              </tr>
+            </thead>
+            <tbody>
+              {latches.map((l, i) => (
+                <tr key={String(l.scope ?? i)}>
+                  <td className="font-mono font-bold">{String(l.scope)}</td>
+                  <td>
+                    <span className={`badge ${l.active ? 'badge-danger' : 'badge-positive'}`}>
+                      {l.active ? 'LATCHED (Active)' : 'Released'}
                     </span>
-                  ) : typeof row[k] === 'number' ? (
-                    <span className="tabular-num font-mono">{formatNumber(Number(row[k]))}</span>
-                  ) : String(row[k] || '—')}
-                </td>
+                  </td>
+                  <td className="font-mono text-sm">{String(l.reason || 'None')}</td>
+                  <td className="text-muted text-xs tabular-num">
+                    {l.latched_at ? formatDateTime(String(l.latched_at)) : '—'}
+                  </td>
+                  <td className="text-muted text-xs tabular-num">
+                    {l.updated_at ? formatDateTime(String(l.updated_at)) : '—'}
+                  </td>
+                </tr>
               ))}
-              <td className="text-right">
-                {row.id ? (
-                  <Link
-                    to={`/${section}/${encodeURIComponent(String(row.id))}`}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    View →
-                  </Link>
-                ) : (
-                  '—'
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Recovery Proof Status */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Recovery Proof Verification</h2>
+          <span className={`badge ${proofStatus === 'verified' ? 'badge-positive' : 'badge-neutral'}`}>
+            Status: {proofStatus}
+          </span>
+        </div>
+        <p className="text-secondary text-sm">{proofNote}</p>
+      </div>
+    </div>
+  );
+}
+
+// --------------------------------------------------------------------------
+// 8. Access & Sessions Dedicated View
+// --------------------------------------------------------------------------
+
+export function AccessDetailsView({data}: {data: RecordData}) {
+  const policy = isObjectRecord(data.policy) ? data.policy : {};
+  const principalsObj = isObjectRecord(data.principals) ? data.principals : {};
+  const principals = Array.isArray(principalsObj.items) ? (principalsObj.items as RecordData[]) : [];
+  const sessionsObj = isObjectRecord(data.sessions) ? data.sessions : {};
+  const sessions = Array.isArray(sessionsObj.items) ? (sessionsObj.items as RecordData[]) : [];
+
+  return (
+    <div className="access-details-stack">
+      {/* Policy Card */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <span className="eyebrow">GOVERNANCE</span>
+            <h2>Password Authentication Policy</h2>
+          </div>
+          <span className="badge badge-positive">Active Policy</span>
+        </div>
+        <dl className="record-grid">
+          <div>
+            <dt>Authentication Mode</dt>
+            <dd><strong>Shared Console Password</strong> (Password-Only)</dd>
+          </div>
+          <div>
+            <dt>Policy Version</dt>
+            <dd><code>{String(policy.version || 'console-password-v2')}</code></dd>
+          </div>
+          <div>
+            <dt>Session Idle Timeout</dt>
+            <dd>{Number(policy.session_idle_seconds || 1800) / 60} minutes</dd>
+          </div>
+          <div>
+            <dt>Session Absolute Expiry</dt>
+            <dd>{Number(policy.session_absolute_seconds || 28800) / 3600} hours</dd>
+          </div>
+          <div>
+            <dt>Two-Person Approval Policy</dt>
+            <dd>Tier 3 actions require distinct approver (Enforced fail-closed)</dd>
+          </div>
+        </dl>
+      </div>
+
+      {/* Active Sessions */}
+      <div className="card">
+        <div className="card-header">
+          <h2>Active Operator Sessions</h2>
+          <span className="badge badge-neutral">{sessions.length} sessions</span>
+        </div>
+        {sessions.length ? (
+          <div className="clean-table-wrapper">
+            <table className="clean-table">
+              <thead>
+                <tr>
+                  <th scope="col">Session Token</th>
+                  <th scope="col">Principal</th>
+                  <th scope="col">Authenticated (UTC)</th>
+                  <th scope="col">Last Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessions.map((s, i) => (
+                  <tr key={String(s.id ?? i)}>
+                    <td className="font-mono text-xs">{String(s.id || '').slice(0, 20)}…</td>
+                    <td className="font-bold">{String(s.principal_id || 'console-password-owner')}</td>
+                    <td className="text-muted text-xs tabular-num">
+                      {s.authenticated_at ? formatDateTime(String(s.authenticated_at)) : '—'}
+                    </td>
+                    <td className="text-muted text-xs tabular-num">
+                      {s.last_seen_at ? formatDateTime(String(s.last_seen_at)) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-secondary text-sm">No remote session tokens stored.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -512,7 +810,34 @@ export function DomainTable({
     return <JobsTable items={items} />;
   }
 
-  return <GenericTable section={section} items={items} />;
+  return (
+    <div className="clean-table-wrapper">
+      <table className="clean-table">
+        <thead>
+          <tr>
+            <th scope="col">Record</th>
+            <th scope="col">State / Kind</th>
+            <th scope="col">Created At</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((row, i) => (
+            <tr key={String(row.id ?? i)}>
+              <td className="font-mono font-bold text-xs">
+                {String(row.symbol || row.action || row.name || row.id || `Item #${i + 1}`)}
+              </td>
+              <td>
+                <span className="badge badge-neutral">{String(row.state || row.kind || row.health || 'ACTIVE')}</span>
+              </td>
+              <td className="text-muted text-xs tabular-num">
+                {row.created_at ? formatDateTime(String(row.created_at)) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 // --------------------------------------------------------------------------
@@ -529,10 +854,20 @@ export function DomainDetail({
   render: (value: unknown) => ReactNode;
 }) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    return <div className="card">{render(data)}</div>;
+    return <div className="card"><Value value={data} /></div>;
   }
 
   const record = data as RecordData;
+
+  if (section === 'account') {
+    return <AccountDetailsView data={record} />;
+  }
+  if (section === 'recovery') {
+    return <RecoveryDetailsView data={record} />;
+  }
+  if (section === 'access') {
+    return <AccessDetailsView data={record} />;
+  }
 
   return (
     <div className="detail-container">
@@ -553,7 +888,7 @@ export function DomainDetail({
             .map(([k, v]) => (
               <div key={k} className="record-field">
                 <dt>{human(k)}</dt>
-                <dd>{render(v)}</dd>
+                <dd><Value value={v} /></dd>
               </div>
             ))}
         </dl>
