@@ -151,6 +151,16 @@ stays loopback-only. Login and mutations require that exact origin, so the forme
 `ssh -N -L 18081:127.0.0.1:18081 fspmi-hostinger` tunnel no longer establishes a
 session; it can still serve unauthenticated reads such as `/health/telemetry`.
 
+Browser push subscriptions are registered from the authenticated console
+(`POST /api/v1/push/subscriptions`, exact origin + CSRF + audit) and delivered by
+`notification-sender` from the durable outbox; each `(notification, subscription)`
+pair has its own retry ledger and subscriptions the push service reports gone
+(404/410) are disabled automatically. The VAPID keypair lives under `runtime/`
+(`web-push-private.pem` mounted read-only into the sender, `web-push-public.txt`
+into web); rotating it invalidates existing subscriptions. Migration 27 adds the
+two additive web-push tables. See
+[push notifications](BOT-CONSOLE-PUSH-NOTIFICATIONS.md).
+
 
 The web process has no Docker socket, exchange credentials, private secret key,
 or host command runner. `deploy/systemd/fatty-console-ops-worker.service` runs
