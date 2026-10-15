@@ -355,9 +355,9 @@ export function SignalsTable({items}: {items: RecordData[]}) {
                     <span className="font-mono text-muted">Telegram</span>
                   )}
                 </td>
-                <td className="text-wrap" style={{maxWidth: '340px'}}>
-                  <div className="text-xs" style={{whiteSpace: 'pre-wrap', maxHeight: '42px', overflow: 'hidden', textOverflow: 'ellipsis'}}>
-                    {text.slice(0, 100)}{text.length > 100 ? '…' : ''}
+                <td style={{minWidth: '320px', maxWidth: '520px'}}>
+                  <div className="signal-message-bubble">
+                    {text}
                   </div>
                 </td>
                 <td className="font-bold">{sym}</td>

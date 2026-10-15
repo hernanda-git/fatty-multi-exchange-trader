@@ -538,7 +538,20 @@ a:hover {
   padding: 12px 14px;
   font-size: 13px;
   border-bottom: 1px solid var(--border-subtle);
-  vertical-align: middle;
+  vertical-align: top;
+}
+
+.signal-message-bubble {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  padding: 8px 12px;
+  background: var(--bg-subtle);
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
 }
 .clean-table tbody tr:last-child td {
   border-bottom: none;
