@@ -831,3 +831,37 @@ def test_split_all_in_fallback_cannot_bypass_one_usdt_margin_cap() -> None:
     assert decision.fallback_used is True
     assert decision.margin_usdt is None
     assert decision.notional_usdt is None
+
+
+@pytest.mark.parametrize("desired", [5, 10, 20])
+def test_desired_leverage_is_a_ceiling_below_the_hard_maximum(desired: int) -> None:
+    decision = plan_live_position(
+        make_input(
+            risk=capped_risk("1", floor=5),
+            desired_leverage=desired,
+        )
+    )
+    assert decision.accepted is True
+    assert decision.leverage == desired
+    assert decision.margin_usdt <= Decimal("1")
+
+
+def test_desired_leverage_still_backs_off_for_liquidation_headroom() -> None:
+    decision = plan_live_position(
+        make_input(
+            meta=make_meta(mm_tiers=HIGH_MMR_TIERS),
+            risk=capped_risk("1", floor=5),
+            desired_leverage=10,
+            stop_loss=Decimal("90"),
+        )
+    )
+    assert decision.accepted is True
+    assert 5 <= decision.leverage < 10
+    assert decision.liquidation_price < decision.stop_loss
+    assert decision.margin_usdt <= Decimal("1")
+
+
+@pytest.mark.parametrize("desired", [4, 21, 10.5, True])
+def test_desired_leverage_rejects_values_outside_integer_live_bounds(desired) -> None:
+    with pytest.raises(ValidationError):
+        make_input(desired_leverage=desired)

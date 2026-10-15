@@ -5,122 +5,79 @@ import {Link} from '../nav';
 import type {Envelope, Capability, RecordData, Principal} from '../types';
 import {isObjectRecord} from '../types';
 
-function TradingDefaultsConfig({
-  onSave,
-}: {
-  onSave: (settings: RecordData) => void;
+function TradingDefaultsConfig({data, onSave}: {
+  data: RecordData;
+  onSave: (args: RecordData) => void;
 }) {
-  const [mode, setMode] = useState<'PERCENTAGE' | 'FIXED_USDT'>('PERCENTAGE');
-  const [allocationPct, setAllocationPct] = useState('0.20');
-  const [fixedMarginUsdt, setFixedMarginUsdt] = useState('1.00');
-  const [defaultLeverage, setDefaultLeverage] = useState(20);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const settings: RecordData = {
-      BITGET_MARGIN_MODE_TYPE: mode,
-      BITGET_ALLOCATION_PCT: Number(allocationPct),
-      BITGET_MAX_MARGIN_PER_TRADE_USDT: Number(fixedMarginUsdt),
-      BITGET_DEFAULT_LEVERAGE: Number(defaultLeverage),
-    };
-    onSave(settings);
-  };
-
+  const effective = isObjectRecord(data.effective) ? data.effective : null;
+  const values = effective && isObjectRecord(effective.values) ? effective.values : null;
+  const [changes, setChanges] = useState<Record<string, string>>({});
+  const mode = changes.BITGET_MARGIN_MODE_TYPE ?? String(values?.BITGET_MARGIN_MODE_TYPE ?? 'PERCENTAGE');
+  const allocation = changes.BITGET_ALLOCATION_PCT ?? String(values?.BITGET_ALLOCATION_PCT ?? '0.20');
+  const fixed = changes.BITGET_FIXED_MARGIN_USDT ?? String(values?.BITGET_FIXED_MARGIN_USDT ?? '1');
+  const leverage = changes.BITGET_DEFAULT_LEVERAGE ?? String(values?.BITGET_DEFAULT_LEVERAGE ?? '20');
+  const baseVersion = data.current_version;
+  const ready = Boolean(values && effective?.last_known !== true &&
+    typeof baseVersion === 'number' && Number.isInteger(baseVersion) && baseVersion >= 0);
+  const change = (key: string, value: string) => setChanges(previous => ({...previous, [key]: value}));
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!ready) return;
+    onSave({
+      base_version: baseVersion,
+      settings: {
+        BITGET_MARGIN_MODE_TYPE: mode,
+        BITGET_ALLOCATION_PCT: Number(allocation),
+        BITGET_FIXED_MARGIN_USDT: Number(fixed),
+        BITGET_DEFAULT_LEVERAGE: Number(leverage),
+      },
+    });
+  }
   return (
-    <section className="card">
+    <section className="card" data-testid="trading-defaults">
       <div className="card-header">
-        <div>
-          <span className="eyebrow">AUTOMATED TRADING DEFAULTS</span>
-          <h2>Default Margin &amp; Leverage (Signals)</h2>
-        </div>
-        <span className="badge badge-positive">Live Signal Engine</span>
+        <div><span className="eyebrow">AUTOMATED SIGNALS ONLY</span><h2>Default margin &amp; leverage</h2></div>
       </div>
-      <p className="text-secondary text-sm" style={{marginBottom: '16px'}}>
-        Configure how the automated dispatcher sizes incoming Telegram signals on Bitget futures.
+      <p className="text-secondary text-sm">
+        Applies to new Telegram signal trades, not the manual order ticket or existing positions.
+        Percentage sizing uses total USDT equity; available funds and the 1 USDT per-trade safety cap still limit execution.
+        Leverage may decrease when the signal's stop requires more liquidation headroom.
       </p>
-
-      <form onSubmit={handleSubmit}>
-        {/* Margin Sizing Mode Selector */}
-        <label className="form-group">
-          <span className="form-label">Default Margin Sizing Mode</span>
-          <div className="side-selector" style={{maxWidth: '480px', marginBottom: '14px'}}>
-            <button
-              type="button"
-              className={`side-btn ${mode === 'PERCENTAGE' ? 'active-long' : ''}`}
-              onClick={() => setMode('PERCENTAGE')}
-            >
-              Percentage of Total USDT (% of Equity)
-            </button>
-            <button
-              type="button"
-              className={`side-btn ${mode === 'FIXED_USDT' ? 'active-long' : ''}`}
-              onClick={() => setMode('FIXED_USDT')}
-            >
-              Fixed USDT Quantity ($)
-            </button>
-          </div>
-        </label>
-
-        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px'}}>
+      {!ready && <p role="status">Waiting for effective settings and configuration version. Saving is unavailable.</p>}
+      <form onSubmit={submit}>
+        <fieldset disabled={!ready}>
+          <label className="form-group">
+            <span className="form-label">Margin sizing mode</span>
+            <select value={mode} onChange={event => change('BITGET_MARGIN_MODE_TYPE', event.target.value)}>
+              <option value="PERCENTAGE">Percentage of total USDT equity</option>
+              <option value="FIXED_USDT">Fixed USDT amount</option>
+            </select>
+          </label>
           {mode === 'PERCENTAGE' ? (
             <label className="form-group">
-              <span className="form-label">
-                Margin Allocation: {(Number(allocationPct) * 100).toFixed(0)}% of Equity
-              </span>
-              <input
-                type="range"
-                min="0.05"
-                max="1.00"
-                step="0.05"
-                value={allocationPct}
-                onChange={(e) => setAllocationPct(e.target.value)}
-              />
-              <span className="text-muted text-xs">
-                Allocates {(Number(allocationPct) * 100).toFixed(0)}% of your available balance per trade.
-              </span>
+              <span className="form-label">Equity allocation (%)</span>
+              <input type="number" required min="0.01" max="100" step="0.01"
+                value={Number(allocation) * 100}
+                onChange={event => change('BITGET_ALLOCATION_PCT', String(Number(event.target.value) / 100))} />
             </label>
           ) : (
             <label className="form-group">
-              <span className="form-label">Fixed Margin per Trade (USDT)</span>
-              <input
-                type="text"
-                pattern="^[0-9]+(?:\.[0-9]+)?$"
-                required
-                value={fixedMarginUsdt}
-                onChange={(e) => setFixedMarginUsdt(e.target.value)}
-                placeholder="1.00"
-              />
-              <span className="text-muted text-xs">
-                Hard dollar cap in USDT allocated per automated signal.
-              </span>
+              <span className="form-label">Margin per trade (USDT)</span>
+              <input type="number" required min="0.01" max="1" step="0.01" value={fixed}
+                onChange={event => change('BITGET_FIXED_MARGIN_USDT', event.target.value)} />
             </label>
           )}
-
           <label className="form-group">
-            <span className="form-label">Default Leverage ({defaultLeverage}x)</span>
-            <div style={{display: 'flex', gap: '8px', marginTop: '4px'}}>
-              {[5, 10, 15, 20].map((lev) => (
-                <button
-                  key={lev}
-                  type="button"
-                  className={`btn btn-sm ${defaultLeverage === lev ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setDefaultLeverage(lev)}
-                >
-                  {lev}x {lev === 20 ? '(Ceiling)' : ''}
-                </button>
-              ))}
-            </div>
-            <span className="text-muted text-xs" style={{marginTop: '4px'}}>
-              Ceiling is pinned at 20x for safe liquidation headroom.
-            </span>
+            <span className="form-label">Default leverage (x)</span>
+            <input type="number" required min="5" max="20" step="1" value={leverage}
+              onChange={event => change('BITGET_DEFAULT_LEVERAGE', event.target.value)} />
           </label>
-        </div>
-
-        <div style={{marginTop: '16px'}}>
-          <button type="submit" className="btn btn-primary btn-sm">
-            Save Trading Defaults Draft →
-          </button>
-        </div>
+          <p className="text-muted text-xs">
+            Initial values reflect the worker's effective environment (legacy defaults: 20% and 20x).
+            Saving creates a draft only. Review and apply the draft separately before it changes runtime sizing.
+          </p>
+          <button type="submit" className="btn btn-primary btn-sm">Review trading defaults draft</button>
+        </fieldset>
       </form>
     </section>
   );
@@ -181,12 +138,11 @@ export function SettingsPage({
   return (
     <div className="page-content settings-page">
       {/* Configuration Defaults Card */}
-      {readSection === 'config' && (
+      {readSection === 'config' && !resourceId && (
         <>
           <TradingDefaultsConfig
-            onSave={(settings) =>
-              onOpenAction('config.save_draft', {settings})
-            }
+            data={isObjectRecord(data) ? data : {}}
+            onSave={args => onOpenAction('config.save_draft', args)}
           />
           <SecretStage isOwner={isOwner} onChanged={reload} />
         </>

@@ -86,10 +86,10 @@ CONFIG_FIELDS: dict[str, Any] = {
         "minimum": 0.01,
         "maximum": 1.0,
     },
-    "BITGET_MAX_MARGIN_PER_TRADE_USDT": {
+    "BITGET_FIXED_MARGIN_USDT": {
         "type": "number",
-        "minimum": 0.1,
-        "maximum": 500.0,
+        "exclusiveMinimum": 0,
+        "maximum": 1.0,
     },
     "BITGET_DEFAULT_LEVERAGE": {
         "type": "integer",

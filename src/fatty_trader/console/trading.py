@@ -498,6 +498,7 @@ class TradingHandlers:
             order_type=args["order_type"],
             manual_margin=_decimal(args["margin"]) if args.get("margin") is not None else None,
             manual_leverage=args.get("leverage"),
+            is_manual=True,
         )
 
     def _entry_claim_authority(self, cursor: Any) -> None:

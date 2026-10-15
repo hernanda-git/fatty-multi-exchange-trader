@@ -821,7 +821,13 @@ class ReadService:
             log_filters = {**filters, **({"service_id": resource} if resource else {})}
             return self._list_memory(section, rows, None, log_filters, limit, cursor, observation)
         if section == "config":
+            versions = self._query(
+                "SELECT coalesce(max(version),0) AS current_version FROM console_config_versions "
+                "WHERE kind='runtime'",
+                name="config_current_version",
+            )
             return {
+                "current_version": versions[0]["current_version"] if versions else None,
                 "requested": self._table("config/history", resource, filters, limit, cursor),
                 "effective": self._snapshot("effective_config"),
                 "host": self._snapshot("host_effective_config"),
@@ -2112,6 +2118,7 @@ _EFFECTIVE_KEYS = (
     "BITGET_MIN_LEVERAGE",
     "BITGET_MAX_LEVERAGE",
     "BITGET_ALLOCATION_PCT",
+    "BITGET_FIXED_MARGIN_USDT",
     "BITGET_MAX_MARGIN_PER_TRADE_USDT",
     "BITGET_MAX_NORMAL_POSITIONS",
     "BITGET_LIQUIDATION_BUFFER",

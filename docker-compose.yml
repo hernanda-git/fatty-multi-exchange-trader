@@ -223,15 +223,17 @@ services:
       # Leverage CEILING is pinned at 20x and is never exceeded. The floor is the
       # lowest leverage the sizing policy may back off to when a signal's stop needs
       # more liquidation headroom than 20x leaves (per-symbol maintenance-margin rates
-      # vary: a 2.5% MMR symbol has ~2.4% of room at 20x). Lower leverage is safer and
+      # vary: a 2.5% MMR symbol has ~2.4% of room at 20x). Lower leverage is safer.
+      # Automated signal sizing only; manual-order defaults are independent.
       BITGET_MARGIN_MODE_TYPE: ${BITGET_MARGIN_MODE_TYPE:-PERCENTAGE}
       BITGET_DEFAULT_LEVERAGE: ${BITGET_DEFAULT_LEVERAGE:-20}
       BITGET_MIN_LEVERAGE: "5"
       BITGET_MAX_LEVERAGE: "20"
       BITGET_ALLOCATION_PCT: ${BITGET_ALLOCATION_PCT:-0.20}
-      # Planned per-trade isolated-margin ceiling in USDT. Allocation is scaled by
-      # balance, so without this a growing balance silently raises per-trade
-      # margin. The cap binds regardless of balance size. Note it bounds the
+      BITGET_FIXED_MARGIN_USDT: ${BITGET_FIXED_MARGIN_USDT:-1}
+      # Hard planned per-trade isolated-margin ceiling in USDT. Both percentage
+      # of total equity and fixed-USDT sizing remain bound by available funds and
+      # this non-editable cap, regardless of account growth or selected mode.
       # PLANNED margin: entries are market orders, so fill slippage can push
       # exchange-side realized margin marginally above it.
       BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
@@ -266,8 +268,6 @@ services:
       BITGET_MONITOR_STALL_TIMEOUT_SECONDS: ${BITGET_MONITOR_STALL_TIMEOUT_SECONDS:-90}
       BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
       BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-1}
-      BITGET_MARGIN_MODE_TYPE: ${BITGET_MARGIN_MODE_TYPE:-PERCENTAGE}
-      BITGET_DEFAULT_LEVERAGE: ${BITGET_DEFAULT_LEVERAGE:-20}
       BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
       BITGET_PROTECTION_STREAM_STALE_SECONDS: ${BITGET_PROTECTION_STREAM_STALE_SECONDS:-5}
       BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS: ${BITGET_PROTECTION_STREAM_HEARTBEAT_SECONDS:-25}
@@ -419,6 +419,8 @@ services:
       BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-1}
       BITGET_MARGIN_MODE_TYPE: ${BITGET_MARGIN_MODE_TYPE:-PERCENTAGE}
       BITGET_DEFAULT_LEVERAGE: ${BITGET_DEFAULT_LEVERAGE:-20}
+      BITGET_ALLOCATION_PCT: ${BITGET_ALLOCATION_PCT:-0.20}
+      BITGET_FIXED_MARGIN_USDT: ${BITGET_FIXED_MARGIN_USDT:-1}
       BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
       BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}

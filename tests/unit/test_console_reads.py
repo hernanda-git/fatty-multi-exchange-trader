@@ -373,6 +373,8 @@ class ProjectionCursor:
             raise RuntimeError("Database detail never escapes")
         if "AS event_cursor" in sql:
             self.result = [{"event_cursor": 17}]
+        elif "AS current_version" in sql:
+            self.result = [{"current_version": 9}]
         elif "AS record_count" in sql:
             self.result = [{"record_count": 0, "latest_update": None}]
         else:
@@ -444,6 +446,22 @@ def test_all_screens_use_owned_transaction_and_truthful_missing_evidence(monkeyp
     if section in {"positions", "protection", "services"}:
         assert result["data"]["items"] is None
         assert any(evidence["read_status"] == "unknown" for evidence in result["evidence"])
+
+
+def test_config_current_version_is_global_even_when_requested_history_is_empty(monkeypatch):
+    monkeypatch.setattr("fatty_trader.console.reads.set_json_loads", lambda *args, **kwargs: None)
+    store = ProjectionStore()
+    result = ReadService(store, SCOPE).read("config", limit=1)
+    assert result["data"]["current_version"] == 9
+    assert result["data"]["requested"]["items"] == []
+    version_reads = [(sql, params) for sql, params in store.calls if "AS current_version" in sql]
+    assert version_reads == [
+        (
+            "SELECT coalesce(max(version),0) AS current_version FROM console_config_versions "
+            "WHERE kind='runtime'",
+            (),
+        )
+    ]
 
 
 def test_independent_read_failure_rolls_back_savepoint_not_other_observations(monkeypatch):
@@ -569,6 +587,9 @@ def test_worker_effective_config_uses_canonical_risk_keys_not_web_defaults():
         "BITGET_MIN_LEVERAGE": "5",
         "BITGET_MAX_LEVERAGE": "20",
         "BITGET_ALLOCATION_PCT": "0.20",
+        "BITGET_MARGIN_MODE_TYPE": "PERCENTAGE",
+        "BITGET_FIXED_MARGIN_USDT": "0.75",
+        "BITGET_DEFAULT_LEVERAGE": "15",
         "BITGET_OPERATOR_MUTATIONS_ENABLED": "1",
     }
     asyncio.run(SnapshotCollector(environ, store, GetOnlyClient()).collect_once())

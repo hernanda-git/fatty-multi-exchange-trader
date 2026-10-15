@@ -3,18 +3,20 @@
 Pipeline (fail-closed, deterministic):
 
 1. Position cap: ``active_positions >= risk.max_normal_positions`` -> skip.
-2. Margin: ``allocation_pct * available_usdt`` (dynamic allocation), then capped
-   down by ``risk.max_margin_per_trade_usdt`` when one is configured. The cap is
-   enforced twice: on the requested margin, and again on the step-rounded quantity,
+2. Margin: ``allocation_pct * available_usdt``, capped by the resolved per-trade
+   budget in ``risk.max_margin_per_trade_usdt``. Configured automated percentage
+   and fixed budgets are resolved by admission, which supplies allocation_pct=1.
+   The budget is enforced twice: on requested margin and the step-rounded quantity,
    since rounding can push realized margin back above the ceiling.
 3. Leverage: candidates are walked from ``min(_MAX_LIVE_LEVERAGE, risk.max_leverage,
-   meta.max_leverage)`` DOWN to ``max(_MIN_LIVE_LEVERAGE, risk.min_leverage)``. Each
+   data.desired_leverage, meta.max_leverage)`` DOWN to
+   ``max(_MIN_LIVE_LEVERAGE, risk.min_leverage)``. Each
    candidate must be exchange-legal (route-rounded quantity with every child at or
    above its minimum size/notional and within its maximum) and within the margin
    cap, and must clear ``check_sl_before_liquidation``. The
-   highest such leverage wins, so an ordinary signal trades at the pinned ceiling
-   (20x) and a wide-stop signal backs off only as far as its own stop geometry
-   requires. The ceiling is never exceeded.
+   highest such leverage wins, so an ordinary signal trades at its desired ceiling
+   (20x by default) and a wide-stop signal backs off only as far as its own stop
+   geometry requires. Neither the desired nor the hard ceiling is exceeded.
 4. Min-notional is enforced AFTER rounding. When no leverage meets it:
    all-in fallback (margin = full balance, still capped) ONLY when
    ``active_positions == 0`` (``fallback_used=True``); otherwise skip with reason.
@@ -51,7 +53,7 @@ from fatty_trader.risk.sizing import (
 _MIN_LIVE_LEVERAGE = 5
 # Ceiling pinned to 20: a live trade is never above 20x. The floor above is only the
 # absolute lower bound of the downward search; the configured ``min_leverage``
-# (BITGET_MIN_LEVERAGE, default 20) is what actually permits backing off.
+# (BITGET_MIN_LEVERAGE, default 5) is what actually permits backing off.
 _MAX_LIVE_LEVERAGE = 20
 
 # Failure tags for one leverage candidate, used to pick the skip reason.
@@ -155,6 +157,7 @@ class LiveSizingInput(BaseModel):
     meta: SymbolMetadata
     risk: BitgetLiveRiskConfig = Field(default_factory=BitgetLiveRiskConfig)
     available_usdt: Decimal = Field(gt=0)
+    desired_leverage: int = Field(default=20, ge=5, le=20, strict=True)
     entry: Decimal = Field(gt=0)
     direction: Direction
     active_positions: int = Field(ge=0)
@@ -434,6 +437,7 @@ def plan_live_position(data: LiveSizingInput) -> LiveSizingDecision:
         raise AssertionError("unreachable: empty MM tiers must raise")
 
     low, high = _leverage_bounds(data.meta, data.risk)
+    high = min(high, data.desired_leverage)
     if low > high:
         return _skip(f"no live leverage in [{low}, {high}] for symbol max")
 

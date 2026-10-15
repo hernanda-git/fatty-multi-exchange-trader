@@ -461,3 +461,167 @@ async def test_position_read_crossing_route_window_cannot_expand_market_child(mo
     assert admission.submission.entry_route.market_quantity == Decimal("2.1")
     assert admission.submission.entry_route.limit_quantity == Decimal("6.3")
     assert admission.submission.quantity == Decimal("8.4")
+
+
+def _budget_venue_and_dispatch(available: str, equity: str):
+    from dataclasses import replace
+
+    venue = Venue()
+    venue.snapshot.account.available = Decimal(available)
+    venue.snapshot.account.equity = Decimal(equity)
+    venue.snapshot.account.total_balance = Decimal(equity)
+    venue.snapshot.current_price = Decimal("1")
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={
+            "size_step": Decimal("0.01"),
+            "min_order_qty": Decimal("0.01"),
+            "min_notional": Decimal("0.1"),
+        }
+    )
+    dispatch = replace(
+        _dispatch(),
+        entry_price=Decimal("1"),
+        stop_loss=Decimal("0.97"),
+        take_profits=(Decimal("1.10"),),
+    )
+    return venue, dispatch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("durable", [False, True])
+@pytest.mark.parametrize(
+    "mode,available,equity,percentage,fixed,leverage,expected",
+    [
+        ("PERCENTAGE", "0.8", "3", "0.20", "1", "20", "0.6"),
+        ("PERCENTAGE", "0.8", "30", "0.20", "1", "20", "0.8"),
+        ("PERCENTAGE", "3", "30", "0.20", "1", "20", "1"),
+        ("FIXED_USDT", "1", "10", "0.01", "0.8", "20", "0.8"),
+        ("FIXED_USDT", "0.5", "10", "0.01", "0.8", "20", "0.5"),
+        ("PERCENTAGE", "1", "3", "0.20", "1", "10", "0.6"),
+        (None, "2", "3", "0.20", "1", "20", "0.4"),
+        (None, "100", "200", "0.20", "1", "20", "1"),
+    ],
+)
+async def test_automated_budget_is_resolved_once_for_legacy_and_durable_admission(
+    durable, mode, available, equity, percentage, fixed, leverage, expected
+):
+    venue, dispatch = _budget_venue_and_dispatch(available, equity)
+    reservations = Reservations() if durable else None
+    environ = {
+        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+        "BITGET_ALLOCATION_PCT": percentage,
+        "BITGET_FIXED_MARGIN_USDT": fixed,
+        "BITGET_DEFAULT_LEVERAGE": leverage,
+    }
+    if mode is not None:
+        environ["BITGET_MARGIN_MODE_TYPE"] = mode
+    result = await _bitget_dispatch_preflight(
+        venue, environ, reservation_repository=reservations
+    )(dispatch)
+
+    if durable:
+        assert result.submission.planned_margin_usdt == Decimal(expected)
+        assert result.submission.effective_leverage == int(leverage)
+        assert reservations.kwargs["planned_margin_usdt"] == Decimal(expected)
+        # Reservation compares all outstanding budgets to available funds, not
+        # to another percentage of them; immutable equity evidence stays intact.
+        assert reservations.kwargs["headroom"] == Decimal("1")
+        assert reservations.kwargs["available_balance"] == Decimal(available)
+        assert reservations.kwargs["equity"] == Decimal(equity)
+        assert reservations.kwargs["max_margin_per_trade_usdt"] == Decimal("1")
+    else:
+        spec, risk = result
+        assert risk.base_margin_usdt == Decimal(expected)
+        assert risk.max_auto_margin_usdt == Decimal(expected)
+        assert risk.default_leverage == int(leverage)
+        assert risk.max_leverage == int(leverage)
+        assert spec.max_leverage == int(leverage)
+        assert risk.free_margin_headroom_pct == (
+            Decimal("1") if mode is not None else Decimal(percentage)
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["PERCENTAGE", "FIXED_USDT"])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_automated_defaults_do_not_change_manual_margin_or_leverage(mode, explicit):
+    from dataclasses import replace
+
+    venue, dispatch = _budget_venue_and_dispatch("3", "0.5")
+    dispatch = replace(
+        dispatch,
+        is_manual=True,
+        manual_margin=Decimal("0.5") if explicit else None,
+        manual_leverage=10 if explicit else None,
+    )
+    admission = await _bitget_dispatch_preflight(
+        venue,
+        {
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            "BITGET_MARGIN_MODE_TYPE": mode,
+            "BITGET_ALLOCATION_PCT": "0.20",
+            "BITGET_FIXED_MARGIN_USDT": "0.1",
+            "BITGET_DEFAULT_LEVERAGE": "5",
+        },
+        reservation_repository=Reservations(),
+    )(dispatch)
+
+    assert admission.submission.planned_margin_usdt == Decimal("0.5" if explicit else "0.6")
+    assert admission.submission.effective_leverage == (10 if explicit else 20)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("BITGET_DEFAULT_LEVERAGE", "4"),
+        ("BITGET_DEFAULT_LEVERAGE", "21"),
+        ("BITGET_DEFAULT_LEVERAGE", "10.5"),
+        ("BITGET_FIXED_MARGIN_USDT", "0"),
+        ("BITGET_FIXED_MARGIN_USDT", "-1"),
+        ("BITGET_FIXED_MARGIN_USDT", "NaN"),
+        ("BITGET_FIXED_MARGIN_USDT", "Infinity"),
+        ("BITGET_FIXED_MARGIN_USDT", "1.01"),
+        ("BITGET_MAX_MARGIN_PER_TRADE_USDT", "2"),
+    ],
+)
+@pytest.mark.parametrize("mode", ["PERCENTAGE", "FIXED_USDT"])
+def test_configured_sizing_cannot_bypass_pinned_safety_policy(key, value, mode):
+    with pytest.raises(ValueError):
+        _bitget_dispatch_preflight(
+            Venue(),
+            {
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MARGIN_MODE_TYPE": mode,
+                key: value,
+            },
+            reservation_repository=Reservations(),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"manual_margin": Decimal("1.01")},
+        {"manual_leverage": 4},
+        {"manual_leverage": 21},
+    ],
+)
+async def test_automated_configuration_cannot_relax_manual_safety_bounds(overrides):
+    from dataclasses import replace
+
+    venue, dispatch = _budget_venue_and_dispatch("3", "10")
+    reservations = Reservations()
+    dispatch = replace(dispatch, is_manual=True, **overrides)
+    with pytest.raises(ValueError, match="manual"):
+        await _bitget_dispatch_preflight(
+            venue,
+            {
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MARGIN_MODE_TYPE": "FIXED_USDT",
+                "BITGET_FIXED_MARGIN_USDT": "1",
+                "BITGET_DEFAULT_LEVERAGE": "5",
+            },
+            reservation_repository=reservations,
+        )(dispatch)
+    assert reservations.kwargs is None

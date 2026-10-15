@@ -45,9 +45,9 @@ SUPPORTED_SERVICES = (
 )
 
 # Bitget LIVE policy, pinned in application code. These are invariants, not
-# tunables: a live trade plans at most 1 USDT of isolated margin at exactly 20x.
+# tunables: a live trade plans at most 1 USDT of isolated margin at no more than 20x.
 # The cap bounds the planned margin; a market fill can realize slightly more
-# through slippage (filled_notional / 20), so it is a ceiling on planning, not on
+# through slippage (filled_notional / leverage), so it is a ceiling on planning, not on
 # the exchange's post-fill number.
 _LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1")
 _LIVE_LEVERAGE = 20
@@ -446,10 +446,12 @@ def _bitget_dispatch_preflight(
     if max_positions <= 0:
         raise ValueError("BITGET_MAX_NORMAL_POSITIONS must be a positive integer")
     margin_mode_type = environ.get("BITGET_MARGIN_MODE_TYPE", "PERCENTAGE").strip().upper()
+    configured_margin_mode = "BITGET_MARGIN_MODE_TYPE" in environ
+    fixed_margin_usdt = Decimal(environ.get("BITGET_FIXED_MARGIN_USDT", "1"))
     allocation_pct = Decimal(environ.get("BITGET_ALLOCATION_PCT", "0.20"))
     default_leverage = int(environ.get("BITGET_DEFAULT_LEVERAGE", "20"))
     max_leverage = int(environ.get("BITGET_MAX_LEVERAGE", "20"))
-    min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", str(min(5, default_leverage))))
+    min_leverage = int(environ.get("BITGET_MIN_LEVERAGE", "5"))
     max_age_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_AGE_SECONDS", "5"))
     ttl_seconds = Decimal(environ.get("BITGET_BALANCE_RESERVATION_TTL_SECONDS", "30"))
     future_skew_seconds = Decimal(environ.get("BITGET_BALANCE_MAX_FUTURE_SKEW_SECONDS", "1"))
@@ -471,6 +473,8 @@ def _bitget_dispatch_preflight(
 
     if not (Decimal("0") < allocation_pct <= Decimal("1")):
         raise ValueError("BITGET_ALLOCATION_PCT must be in (0, 1]")
+    if not _LIVE_LEVERAGE_FLOOR <= default_leverage <= _LIVE_LEVERAGE:
+        raise ValueError("BITGET_DEFAULT_LEVERAGE must be an integer in [5, 20]")
     # The ceiling is pinned at 20x: never above. The floor only bounds how far the
     # sizing policy may back off to give a wide stop enough liquidation headroom.
     if max_leverage != _LIVE_LEVERAGE:
@@ -509,12 +513,18 @@ def _bitget_dispatch_preflight(
         raise ValueError("BITGET_MAX_MARGIN_PER_TRADE_USDT must be a finite positive amount")
     if margin_mode_type not in {"PERCENTAGE", "FIXED_USDT"}:
         raise ValueError("BITGET_MARGIN_MODE_TYPE must be PERCENTAGE or FIXED_USDT")
-    if "BITGET_MARGIN_MODE_TYPE" not in environ and max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
+    if max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
         raise ValueError(
             "Bitget LIVE margin cap is fixed at 1 USDT: "
             "BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly 1 "
             f"(got {raw_margin_cap!r})"
         )
+    if (
+        not fixed_margin_usdt.is_finite()
+        or fixed_margin_usdt <= 0
+        or fixed_margin_usdt > max_margin_per_trade
+    ):
+        raise ValueError("BITGET_FIXED_MARGIN_USDT must be positive and within the pinned 1 USDT cap")
 
     async def preflight(dispatch: Any) -> Any:
         symbol = dispatch.pair_token if hasattr(dispatch, "pair_token") else dispatch
@@ -533,10 +543,33 @@ def _bitget_dispatch_preflight(
                 "Bitget available USDT margin is zero; fund the configured "
                 "LIVE account before enabling execution"
             )
+        requested_margin = getattr(dispatch, "manual_margin", None)
+        requested_leverage = getattr(dispatch, "manual_leverage", None)
+        is_manual = (
+            getattr(dispatch, "is_manual", False)
+            or requested_margin is not None
+            or requested_leverage is not None
+        )
+        # Unset mode and manual entries retain the legacy available-balance policy.
+        # Configured automated defaults are resolved once, before sizing; never
+        # multiply the resulting budget by the percentage again or at reservation.
+        if configured_margin_mode and not is_manual:
+            if margin_mode_type == "PERCENTAGE":
+                if not account.equity.is_finite() or account.equity <= 0:
+                    raise ValueError("Bitget account equity must be finite and positive")
+                allocation = account.equity * allocation_pct
+            else:
+                allocation = fixed_margin_usdt
+            allocation = min(allocation, available_balance, max_margin_per_trade)
+            sizing_allocation_pct = Decimal("1")
+        else:
+            allocation = min(available_balance * allocation_pct, max_margin_per_trade)
+            sizing_allocation_pct = allocation_pct
+        desired_leverage = max_leverage if is_manual else default_leverage
         if reservation_repository is None and not preview_only:
             # Test/legacy seam only; runtime wires the durable admission branch below.
             # max_margin_per_trade is validated above and is never None here.
-            allocation = min(available_balance * allocation_pct, max_margin_per_trade)
+            leverage_ceiling = min(metadata.max_leverage, desired_leverage)
             return (
                 InstrumentSpec(
                     exchange=Exchange.BITGET,
@@ -544,18 +577,18 @@ def _bitget_dispatch_preflight(
                     qty_step=metadata.size_step,
                     min_qty=metadata.min_order_qty,
                     min_notional=metadata.min_notional,
-                    max_leverage=min(metadata.max_leverage, max_leverage),
+                    max_leverage=leverage_ceiling,
                     contract_multiplier=metadata.contract_value,
                 ),
                 VenueRiskConfig(
                     exchange=Exchange.BITGET,
                     base_margin_usdt=allocation,
-                    default_leverage=min_leverage,
-                    max_leverage=min(metadata.max_leverage, max_leverage),
+                    default_leverage=leverage_ceiling,
+                    max_leverage=leverage_ceiling,
                     max_auto_margin_usdt=allocation,
                     free_margin_usdt=available_balance,
-                    free_margin_headroom_pct=allocation_pct,
-                    max_position_notional_usdt=allocation * Decimal(max_leverage),
+                    free_margin_headroom_pct=sizing_allocation_pct,
+                    max_position_notional_usdt=allocation * Decimal(leverage_ceiling),
                     margin_mode=MarginMode.ISOLATED,
                 ),
             )
@@ -619,8 +652,6 @@ def _bitget_dispatch_preflight(
             price_tick=metadata.price_tick,
         )
 
-        requested_margin = getattr(dispatch, "manual_margin", None)
-        requested_leverage = getattr(dispatch, "manual_leverage", None)
         if requested_margin is not None and (
             not requested_margin.is_finite()
             or requested_margin <= 0
@@ -633,16 +664,12 @@ def _bitget_dispatch_preflight(
             or requested_leverage > metadata.max_leverage
         ):
             raise ValueError("manual leverage must remain within canonical LIVE and venue bounds")
-        if margin_mode_type == "PERCENTAGE":
-            effective_margin_cap = min(available_balance * allocation_pct, max_margin_per_trade)
-        else:
-            effective_margin_cap = min(available_balance, max_margin_per_trade)
 
         risk = BitgetLiveRiskConfig(
-            min_leverage=requested_leverage or min_leverage,
-            max_leverage=requested_leverage or max_leverage,
-            allocation_pct=allocation_pct,
-            max_margin_per_trade_usdt=requested_margin or effective_margin_cap,
+            min_leverage=requested_leverage or min(min_leverage, desired_leverage),
+            max_leverage=max_leverage,
+            allocation_pct=sizing_allocation_pct,
+            max_margin_per_trade_usdt=requested_margin or allocation,
             liquidation_buffer=liquidation_buffer,
             max_normal_positions=max_positions,
         )
@@ -666,6 +693,7 @@ def _bitget_dispatch_preflight(
                 meta=metadata,
                 risk=risk,
                 available_usdt=available_balance,
+                desired_leverage=requested_leverage or desired_leverage,
                 entry=sizing_price,
                 direction=Direction(dispatch.direction),
                 active_positions=active_positions,

@@ -40,6 +40,30 @@ versions rather than adopting an arbitrary symbol as bot-owned.
 | **Signals** (`/signals`) | Telegram signal inbox (`/signals`), immutable original message texts, authenticated media attachments, parsed revisions, and evidence-linked dispatch traces (`/signals/{id}`, `/signals/dispatches/{id}`). |
 | **Activity** (`/audit`) | System audit trail (`/audit`), durable command jobs (`/audit?view=jobs`, `/audit/jobs/{id}`), approvals & Tier 3 governance (`/audit?view=approvals`), trade management instructions (`/management`), and notification deliveries (`/notifications`). |
 | **Settings** (`/config`) | Effective settings & encrypted secret staging (`/config`), drafts & revisions (`/config/drafts`, `/config/history`), safety latches & recovery proofs (`/recovery`, `/recovery/baselines`), container services & logs (`/services`), release catalog (`/services?view=releases`), backups (`/backups`), and password-only access policy & sessions (`/access`). |
+
+### Automated signal sizing defaults
+
+In **Settings → Configuration**, use **Default margin & leverage**. The form loads
+the worker's effective values and the current configuration version; it does not
+pretend a draft is already effective.
+
+- **Percentage** uses total USDT equity, then limits margin to available funds and
+  the existing **1 USDT per-trade safety cap**. For example, 20% of 3 USDT equity
+  with 0.80 USDT available requests 0.60 USDT margin.
+- **Fixed USDT** requests the entered amount, subject to available funds and the
+  same cap. It is not reduced by the percentage setting.
+- **Default leverage** accepts integers from 5x through 20x. The sizing engine may
+  reduce leverage when the stop needs more liquidation headroom.
+- These defaults affect new automated signals only. Manual order-ticket defaults
+  and existing positions are unchanged.
+
+**Review trading defaults draft** opens the existing reviewed command flow with
+the current `base_version`. Save, then separately review/apply the draft. Apply
+persists a private Compose override, recreates the affected dispatcher and
+console-worker services, and checks their container environments. Inspect the job
+and host effective-settings readback before treating the change as active. A
+shared-password session cannot satisfy a separate approver requirement.
+
 ## Preview, authorize, queue, observe
 
 1. Select the action from **Action catalog**, fill typed arguments, choose only exact

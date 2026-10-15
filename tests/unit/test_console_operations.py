@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -29,6 +30,10 @@ from fatty_trader.console.runner import HostOperationsRunner
         {"BITGET_MAX_CLOCK_SKEW_MS": 999999},
         {"BITGET_OPERATOR_MUTATIONS_ENABLED": "1"},
         {"BITGET_MONITOR_POLL_SECONDS": 31},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": 500},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": 1},
+        {"BITGET_FIXED_MARGIN_USDT": 0},
+        {"BITGET_FIXED_MARGIN_USDT": 1.01},
     ],
 )
 def test_generic_config_cannot_relax_policy(settings):
@@ -182,6 +187,79 @@ def runner(tmp_path, store=None):
         "PATH": "/usr/bin:/bin",
     }
     return HostOperationsRunner(env, store or Store(), command), calls
+
+
+@pytest.mark.parametrize("margin_mode", ["PERCENTAGE", "FIXED_USDT"])
+def test_automated_sizing_config_persists_recreates_and_reads_back_both_consumers(
+    tmp_path, monkeypatch, margin_mode
+):
+    host, _ = runner(tmp_path)
+    settings = {
+        "BITGET_MARGIN_MODE_TYPE": margin_mode,
+        "BITGET_ALLOCATION_PCT": 0.35,
+        "BITGET_FIXED_MARGIN_USDT": 0.75,
+        "BITGET_DEFAULT_LEVERAGE": 15,
+    }
+    validate_arguments("config.save_draft", {"base_version": 3, "settings": settings})
+    host.store.row = {"version": 4}
+    resource = {
+        "id": str(uuid4()),
+        "state": "draft",
+        "version": 4,
+        "payload": {"settings": settings},
+    }
+    env_file = host.root / ".env"
+    env_file.write_text("BITGET_MAX_MARGIN_PER_TRADE_USDT=1\n")
+    monkeypatch.setattr(host, "_effect_guard", lambda job: None)
+    monkeypatch.setattr(host, "_quiescent", lambda job: None)
+    monkeypatch.setattr(host, "_flat", lambda: {})
+    monkeypatch.setattr(host, "_policy", lambda: None)
+    monkeypatch.setattr(host, "_wait_services", lambda services: {})
+    consumers = ["console-worker", "dispatcher-bitget"]
+    containers = {service: str(index) * 64 for index, service in enumerate(consumers, 1)}
+    compose_calls = []
+
+    def compose(*args, **kwargs):
+        compose_calls.append((args, kwargs))
+        if args[:2] == ("ps", "-q"):
+            return containers[args[2]]
+        return ""
+
+    def inspect(argv, **kwargs):
+        assert argv[:4] == ["/usr/bin/docker", "inspect", "--format", "{{json .Config.Env}}"]
+        service = next(name for name, container in containers.items() if container == argv[4])
+        persisted = json.loads(host.override.read_text())["services"][service]["environment"]
+        return json.dumps(
+            [f"{key}={value}" for key, value in persisted.items()]
+            + ["TRADER_MODE=LIVE", "BITGET_MODE=LIVE", "BITGET_EXECUTION_ENABLED=1"]
+        )
+
+    monkeypatch.setattr(host, "_compose", compose)
+    monkeypatch.setattr(host, "_run", inspect)
+    result = host._config({}, resource)
+    persisted = json.loads(host.override.read_text())
+    assert set(persisted["services"]) == set(consumers)
+    for service in consumers:
+        assert persisted["services"][service]["environment"] == {
+            key: str(value) for key, value in settings.items()
+        }
+    assert host.override in host.compose_files
+    assert env_file.read_text() == "BITGET_MAX_MARGIN_PER_TRADE_USDT=1\n"
+    assert compose_calls[0] == (
+        ("up", "-d", "--no-build", "--no-deps", "--force-recreate", *consumers),
+        {"timeout": 900},
+    )
+    effective = host.store.snapshots["host_effective_config"]["data"]
+    assert effective["config_version"] == 4
+    assert effective["matches_desired"] is True
+    for item in effective["items"]:
+        assert item["fields"] == {
+            key: {"value": str(value), "matches_desired": True} for key, value in settings.items()
+        }
+    assert result["consumers"] == consumers
+    assert result["state"] == "effective"
+    assert any("state='desired'" in sql for sql, _ in host.store.statements)
+    assert any("state='effective'" in sql for sql, _ in host.store.statements)
 
 
 def test_host_runner_requires_explicit_project(tmp_path):

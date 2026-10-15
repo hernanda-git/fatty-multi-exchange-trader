@@ -62,6 +62,7 @@ class BitgetDispatch:
     order_type: str = "MARKET"
     manual_margin: Decimal | None = None
     manual_leverage: int | None = None
+    is_manual: bool = False
 
 
 _CLAIM_SQL = (
