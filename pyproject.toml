@@ -15,6 +15,7 @@ dependencies = [
   "websockets>=14,<16",
   "cryptography>=46,<47",
   "jsonschema>=4.26,<5",
+  "pywebpush>=2.0,<3",
 ]
 
 [dependency-groups]
@@ -57,5 +58,5 @@ strict = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["telethon", "telethon.*", "jsonschema", "jsonschema.*"]
+module = ["telethon", "telethon.*", "jsonschema", "jsonschema.*", "pywebpush", "pywebpush.*"]
 ignore_missing_imports = true

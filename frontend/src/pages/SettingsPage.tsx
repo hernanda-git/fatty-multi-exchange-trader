@@ -2,6 +2,7 @@ import React, {useEffect, useRef, useState} from 'react';
 import {api, ApiError, authorize} from '../api';
 import {DomainTable, DomainDetail} from '../domain';
 import {SecretStage} from '../forms';
+import {PushNotificationSettings} from './PushNotifications';
 import {ErrorBox, Value} from '../primitives';
 import {Link} from '../nav';
 import type {Envelope, Capability, RecordData, Principal} from '../types';
@@ -341,6 +342,7 @@ export function SettingsPage({
             reload={reload}
           />
           <SecretStage isOwner={isOwner} onChanged={reload} />
+          <PushNotificationSettings />
         </>
       )}
 

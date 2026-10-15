@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from typing import Any, Final, Protocol
 
 from fatty_trader.console.schema import CONSOLE_SCHEMA_SQL
+from fatty_trader.console.web_push_schema import WEB_PUSH_SCHEMA_SQL
 from fatty_trader.storage.bitget_baseline_schema import BITGET_BASELINE_SCHEMA_SQL
 from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
 from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
@@ -397,6 +398,7 @@ MIGRATIONS: Final = [
             ADD COLUMN IF NOT EXISTS edit_veto_recorded_at TIMESTAMPTZ;
         """,
     ),
+    (28, WEB_PUSH_SCHEMA_SQL),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

@@ -57,6 +57,7 @@ services:
       CONSOLE_SECRET_STAGE_DIR: /run/console-stages
       CONSOLE_SECRET_PUBLIC_KEY_FILE: /run/console-public.pem
       CONSOLE_SECRET_STAGE_GID: ${CONSOLE_HOST_GID:-5013}
+      CONSOLE_VAPID_PUBLIC_KEY_FILE: /run/web-push-public.txt
       # Progress is worker-owned; each socket validates identity in its own PID namespace.
       WEB_INTAKE_HEALTH_PATH: /run/fatty-health/intake/progress.json
       WEB_INTAKE_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
@@ -76,6 +77,7 @@ services:
       - ./runtime/console-stages:/run/console-stages
       - ./runtime/console-public.pem:/run/console-public.pem:ro
       - ./runtime/console-password.hash:/run/console-password.hash:ro
+      - ./runtime/web-push-public.txt:/run/web-push-public.txt:ro
       - ./data/media:/app/runtime/media:ro
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
@@ -344,6 +346,7 @@ services:
     build: .
     volumes:
       - health-notification:/run/fatty-health/notification
+      - ./runtime/web-push-private.pem:/run/web-push-private.pem:ro
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.notification_service"]
     environment:
       PGHOST: postgres
@@ -353,6 +356,9 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
+      WEB_PUSH_VAPID_PRIVATE_KEY_FILE: /run/web-push-private.pem
+      WEB_PUSH_VAPID_SUBJECT: ${WEB_PUSH_VAPID_SUBJECT:-https://trade.warga-digital.com}
+      WEB_PUSH_TTL_SECONDS: ${WEB_PUSH_TTL_SECONDS:-3600}
       WORKER_HEALTH_PATH: /run/fatty-health/notification/progress.json
       WORKER_HEALTH_SOCKET_PATH: /run/fatty-health/notification/owner.sock
       NOTIFICATION_POLL_SECONDS: ${NOTIFICATION_POLL_SECONDS:-5}

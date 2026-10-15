@@ -239,6 +239,7 @@ class NotificationWorker:
         *,
         max_attempts: int = 10,
         retry_seconds: int = 30,
+        fan_out: Callable[[UUID], int] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -248,6 +249,7 @@ class NotificationWorker:
         self._sender = sender
         self._max_attempts = max_attempts
         self._retry_seconds = retry_seconds
+        self._fan_out = fan_out
 
     async def run_once(self, worker_id: str, lease_seconds: int) -> str:
         if lease_seconds < _MIN_LEASE_SECONDS:
@@ -258,6 +260,13 @@ class NotificationWorker:
             return "failed"
         if notification is None:
             return "idle"
+        if self._fan_out is not None:
+            # Web-push fan-out is a separate channel; its failure must not
+            # suppress the Telegram delivery or corrupt outbox accounting.
+            try:
+                self._fan_out(notification.id)
+            except Exception:
+                print("service=notification-sender event=push-fanout-error", flush=True)
         claim_token = notification.claim_token or worker_id
         try:
             try:

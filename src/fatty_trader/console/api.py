@@ -18,7 +18,15 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from fatty_trader.console.auth import POLICY_VERSION, ROLES, AuthConfig, AuthError, AuthService
+from fatty_trader.console.auth import (
+    POLICY_VERSION,
+    ROLES,
+    AuthConfig,
+    AuthError,
+    AuthService,
+    utcnow,
+)
+from fatty_trader.web_push import read_public_key_file
 
 JsonObject: TypeAlias = dict[str, Any]
 
@@ -68,6 +76,17 @@ class DecisionBody(Body):
 class SecretBody(Body):
     kind: Literal["BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE", "TG_BOT_TOKEN"]
     value: StrictStr = Field(min_length=1, max_length=4096, repr=False)
+
+
+class PushSubscriptionBody(Body):
+    endpoint: StrictStr = Field(min_length=12, max_length=2048)
+    p256dh: StrictStr = Field(min_length=16, max_length=256)
+    auth: StrictStr = Field(min_length=8, max_length=128)
+    user_agent: StrictStr | None = Field(default=None, max_length=200)
+
+
+class PushRemoveBody(Body):
+    id: StrictStr = Field(min_length=8, max_length=64)
 
 
 def create_router(
@@ -183,6 +202,98 @@ def create_router(
             samesite="strict",
         )
         return response
+
+    @router.get("/push/config")
+    def push_config(request: Request, principal: JsonObject = Depends(current)) -> JsonObject:
+        public_key = read_public_key_file(environ)
+        return envelope(
+            {
+                "data": {"enabled": public_key is not None, "public_key": public_key},
+                "scope": scope,
+            },
+            request,
+        )
+
+    @router.get("/push/subscriptions")
+    def push_subscriptions(
+        request: Request, principal: JsonObject = Depends(current)
+    ) -> JsonObject:
+        items = store.query(
+            "SELECT id, user_agent, created_at, last_seen_at, disabled_at "
+            "FROM web_push_subscriptions ORDER BY created_at DESC LIMIT 20"
+        )
+        enabled = store.one(
+            "SELECT count(*) AS n FROM web_push_subscriptions WHERE disabled_at IS NULL"
+        )
+        return envelope(
+            {
+                "data": {
+                    "items": items,
+                    "enabled_count": int(enabled["n"]) if enabled else 0,
+                },
+                "scope": scope,
+            },
+            request,
+        )
+
+    @router.post("/push/subscriptions")
+    def push_subscribe(
+        body: PushSubscriptionBody, request: Request, principal: JsonObject = Depends(mutation)
+    ) -> JsonObject:
+        if not body.endpoint.startswith("https://"):
+            raise AuthError("invalid_request", "Push endpoint must be HTTPS", 422)
+        row = store.one(
+            """INSERT INTO web_push_subscriptions (id, endpoint, p256dh, auth, user_agent)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (endpoint) DO UPDATE SET
+                 p256dh = EXCLUDED.p256dh,
+                 auth = EXCLUDED.auth,
+                 user_agent = EXCLUDED.user_agent,
+                 last_seen_at = now(),
+                 disabled_at = NULL,
+                 last_error = NULL
+               RETURNING id""",
+            (str(uuid4()), body.endpoint, body.p256dh, body.auth, body.user_agent),
+        )
+        if row is None:
+            raise AuthError("unavailable", "Subscription could not be stored", 503)
+        audit(request, "push.subscribe", principal, str(row["id"]))
+        return envelope({"data": {"id": str(row["id"])}, "scope": scope}, request)
+
+    @router.post("/push/subscriptions/remove")
+    def push_remove(
+        body: PushRemoveBody, request: Request, principal: JsonObject = Depends(mutation)
+    ) -> JsonObject:
+        row = store.one(
+            "UPDATE web_push_subscriptions SET disabled_at = now() "
+            "WHERE id = %s AND disabled_at IS NULL RETURNING id",
+            (body.id,),
+        )
+        if row is None:
+            raise AuthError("not_found", "Subscription not found", 404)
+        audit(request, "push.unsubscribe", principal, body.id)
+        return envelope({"data": {"id": body.id, "disabled": True}, "scope": scope}, request)
+
+    @router.post("/push/test")
+    def push_test(request: Request, principal: JsonObject = Depends(mutation)) -> JsonObject:
+        dedup = f"push-test:{uuid4().hex[:16]}"
+        store.execute(
+            "INSERT INTO notifications_outbox (id, dedup_key, payload) VALUES (%s, %s, %s::jsonb) "
+            "ON CONFLICT (dedup_key) DO NOTHING",
+            (
+                str(uuid4()),
+                dedup,
+                json.dumps(
+                    {
+                        "kind": "push-test",
+                        "requested_by": principal["id"],
+                        "requested_at": utcnow().isoformat(),
+                    }
+                ),
+            ),
+        )
+        audit(request, "push.test", principal, dedup)
+        return envelope({"data": {"queued": True, "dedup_key": dedup}, "scope": scope}, request)
 
     @router.get("/actions")
     def actions(request: Request, principal: JsonObject = Depends(current)) -> JsonObject:
@@ -845,26 +956,33 @@ def mount_console(
     if not static.is_dir():
         static = Path(__file__).resolve().parents[3] / "frontend" / "dist"
     if static.is_dir():
+        import mimetypes
+
         from fastapi.staticfiles import StaticFiles
 
+        mimetypes.add_type("application/manifest+json", ".webmanifest")
         assets = static / "assets"
         if assets.is_dir():
             app.mount("/assets", StaticFiles(directory=assets), name="console-assets")
+
+        static_root = static.resolve()
+        static_headers = {
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": (
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' blob: data:; connect-src 'self'; "
+                "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+            ),
+            "Referrer-Policy": "no-referrer",
+        }
 
         @app.get("/{console_path:path}", include_in_schema=False)
         def spa(console_path: str) -> FileResponse:
             if console_path.startswith(("api/", "health")):
                 raise AuthError("not_found", "Resource not found", 404)
-            return FileResponse(
-                static / "index.html",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "X-Content-Type-Options": "nosniff",
-                    "Content-Security-Policy": (
-                        "default-src 'self'; script-src 'self'; style-src 'self'; "
-                        "img-src 'self' blob: data:; connect-src 'self'; "
-                        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-                    ),
-                    "Referrer-Policy": "no-referrer",
-                },
-            )
+            if console_path:
+                candidate = (static_root / console_path).resolve()
+                if candidate.is_file() and candidate.is_relative_to(static_root):
+                    return FileResponse(candidate, headers=static_headers)
+            return FileResponse(static_root / "index.html", headers=static_headers)

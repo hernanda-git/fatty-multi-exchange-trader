@@ -10,6 +10,7 @@ import {
   isObjectRecord,
 } from './types';
 import {parseRoute, navigate, Link, PRIMARY_DESTINATIONS} from './nav';
+import {registerPushServiceWorker} from './push';
 import {Value, ErrorBox, AttentionBanner, StateView} from './primitives';
 import {ActionPanel} from './command';
 import {Filters} from './forms';
@@ -696,4 +697,5 @@ if (rootEl) {
       <App />
     </React.StrictMode>
   );
+  void registerPushServiceWorker();
 }
