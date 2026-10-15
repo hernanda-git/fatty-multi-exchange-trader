@@ -485,16 +485,35 @@ export function JobsTable({items}: {items: RecordData[]}) {
 // --------------------------------------------------------------------------
 
 export function AccountDetailsView({data}: {data: RecordData}) {
-  const snapshotsObj = isObjectRecord(data.admission_snapshots) ? data.admission_snapshots : {};
-  const snapshots = Array.isArray(snapshotsObj.items) ? (snapshotsObj.items as RecordData[]) : [];
+  const rawSnapshots = data.admission_snapshots;
+  const snapshots: RecordData[] = Array.isArray(rawSnapshots)
+    ? (rawSnapshots as RecordData[])
+    : isObjectRecord(rawSnapshots) && Array.isArray(rawSnapshots.items)
+    ? (rawSnapshots.items as RecordData[])
+    : [];
   const latestSnapshot = snapshots[0] || null;
 
   const ledgerPnl = isObjectRecord(data.ledger_pnl) ? data.ledger_pnl : {};
   const feeGroups = Array.isArray(ledgerPnl.by_fee_currency) ? (ledgerPnl.by_fee_currency as RecordData[]) : [];
   const usdtGroup = feeGroups.find((g) => g.fee_ccy === 'USDT') || feeGroups[0] || null;
 
-  const reservationsObj = isObjectRecord(data.reservations) ? data.reservations : {};
-  const reservations = Array.isArray(reservationsObj.items) ? (reservationsObj.items as RecordData[]) : [];
+  const rawReservations = data.reservations;
+  const reservations: RecordData[] = Array.isArray(rawReservations)
+    ? (rawReservations as RecordData[])
+    : isObjectRecord(rawReservations) && Array.isArray(rawReservations.items)
+    ? (rawReservations.items as RecordData[])
+    : [];
+
+  const rawEquity = latestSnapshot?.equity ?? latestSnapshot?.total_balance;
+  const rawAvail = latestSnapshot?.available_balance;
+  const coin = String(latestSnapshot?.margin_coin || 'USDT');
+
+  const equityDisplay = rawEquity !== undefined && rawEquity !== null
+    ? `$${formatNumber(Number(rawEquity).toFixed(2))}`
+    : '—';
+  const availDisplay = rawAvail !== undefined && rawAvail !== null
+    ? `$${formatNumber(Number(rawAvail).toFixed(2))}`
+    : '—';
 
   return (
     <div className="account-details-stack">
@@ -502,9 +521,7 @@ export function AccountDetailsView({data}: {data: RecordData}) {
       <div className="metric-grid-4">
         <div className="metric-tile">
           <span className="metric-tile-label">Verified Equity</span>
-          <span className="metric-tile-value">
-            ${latestSnapshot ? formatNumber(Number(latestSnapshot.equity || 0).toFixed(2)) : '0.00'}
-          </span>
+          <span className="metric-tile-value">{equityDisplay}</span>
           <span className="metric-tile-sub">
             {latestSnapshot ? `Snapshot ${String(latestSnapshot.id || '').slice(0, 8)}…` : 'Snapshot unobserved'}
           </span>
@@ -512,12 +529,9 @@ export function AccountDetailsView({data}: {data: RecordData}) {
 
         <div className="metric-tile">
           <span className="metric-tile-label">Available Balance</span>
-          <span className="metric-tile-value">
-            ${latestSnapshot ? formatNumber(Number(latestSnapshot.available_balance || 0).toFixed(2)) : '0.00'}
-          </span>
-          <span className="metric-tile-sub">Margin currency: {String(latestSnapshot?.margin_coin || 'USDT')}</span>
+          <span className="metric-tile-value">{availDisplay}</span>
+          <span className="metric-tile-sub">Margin currency: {coin}</span>
         </div>
-
         <div className="metric-tile">
           <span className="metric-tile-label">Gross Realized P&amp;L</span>
           <span className={`metric-tile-value ${Number(usdtGroup?.gross_realized_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}`}>
@@ -859,16 +873,18 @@ export function DomainDetail({
 
   const record = data as RecordData;
 
-  if (section === 'account') {
+  if (section.startsWith('account')) {
     return <AccountDetailsView data={record} />;
   }
-  if (section === 'recovery') {
+  if (section.startsWith('recovery')) {
     return <RecoveryDetailsView data={record} />;
   }
-  if (section === 'access') {
+  if (section.startsWith('access')) {
     return <AccessDetailsView data={record} />;
   }
-
+  if (section === 'overview') {
+    return null;
+  }
   return (
     <div className="detail-container">
       <div className="card">

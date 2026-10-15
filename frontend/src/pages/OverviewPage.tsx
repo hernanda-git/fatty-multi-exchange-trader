@@ -1,7 +1,7 @@
 import React from 'react';
 import {Link} from '../nav';
 import {StatusBadge, formatDateTime, formatNumber} from '../primitives';
-import {PositionsTable, SignalsTable, DomainDetail} from '../domain';
+import {PositionsTable, SignalsTable, AccountDetailsView} from '../domain';
 import {type Envelope, type RecordData, isObjectRecord} from '../types';
 
 export function OverviewPage({
@@ -20,33 +20,44 @@ export function OverviewPage({
   render: (value: unknown) => React.ReactNode;
 }) {
   const isAccountView = readSection.startsWith('account');
-  const overviewData = isObjectRecord(envelope?.data) ? envelope.data : {};
+  const accountData = isAccountView && isObjectRecord(envelope?.data) ? envelope.data : null;
+  const overviewData = isObjectRecord(safety?.data)
+    ? safety.data
+    : isObjectRecord(envelope?.data)
+    ? envelope.data
+    : {};
   const safetyRecord = safety && isObjectRecord(safety.data) ? safety.data : null;
   const safetyData = safetyRecord ?? overviewData;
 
   // 1. Legitimate Account Equity Binding:
-  // Check provider account first; if unobserved, bind to the latest verified admission snapshot
+  // Source 1: provider.account snapshot (if synced by background worker)
+  // Source 2: latest verified admission snapshot from balance_snapshots
   const prov = isObjectRecord(overviewData.provider) ? overviewData.provider : {};
   const provAccount = isObjectRecord(prov.account) ? prov.account : null;
 
-  const snapshotsList = Array.isArray(overviewData.admission_snapshots)
-    ? (overviewData.admission_snapshots as RecordData[])
-    : isObjectRecord(overviewData.admission_snapshots) && Array.isArray(overviewData.admission_snapshots.items)
-    ? (overviewData.admission_snapshots.items as RecordData[])
+  const rawSnapshots = overviewData.admission_snapshots ?? accountData?.admission_snapshots;
+  const snapshotsList: RecordData[] = Array.isArray(rawSnapshots)
+    ? (rawSnapshots as RecordData[])
+    : isObjectRecord(rawSnapshots) && Array.isArray(rawSnapshots.items)
+    ? (rawSnapshots.items as RecordData[])
     : [];
   const latestSnapshot = snapshotsList[0] || null;
 
-  const rawEquity = provAccount?.equity ?? provAccount?.total_balance ?? latestSnapshot?.equity ?? latestSnapshot?.total_balance ?? '0';
-  const rawAvailable = provAccount?.available_balance ?? latestSnapshot?.available_balance ?? '0';
-  const coin = String(latestSnapshot?.margin_coin || 'USDT');
-  const equity = Number(rawEquity);
-  const available = Number(rawAvailable);
+  const rawEquity = provAccount?.equity ?? provAccount?.total_balance ?? latestSnapshot?.equity ?? latestSnapshot?.total_balance;
+  const rawAvailable = provAccount?.available_balance ?? latestSnapshot?.available_balance;
+  const coin = String(latestSnapshot?.margin_coin || provAccount?.margin_coin || 'USDT');
+
+  const equityFormatted = rawEquity !== undefined && rawEquity !== null
+    ? `$${formatNumber(Number(rawEquity).toFixed(2))}`
+    : '—';
+  const availableFormatted = rawAvailable !== undefined && rawAvailable !== null
+    ? `Available: $${formatNumber(Number(rawAvailable).toFixed(2))} ${coin}`
+    : `Balance: ${coin} Standby`;
 
   // 2. Legitimate Positions & Ledger Binding:
   const ledgerList = Array.isArray(overviewData.ledger) ? (overviewData.ledger as RecordData[]) : [];
   const ledgerSummary = ledgerList[0] || {};
   const openPosCount = Number(ledgerSummary.open_positions ?? 0);
-  const fillsCount = Number(ledgerSummary.fills ?? 0);
 
   const provPositions = Array.isArray(prov.positions) ? (prov.positions as RecordData[]) : [];
   const totalUpnl = provPositions.reduce((acc, p) => acc + Number(p.unrealizedPL || 0), 0);
@@ -61,27 +72,16 @@ export function OverviewPage({
   const clockLatch = latches.find((l) => l.scope === 'bitget' && l.active && String(l.reason).includes('clock'));
 
   const clock = isObjectRecord(overviewData.clock) ? overviewData.clock : null;
-  const stream = isObjectRecord(overviewData.stream) ? overviewData.stream : null;
 
   // 4. Recent Signals & Dispatches:
   const recentSignalsObj = isObjectRecord(overviewData.recent_signals) ? overviewData.recent_signals : {};
   const recentSignals = Array.isArray(recentSignalsObj.items) ? (recentSignalsObj.items as RecordData[]) : [];
 
   if (isAccountView) {
+    const accData = accountData ?? overviewData;
     return (
       <div className="page-content account-page">
-        <div className="card">
-          <div className="card-header">
-            <div>
-              <span className="eyebrow">PORTFOLIO ECONOMICS</span>
-              <h2>Balances &amp; Ledger Performance</h2>
-            </div>
-          </div>
-          <p className="text-secondary text-sm" style={{marginBottom: '16px'}}>
-            Verified provider balances, margin reservations, and historical fill economics.
-          </p>
-          <DomainDetail section="account" data={overviewData} render={render} />
-        </div>
+        <AccountDetailsView data={accData} />
       </div>
     );
   }
@@ -93,10 +93,10 @@ export function OverviewPage({
         <div className="metric-tile">
           <span className="metric-tile-label">Verified Equity</span>
           <span className="metric-tile-value">
-            ${formatNumber(equity.toFixed(2))}
+            {equityFormatted}
           </span>
           <span className="metric-tile-sub">
-            Available: ${formatNumber(available.toFixed(2))} {coin}
+            {availableFormatted}
           </span>
         </div>
 
