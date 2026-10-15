@@ -480,7 +480,7 @@ class AsyncBitgetExecution:
             "rejected",
             "expired",
         }
-        if intent.entry_leg == "limit" and (
+        if intent.order_type == "limit" and (
             str(detail.get("clientOid", "")) != intent.client_oid
             or str(detail.get("symbol", "")).upper() != intent.symbol
             or str(detail.get("side", "")).upper() != intent.side
@@ -531,6 +531,39 @@ class AsyncBitgetExecution:
             stop_loss_client_oid = f"{intent.client_oid}-sl"
             take_profit = plan.take_profits[0] if plan.take_profits else None
             take_profit_client_oid = f"{intent.client_oid}-tp" if take_profit is not None else None
+            protection_intents = tuple(
+                LiveIntentRecord(
+                    intent.exchange,
+                    oid,
+                    plan.symbol,
+                    "SELL" if intent.side == "BUY" else "BUY",
+                    role,
+                    "requested",
+                    filled_quantity,
+                    planned_stop_loss=plan.stop_loss,
+                    planned_take_profits=tuple(plan.take_profits),
+                    protection_root_oid=intent.client_oid,
+                )
+                for oid, role in ((stop_loss_client_oid, "SL"), (take_profit_client_oid, "TP"))
+                if oid is not None
+            )
+            if not store.claim_protection(protection_intents):
+                # Existing durable placement claims cannot authorize a second POST.
+                expectation = NativeProtectionExpectation(
+                    symbol=plan.symbol,
+                    hold_side="buy" if plan.direction.value == "LONG" else "sell",
+                    quantity=filled_quantity,
+                    stop_loss=plan.stop_loss,
+                    take_profit=take_profit,
+                    stop_loss_client_oid=stop_loss_client_oid,
+                    take_profit_client_oid=take_profit_client_oid,
+                )
+                report = await confirm_native_protection(
+                    lambda: self._client.get_single_position(plan.symbol),
+                    lambda: self._client.get_pending_plan_orders(plan.symbol),
+                    expectation=expectation,
+                )
+                return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
             placement = await self._client.place_position_tpsl(
                 symbol=plan.symbol,
                 hold_side="buy" if plan.direction.value == "LONG" else "sell",
@@ -559,6 +592,14 @@ class AsyncBitgetExecution:
                 take_profit is not None and take_profit_provider_order_id is None
             ):
                 raise BitgetApiError("Bitget protection placement IDs are incomplete")
+            for record in protection_intents:
+                record.provider_order_id = (
+                    stop_loss_provider_order_id
+                    if record.role == "SL"
+                    else take_profit_provider_order_id
+                )
+                record.state = "acknowledged"
+                store.update(record)
             expectation = NativeProtectionExpectation(
                 symbol=plan.symbol,
                 hold_side="buy" if plan.direction.value == "LONG" else "sell",

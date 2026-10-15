@@ -41,11 +41,22 @@ services:
 
   web:
     build: .
+    group_add: ["${CONSOLE_HOST_GID:-5013}"]
     environment:
       TRADER_MODE: LIVE
       BITGET_MODE: ${BITGET_MODE:-LIVE}
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-1}
       SERVICE_NAME: web
+      CONSOLE_ENABLED: "1"
+      CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
+      CONSOLE_RP_ID: ${CONSOLE_RP_ID:-localhost}
+      CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
+      CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
+      CONSOLE_STATIC_DIR: /app/console-static
+      CONSOLE_MEDIA_ROOT: /app/runtime/media
+      CONSOLE_SECRET_STAGE_DIR: /run/console-stages
+      CONSOLE_SECRET_PUBLIC_KEY_FILE: /run/console-public.pem
+      CONSOLE_SECRET_STAGE_GID: ${CONSOLE_HOST_GID:-5013}
       # Progress is worker-owned; each socket validates identity in its own PID namespace.
       WEB_INTAKE_HEALTH_PATH: /run/fatty-health/intake/progress.json
       WEB_INTAKE_HEALTH_SOCKET_PATH: /run/fatty-health/intake/owner.sock
@@ -56,12 +67,15 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_console_web
+      PGPASSWORD: ${CONSOLE_DB_PASSWORD:?set CONSOLE_DB_PASSWORD for isolated console web role}
     volumes:
       - health-intake:/run/fatty-health/intake:ro
       - health-analyzer:/run/fatty-health/analyzer:ro
       - health-notification:/run/fatty-health/notification:ro
+      - ./runtime/console-stages:/run/console-stages
+      - ./runtime/console-public.pem:/run/console-public.pem:ro
+      - ./data/media:/app/runtime/media:ro
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-18081}:8080"
     depends_on:
@@ -174,6 +188,8 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
     environment:
+      CONSOLE_ENABLED: "1"
+      CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
       TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: dispatcher-bitget
       PGHOST: postgres
@@ -283,8 +299,13 @@ services:
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
+      CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
+      CONSOLE_RP_ID: ${CONSOLE_RP_ID:-localhost}
+      CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
       TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: operator-bot
+      CONSOLE_ENABLED: "1"
+      CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
@@ -345,6 +366,8 @@ services:
     environment:
       TRADER_MODE: ${TRADER_MODE:-LIVE}
       SERVICE_NAME: source-management
+      CONSOLE_ENABLED: "1"
+      CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
@@ -373,6 +396,35 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  console-worker:
+    extends:
+      service: dispatcher-bitget
+    command: ["/app/.venv/bin/python", "-m", "fatty_trader.console.worker"]
+    environment:
+      SERVICE_NAME: console-worker
+      CONSOLE_ENABLED: "1"
+      CONSOLE_ACCOUNT_ID: ${CONSOLE_ACCOUNT_ID:-configured-bitget}
+      CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
+      CONSOLE_RP_ID: ${CONSOLE_RP_ID:-localhost}
+      CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
+      CONSOLE_HEARTBEAT_FILE: /tmp/console-worker-heartbeat
+      BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
+      BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-0}
+      BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
+      BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
+      TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
+      TG_OPERATOR_ID: ${TG_OPERATOR_ID:-}
+      TELEGRAM_MEDIA_ROOT: /app/runtime/media
+    volumes:
+      - ./data/media:/app/runtime/media:ro
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-m", "fatty_trader.console.worker", "--check"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 # Linux-only, ephemeral metadata volumes. Sticky directories permit analyzer's
 # non-root UID; only its owner has RW access, web has RO, no other service mounts it.

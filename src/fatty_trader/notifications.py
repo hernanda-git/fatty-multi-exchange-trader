@@ -281,6 +281,25 @@ class NotificationWorker:
 
 def format_notification_html(payload: Mapping[str, Any]) -> str:
     """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
+    if payload.get("kind") == "console-health-report":
+        from fatty_trader.operator.health_report_format import format_report
+
+        snapshot = payload.get("snapshot")
+        fields = {
+            "positions",
+            "pending_orders",
+            "sltp",
+            "pnl",
+            "messages",
+            "metrics",
+            "account",
+            "modes",
+            "codex",
+            "services",
+        }
+        if not isinstance(snapshot, dict) or set(snapshot) != fields:
+            raise NotificationPayloadError("invalid console health snapshot")
+        return bounded_html(format_report(**snapshot))
     if payload.get("kind") == "kaka-paper-digest":
         return bounded_html(_format_kaka_digest_html(payload))
     if payload.get("kind") == "heartbeat":

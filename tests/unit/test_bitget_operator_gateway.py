@@ -137,22 +137,17 @@ def test_gateway_reuses_one_event_loop_and_closes_client_on_that_loop() -> None:
     assert ("aclose", None) in client.calls
 
 
-def test_cancel_symbol_uses_provider_cancel_all_for_exact_symbol() -> None:
+def test_gateway_exposes_no_broad_cancellation_authority() -> None:
     gateway, client, _ = make_gateway()
-
-    result = gateway.cancel_order("BTCUSDT")
-
-    assert result == {"cancelled": "BTCUSDT", "count": 1}
-    assert ("cancel_all_orders", "BTCUSDT") in client.calls
+    assert not hasattr(gateway, "cancel_all")
+    assert not hasattr(gateway, "cancel_order")
+    assert client.calls == []
 
 
-def test_cancel_order_id_resolves_provider_symbol_before_cancellation() -> None:
+def test_gateway_exposes_no_raw_manual_entry_authority() -> None:
     gateway, client, _ = make_gateway()
-
-    result = gateway.cancel_order("order_id=order-1")
-
-    assert result == {"cancelled": "order-1"}
-    assert ("cancel_order", {"symbol": "BTCUSDT", "order_id": "order-1"}) in client.calls
+    assert not hasattr(gateway, "open_position")
+    assert client.calls == []
 
 
 def test_close_position_persists_reduce_only_close_intent_and_reads_back_flat() -> None:
@@ -187,23 +182,10 @@ def test_unknown_close_result_is_reconciliation_pending_not_success() -> None:
     assert intent.state == "unknown"
 
 
-def test_set_stop_loss_submits_native_protection_and_reads_back() -> None:
+def test_gateway_exposes_no_unowned_protection_placement_authority() -> None:
     gateway, client, _ = make_gateway()
-
-    result = gateway.set_position_protection(
-        "BTCUSDT", stop_loss=Decimal("59900"), take_profit=None
-    )
-
-    assert result == {"symbol": "BTCUSDT", "state": "reconciled"}
-    request = next(value for name, value in client.calls if name == "place_position_tpsl")
-    assert request == {
-        "symbol": "BTCUSDT",
-        "hold_side": "long",
-        "quantity": "0.01",
-        "stop_loss": "59900",
-        "take_profit": None,
-    }
-    assert gateway.get_positions()[0]["stop_loss"] == Decimal("59900")
+    assert not hasattr(gateway, "set_position_protection")
+    assert client.calls == []
 
 
 def test_close_without_matching_open_position_makes_no_close_request() -> None:

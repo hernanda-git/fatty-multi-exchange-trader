@@ -60,6 +60,7 @@ jobs:
       - name: Inert Compose validation
         env:
           POSTGRES_PASSWORD: testonly
+          CONSOLE_DB_PASSWORD: console-test-only
         run: docker compose --env-file /dev/null config --quiet
       - name: Reject failed or skipped acceptance tests
         run: |

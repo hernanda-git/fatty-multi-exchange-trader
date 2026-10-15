@@ -1,3 +1,10 @@
+FROM node:24-bookworm-slim AS console-build
+WORKDIR /console
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim
 
 ARG SOURCE_REVISION=unknown
@@ -14,6 +21,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.8 /uv /uvx /bin/
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY scripts ./scripts
+COPY --from=console-build /console/dist ./console-static
 RUN uv sync --frozen --no-dev
 RUN chown -R fatty:fatty /app
 USER fatty

@@ -348,7 +348,9 @@ def build_bitget_execution_runtime(
         import psycopg
 
         def default_intent_store_factory() -> object:
-            return PostgresLiveIntentStore(psycopg.connect)
+            return PostgresLiveIntentStore(
+                psycopg.connect, console_enabled=environ.get("CONSOLE_ENABLED", "0") == "1"
+            )
 
         intent_store_factory = default_intent_store_factory
     if capability_repository_factory is None and using_default_client:
@@ -372,8 +374,18 @@ def build_bitget_execution_runtime(
     capability_repository = (
         capability_repository_factory() if capability_repository_factory is not None else None
     )
-    reservation_repository = PostgresBitgetMarginReservationRepository(psycopg.connect)
-    dispatch_repository = PostgresBitgetDispatchRepository(psycopg.connect)
+    console_enabled = environ.get("CONSOLE_ENABLED", "0") == "1"
+    reservation_repository = PostgresBitgetMarginReservationRepository(
+        psycopg.connect, console_enabled=console_enabled
+    )
+    console_account_id = environ.get(
+        "CONSOLE_ACCOUNT_ID", environ.get("BITGET_ACCOUNT_ID", "configured-bitget")
+    )
+    dispatch_repository = PostgresBitgetDispatchRepository(
+        psycopg.connect,
+        console_enabled=console_enabled,
+        console_scope=f"bitget:{console_account_id}:{config.venue_mode}",
+    )
     from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
 
     intent_store = cast(LiveIntentStoreProtocol, intent_store_factory())
@@ -418,7 +430,11 @@ def _bitget_fallback_mutations_enabled(environ: Mapping[str, str]) -> bool:
 
 
 def _bitget_dispatch_preflight(
-    venue: Any, environ: Mapping[str, str], *, reservation_repository: Any | None = None
+    venue: Any,
+    environ: Mapping[str, str],
+    *,
+    reservation_repository: Any | None = None,
+    preview_only: bool = False,
 ) -> Callable[[Any], Any]:
     """Return a fail-closed admission factory; production always reserves first."""
     from datetime import timedelta
@@ -503,7 +519,11 @@ def _bitget_dispatch_preflight(
         symbol = dispatch.pair_token if hasattr(dispatch, "pair_token") else dispatch
         if not isinstance(symbol, str) or not re.fullmatch(r"^[A-Z0-9]{2,20}$", symbol):
             raise ValueError("dispatch symbol failed Bitget symbol validation")
-        snapshot = await venue.preflight(symbol)
+        snapshot = (
+            await venue.preflight(symbol, read_only=True)
+            if preview_only
+            else await venue.preflight(symbol)
+        )
         metadata = snapshot.metadata
         account = snapshot.account
         available_balance = account.available
@@ -512,7 +532,7 @@ def _bitget_dispatch_preflight(
                 "Bitget available USDT margin is zero; fund the configured "
                 "LIVE account before enabling execution"
             )
-        if reservation_repository is None:
+        if reservation_repository is None and not preview_only:
             # Test/legacy seam only; runtime wires the durable admission branch below.
             # max_margin_per_trade is validated above and is never None here.
             allocation = min(available_balance * allocation_pct, max_margin_per_trade)
@@ -559,6 +579,14 @@ def _bitget_dispatch_preflight(
         route_observed_at = datetime.now(UTC)
 
         def routed(quantity: Decimal) -> EntryRoute:
+            if getattr(dispatch, "order_type", "MARKET") == "LIMIT":
+                return EntryRoute(
+                    EntryMode.LIMIT_ONLY,
+                    Decimal("0"),
+                    quantity,
+                    normalized_entry,
+                    "explicit-manual-limit",
+                )
             if source_time is None:
                 return EntryRoute(EntryMode.FULL_MARKET, quantity, Decimal("0"), None)
             return route_entry(
@@ -572,25 +600,43 @@ def _bitget_dispatch_preflight(
                 now=route_observed_at,
             )
 
-        split = routed(Decimal("4")).limit_quantity > 0
+        split = routed(Decimal("4")).market_quantity > 0 and routed(Decimal("4")).limit_quantity > 0
         sizing_price = (
-            max(snapshot.current_price, normalized_entry) if split else snapshot.current_price
+            max(snapshot.current_price, normalized_entry)
+            if split
+            else normalized_entry
+            if getattr(dispatch, "order_type", "MARKET") == "LIMIT"
+            else snapshot.current_price
         )
 
         planned_stop, planned_targets = normalized_protection_prices(
             direction=Direction(dispatch.direction),
-            entry=snapshot.current_price,
+            entry=sizing_price,
             canonical_entry=dispatch.entry_price,
             stop_loss=dispatch.stop_loss,
             take_profits=dispatch.take_profits,
             price_tick=metadata.price_tick,
         )
 
+        requested_margin = getattr(dispatch, "manual_margin", None)
+        requested_leverage = getattr(dispatch, "manual_leverage", None)
+        if requested_margin is not None and (
+            not requested_margin.is_finite()
+            or requested_margin <= 0
+            or requested_margin > max_margin_per_trade
+        ):
+            raise ValueError("manual margin must remain within the pinned LIVE cap")
+        if requested_leverage is not None and (
+            type(requested_leverage) is not int
+            or not 5 <= requested_leverage <= max_leverage
+            or requested_leverage > metadata.max_leverage
+        ):
+            raise ValueError("manual leverage must remain within canonical LIVE and venue bounds")
         risk = BitgetLiveRiskConfig(
-            min_leverage=min_leverage,
-            max_leverage=max_leverage,
+            min_leverage=requested_leverage or min_leverage,
+            max_leverage=requested_leverage or max_leverage,
             allocation_pct=allocation_pct,
-            max_margin_per_trade_usdt=max_margin_per_trade,
+            max_margin_per_trade_usdt=requested_margin or max_margin_per_trade,
             liquidation_buffer=liquidation_buffer,
             max_normal_positions=max_positions,
         )
@@ -640,6 +686,8 @@ def _bitget_dispatch_preflight(
                 ),
                 (entry_route.limit_quantity, normalized_entry, metadata.max_order_qty),
             ):
+                if quantity == 0:
+                    continue
                 if quantity % metadata.size_step != 0:
                     raise ValueError(
                         "Bitget split rejected: exact 25/75 is not quantity-step aligned"
@@ -651,6 +699,19 @@ def _bitget_dispatch_preflight(
                 if maximum is not None and quantity > maximum:
                     raise ValueError("Bitget split rejected: child quantity above venue maximum")
         client_order_id = BitgetDispatchExecution.client_oid(dispatch)
+        if preview_only:
+            return {
+                "quantity": str(decision.quantity),
+                "leverage": decision.leverage,
+                "margin_usdt": str(decision.margin_usdt),
+                "notional_usdt": str(decision.notional_usdt),
+                "stop_loss": str(planned_stop),
+                "take_profit": str(planned_targets[0]),
+                "entry_price": str(sizing_price),
+                "observed_at": observed_at.isoformat(),
+                "active_symbols": list(provider_active_symbols),
+            }
+        assert reservation_repository is not None
         admission = reservation_repository.reserve(
             exchange="bitget",
             dispatch_id=dispatch.id,
@@ -713,7 +774,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     runtime = build_bitget_execution_runtime(environ)
     protection_admission = build_bitget_protection_admission(environ)
     dispatcher = BitgetDispatcher(
-        PostgresBitgetDispatchRepository(psycopg.connect),
+        PostgresBitgetDispatchRepository(
+            psycopg.connect,
+            console_enabled=environ.get("CONSOLE_ENABLED", "0") == "1",
+            console_scope=f"bitget:{environ.get('CONSOLE_ACCOUNT_ID', 'configured-bitget')}:LIVE",
+        ),
         gate=DispatchGate(
             execution_enabled=config.execution_enabled,
             canary_max_orders=int(environ.get("BITGET_CANARY_MAX_ORDERS", "0")),
@@ -1065,7 +1130,9 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         mode=config.venue_mode,
     )
     repository = PostgresReconciliationRepository(psycopg.connect)
-    live_intent_store = PostgresLiveIntentStore(psycopg.connect)
+    live_intent_store = PostgresLiveIntentStore(
+        psycopg.connect, console_enabled=environ.get("CONSOLE_ENABLED", "0") == "1"
+    )
     max_clock_skew_ms = int(environ.get("BITGET_MAX_CLOCK_SKEW_MS", "10000"))
     if max_clock_skew_ms < 0:
         raise ValueError("BITGET_MAX_CLOCK_SKEW_MS must not be negative")
@@ -1232,6 +1299,11 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     """Run the private authenticated operator command listener in a dedicated thread."""
     import psycopg
 
+    from fatty_trader.console.commands import CommandService
+    from fatty_trader.console.reads import ReadService
+    from fatty_trader.console.store import ConsoleStore, configured_scope
+    from fatty_trader.console.telegram import TelegramCommandAdapter
+    from fatty_trader.console.worker import build_preview_handlers
     from fatty_trader.exchanges.bitget.client import BitgetRestClient
     from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
     from fatty_trader.operator.health import (
@@ -1239,7 +1311,6 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         create_shared_health_reader,
         load_operator_health_snapshot,
     )
-    from fatty_trader.operator.live_commands import OperatorCommandService
     from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
     from fatty_trader.operator.update_receipts import PostgresTelegramUpdateReceiptStore
     from fatty_trader.storage.live_intents import PostgresLiveIntentStore
@@ -1261,14 +1332,18 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         environ["BITGET_API_PASSPHRASE"],
         mode=mode,
     )
-    gateway = BitgetOperatorGateway(client, PostgresLiveIntentStore(psycopg.connect))
-    mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
-    if mutations_raw not in {"0", "1"}:
-        raise ValueError("BITGET_OPERATOR_MUTATIONS_ENABLED must be 0 or 1")
-    commands = OperatorCommandService(
-        gateway,
+    console_enabled = environ.get("CONSOLE_ENABLED", "0") == "1"
+    gateway = BitgetOperatorGateway(
+        client, PostgresLiveIntentStore(psycopg.connect, console_enabled=console_enabled)
+    )
+    store = ConsoleStore(psycopg.connect)
+    scope = configured_scope(environ)
+    commands = TelegramCommandAdapter(
+        store,
+        CommandService(store, build_preview_handlers(environ, store)),
         operator_id=int(environ["TG_OPERATOR_ID"]),
-        mutations_enabled=mutations_raw == "1",
+        scope=scope,
+        read_service=ReadService(store, scope=scope),
         health_reader=create_shared_health_reader(
             lambda: load_operator_health_snapshot(
                 gateway,
@@ -1325,7 +1400,9 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     client = runtime.client
     gateway = BitgetOperatorGateway(
         cast(Any, client),
-        PostgresLiveIntentStore(psycopg.connect),
+        PostgresLiveIntentStore(
+            psycopg.connect, console_enabled=environ.get("CONSOLE_ENABLED", "0") == "1"
+        ),
         entry_execution=cast(Any, runtime.execution),
     )
     mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()

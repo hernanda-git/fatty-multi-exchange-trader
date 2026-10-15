@@ -142,7 +142,6 @@ class GetOnlyProtectionRecovery:
         """Only an exact durable non-reduce-only LIMIT leg may remain working."""
         if (
             intent.role != "ENTRY"
-            or getattr(intent, "entry_leg", None) != "limit"
             or getattr(intent, "order_type", None) != "limit"
             or not isinstance(row.get("symbol"), str)
             or row["symbol"].upper() != intent.symbol

@@ -31,29 +31,66 @@ class PostgresVerifiedCloseLifecycle:
         self._store = store
         self._reservations = PostgresBitgetMarginReservationRepository(connection_factory)
 
-    def bind_requested_close(self, client: VerifiedCloseClient, close_oid: str) -> bool:
+    def bind_requested_close(
+        self,
+        client: VerifiedCloseClient,
+        close_oid: str,
+        *,
+        expected_remaining: Decimal | None = None,
+        connection: Any = None,
+    ) -> bool:
         """Capture the current canonical owner BEFORE POST, never from historical fills."""
         environment = getattr(client, "environment", None)
         if environment not in {"DEMO", "LIVE"}:
             return False
-        c = self._connection_factory()
+        owns_connection = connection is None
+        c = self._connection_factory() if owns_connection else connection
         try:
-            cur = c.cursor()
+            if owns_connection:
+                cur = c.cursor()
+            else:
+                from psycopg.rows import tuple_row
+
+                cur = c.cursor(row_factory=tuple_row)
             cur.execute("SELECT pg_advisory_xact_lock(hashtext('bitget'))")
+            owner_join = (
+                """JOIN dispatches d ON d.id=r.dispatch_id
+                LEFT JOIN canonical_signals s ON s.id=d.source_id
+                LEFT JOIN console_manual_entries m ON m.id=d.source_id
+                AND d.source_type='console_manual' AND m.environment=r.environment"""
+                if self._store.console_enabled
+                else """JOIN dispatches d ON d.id=r.dispatch_id
+                AND d.source_type='canonical_signal'
+                JOIN canonical_signals s ON s.id=d.source_id"""
+            )
             cur.execute(
                 """SELECT r.id,r.client_order_id,x.requested_qty FROM bitget_margin_reservations r
                 JOIN live_order_intents e ON e.exchange=r.exchange
                     AND e.client_order_id=r.client_order_id AND e.margin_reservation_id=r.id
-                JOIN dispatches d ON d.id=r.dispatch_id AND d.source_type='canonical_signal'
-                JOIN canonical_signals s ON s.id=d.source_id
+                """
+                + owner_join
+                + """
                 JOIN live_order_intents x ON x.exchange=r.exchange
                     AND x.client_order_id=%s AND x.symbol=r.symbol
                 WHERE r.environment=%s AND r.state='consumed'
+                    AND (s.id IS NOT NULL OR d.source_type='console_manual')
                     AND e.role='ENTRY' AND e.state IN ('filled','reconciled')
                     AND e.symbol=r.symbol AND e.filled_qty>0
                     AND x.role IN ('CLOSE','EMERGENCY_CLOSE','SL','TP')
                     AND x.state='requested' AND x.filled_qty=0
                     AND x.requested_qty>0
+                    AND NOT EXISTS (
+                        SELECT 1 FROM bitget_verified_close_bindings prior
+                        JOIN live_order_intents pending ON pending.exchange=prior.exchange
+                          AND pending.client_order_id=prior.close_client_order_id
+                        WHERE prior.reservation_id=r.id
+                          AND prior.close_client_order_id<>x.client_order_id
+                          AND pending.state NOT IN ('filled','reconciled','cancelled','rejected')
+                    )
+                    AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                        WHERE (b.record_kind='intent' AND b.record_id=e.id)
+                           OR (b.record_kind='reservation' AND b.record_id=r.id)
+                           OR (b.record_kind='dispatch' AND b.record_id=d.id))
                     AND NOT EXISTS (SELECT 1 FROM live_order_intents waiting
                         WHERE waiting.exchange=e.exchange AND waiting.margin_reservation_id=r.id
                           AND waiting.entry_leg='limit' AND NOT waiting.provider_terminal)
@@ -66,17 +103,22 @@ class PostgresVerifiedCloseLifecycle:
             )
             rows = cur.fetchall()
             if len(rows) != 1:
-                c.commit()
+                if owns_connection:
+                    c.commit()
                 return False
             from fatty_trader.storage.live_intents import OwnedQuantityEvidenceError
 
             try:
                 remaining = self._store.remaining_owned_quantity(rows[0][1], cursor=cur)
             except OwnedQuantityEvidenceError:
-                c.commit()
+                if owns_connection:
+                    c.commit()
                 return False
-            if rows[0][2] > remaining:
-                c.commit()
+            if rows[0][2] > remaining or (
+                expected_remaining is not None and remaining != expected_remaining
+            ):
+                if owns_connection:
+                    c.commit()
                 return False
             cur.execute(
                 """INSERT INTO bitget_verified_close_bindings
@@ -90,13 +132,16 @@ class PostgresVerifiedCloseLifecycle:
                 (close_oid,),
             )
             bound = bool(cur.fetchone()[0] == rows[0][0])
-            c.commit()
+            if owns_connection:
+                c.commit()
             return bound
         except Exception:
-            c.rollback()
+            if owns_connection:
+                c.rollback()
             raise
         finally:
-            c.close()
+            if owns_connection:
+                c.close()
 
     async def reconcile(self, client: VerifiedCloseClient) -> None:
         environment = getattr(client, "environment", None)

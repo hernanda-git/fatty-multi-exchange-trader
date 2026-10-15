@@ -8,6 +8,7 @@ artifacts/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+/dist/
 data/postgres/
 data/media/
 data/codex-home/
@@ -21,3 +22,10 @@ data/logs/
 # Local pre-change database dumps (never commit a live DB snapshot).
 .backups/
 *.dump
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+runtime/console-*/
+runtime/console-public.pem
+runtime/*.compose.json
+runtime/*.pem

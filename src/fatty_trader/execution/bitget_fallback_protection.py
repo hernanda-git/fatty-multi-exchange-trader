@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import nullcontext
 from decimal import Decimal
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -86,6 +87,7 @@ def register_fallback(
     *,
     provider_position_epoch: str | None = None,
     environment: str | None = None,
+    connection: Any = None,
 ) -> str:
     """Persist proven identity; legacy registrations remain close-ineligible.
 
@@ -105,9 +107,15 @@ def register_fallback(
             raise ValueError(
                 "fallback identity must include canonical epoch, environment and entry key"
             )
-    ensure_schema()
+    if connection is None:
+        ensure_schema()
     tp_json = json.dumps([str(t) for t in take_profits])
-    with _psycopg_connect() as conn, conn.cursor() as cur:
+    from psycopg.rows import tuple_row
+
+    with (
+        nullcontext(connection) if connection is not None else _psycopg_connect() as conn,
+        conn.cursor(row_factory=tuple_row) if connection is not None else conn.cursor() as cur,
+    ):
         cur.execute(
             """
             INSERT INTO fallback_protection

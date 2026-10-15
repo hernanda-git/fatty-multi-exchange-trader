@@ -2,18 +2,18 @@ from types import SimpleNamespace
 
 import httpx
 import psycopg
+import pytest
 
-from fatty_trader.operator.command_parser import CloseCommand
-from fatty_trader.operator.live_commands import OperatorCommandService
+from fatty_trader.operator.live_commands import OperatorReadService
 from fatty_trader.recovery_webhook import create_recovery_app
 
 
-def test_close_all_preserves_unresolved_state():
-    service = object.__new__(OperatorCommandService)
-    service._require_confirmation = False
-    service._gw = SimpleNamespace(close_all=lambda: {"count": 2, "state": "reconciliation-pending"})
-    message = service._on_close(CloseCommand(target="all"))
-    assert "reconciliation-pending" in message
+def test_read_service_prohibits_account_wide_close():
+    from fatty_trader.operator.command_parser import CommandError
+
+    service = OperatorReadService(SimpleNamespace(), operator_id=1)
+    with pytest.raises(CommandError, match="shared durable"):
+        service.handle("/close all", sender_id=1, is_private=True, is_forwarded=False)
 
 
 async def test_inventory_is_not_claimed_as_reconciliation(monkeypatch):

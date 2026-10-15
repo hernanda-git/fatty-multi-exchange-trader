@@ -205,6 +205,27 @@ async def test_full_or_partial_fill_protection_uses_confirmed_filled_quantity() 
 
 
 @pytest.mark.asyncio
+async def test_native_protection_claim_is_durable_before_post_and_replay_is_get_only() -> None:
+    store = InMemoryLiveIntentStore()
+    client = NativeProtectionClient(position_qty="0.008")
+    original = client.place_position_tpsl
+
+    async def fenced_place(**kwargs):
+        for oid in (kwargs["stop_loss_client_oid"], kwargs["take_profit_client_oid"]):
+            record = store.get(oid)
+            assert record is not None and record.state == "requested"
+            assert record.protection_root_oid == _intent().client_oid
+        return await original(**kwargs)
+
+    client.place_position_tpsl = fenced_place
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    first = await adapter.protect_filled_position(_intent(), _plan(), store)
+    second = await adapter.protect_filled_position(_intent(), _plan(), store)
+    assert first.state is second.state is ProtectionState.VENUE_PROTECTED
+    assert len(client.protection_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_stop_only_protection_does_not_require_take_profit() -> None:
     client = NativeProtectionClient(
         position_qty="0.008",
@@ -296,8 +317,9 @@ async def test_containment_persists_one_deterministic_close_without_retry() -> N
     first = await adapter.protect_filled_position(_intent(), _plan(), store)
     second = await adapter.protect_filled_position(_intent(), _plan(), store)
 
-    assert first.emergency_close_oid == second.emergency_close_oid
     assert first.emergency_close_oid == "live-bitget-BTCUSDT-0011223344556677-emergency"
+    assert second.emergency_close_oid is None  # existing placement claim is GET-only
+    assert len(client.protection_calls) == 1
     assert len(client.close_calls) == 1
     close = store.get(first.emergency_close_oid)
     assert close is not None

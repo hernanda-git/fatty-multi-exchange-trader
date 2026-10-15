@@ -78,18 +78,6 @@ def _rows(value: object, field: str) -> Sequence[Mapping[str, Any]]:
     return value
 
 
-def _protection_ack_is_valid(value: object) -> bool:
-    """Accept the Classic V2 mapping/list response forms, never an empty ack."""
-    if isinstance(value, Mapping):
-        return True
-    return (
-        isinstance(value, Sequence)
-        and not isinstance(value, (str, bytes, bytearray))
-        and bool(value)
-        and all(isinstance(row, Mapping) for row in value)
-    )
-
-
 class BitgetOperatorGateway:
     """Provider adapter that exposes only sanitized operator DTOs.
 
@@ -234,74 +222,6 @@ class BitgetOperatorGateway:
             )
         return orders
 
-    def open_position(self, **_: Any) -> dict[str, Any]:
-        return {"error": "operator open is not enabled"}
-
-    def cancel_order(self, target: str) -> dict[str, Any]:
-        if not target.startswith("order_id="):
-            symbol = target.upper()
-            response = self._run(self._client.cancel_all_orders(symbol=symbol))
-            if not isinstance(response, Mapping):
-                raise ValueError("Bitget cancel-all response is invalid")
-            successes = response.get("successList", response.get("success", []))
-            return {
-                "cancelled": symbol,
-                "count": len(successes) if isinstance(successes, list) else 0,
-            }
-        order_id = target.split("=", 1)[1]
-        if not order_id:
-            raise ValueError("order id is required")
-        matching = [order for order in self.get_orders() if order["order_id"] == order_id]
-        if len(matching) != 1:
-            raise ValueError("Bitget pending order id was not found uniquely")
-        self._run(self._client.cancel_order(symbol=matching[0]["symbol"], order_id=order_id))
-        return {"cancelled": order_id}
-
-    def cancel_all(self) -> dict[str, Any]:
-        response = self._run(self._client.cancel_all_orders())
-        if not isinstance(response, Mapping):
-            raise ValueError("Bitget cancel-all response is invalid")
-        successes = response.get("successList", response.get("success", []))
-        return {"count": len(successes) if isinstance(successes, list) else 0}
-
-    def set_position_protection(
-        self,
-        symbol: str,
-        *,
-        stop_loss: Decimal | None,
-        take_profit: Decimal | None,
-    ) -> dict[str, Any]:
-        if (stop_loss is None) == (take_profit is None):
-            raise ValueError("set exactly one of stop_loss or take_profit")
-        positions = self.get_positions(symbol)
-        if len(positions) != 1:
-            raise ValueError("Bitget protection target must resolve to exactly one open position")
-        position = positions[0]
-        submitted = self._run(
-            self._client.place_position_tpsl(
-                symbol=symbol,
-                hold_side=position["side"].lower(),
-                quantity=str(position["size"]),
-                stop_loss=str(stop_loss) if stop_loss is not None else None,
-                take_profit=str(take_profit) if take_profit is not None else None,
-            )
-        )
-        if not _protection_ack_is_valid(submitted):
-            return {"symbol": symbol, "state": "reconciliation-pending"}
-        current = self.get_positions(symbol)
-        if len(current) != 1:
-            return {"symbol": symbol, "state": "reconciliation-pending"}
-        current_position = current[0]
-        verified = (
-            current_position["stop_loss"] == stop_loss
-            if stop_loss is not None
-            else current_position["take_profit"] == take_profit
-        )
-        return {
-            "symbol": symbol,
-            "state": "reconciled" if verified else "reconciliation-pending",
-        }
-
     def close_position(self, target: str) -> dict[str, Any]:
         if target.startswith("position_id="):
             raise ValueError("Bitget close requires a symbol")
@@ -354,13 +274,6 @@ class BitgetOperatorGateway:
         self._intent_store.update(intent)
         return {"closed": symbol, "state": "closed"}
 
-    def close_all(self) -> dict[str, Any]:
-        positions = self.get_positions()
-        states = [self.close_position(str(position["symbol"])) for position in positions]
-        if any(state["state"] == "reconciliation-pending" for state in states):
-            return {"count": len(states), "state": "reconciliation-pending"}
-        return {"count": len(states), "state": "closed"}
-
     def cancel_pending_entries(
         self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
     ) -> bool:
@@ -402,8 +315,10 @@ class BitgetOperatorGateway:
         )
         self._intent_store.save(intent)
         lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
-        if lifecycle is not None:
-            lifecycle.bind_requested_close(self._client, client_oid)
+        if lifecycle is not None and not lifecycle.bind_requested_close(self._client, client_oid):
+            raise SourceManagementReconciliationPending(
+                "exact close ownership binding is unconfirmed"
+            )
         try:
             submitted = self._run(
                 self._client.place_market_close(
@@ -476,6 +391,16 @@ class BitgetOperatorGateway:
         )
         return bool(report.state == ProtectionState.VENUE_PROTECTED)
 
+    def _native_plan_client_oid(self, root: LiveIntentRecord, role: str) -> str:
+        candidate = self._intent_store.get(root.client_oid + ("-sl" if role == "SL" else "-tp"))
+        if (
+            candidate is not None
+            and candidate.role == role
+            and candidate.protection_root_oid == root.client_oid
+        ):
+            return candidate.client_oid
+        return root.client_oid
+
     def _reconcile_stop_intent(self, intent: LiveIntentRecord) -> None:
         from fatty_trader.execution.source_management import SourceManagementReconciliationPending
 
@@ -496,8 +421,8 @@ class BitgetOperatorGateway:
             quantity=intent.requested_qty,
             stop_loss=intent.planned_stop_loss,
             take_profit=intent.planned_take_profits[0],
-            stop_loss_client_oid=root.client_oid,
-            take_profit_client_oid=root.client_oid,
+            stop_loss_client_oid=self._native_plan_client_oid(root, "SL"),
+            take_profit_client_oid=self._native_plan_client_oid(root, "TP"),
             stop_loss_provider_order_id=intent.provider_order_id,
             take_profit_provider_order_id=intent.stop_mutation_take_profit_id,
         )
@@ -572,6 +497,10 @@ class BitgetOperatorGateway:
             or ""
         ).strip()
         root = self._intent_store.get(root_oid)
+        plan_client_oid = root_oid
+        if root is not None and root.role == "SL" and root.protection_root_oid:
+            root_oid = root.protection_root_oid
+            root = self._intent_store.get(root_oid)
         if (
             root is None
             or root.role != "ENTRY"
@@ -589,9 +518,9 @@ class BitgetOperatorGateway:
             hold_side=side.lower(),
             quantity=quantity,
             stop_loss=old_stop,
-            take_profit=root.planned_take_profits[0],
-            stop_loss_client_oid=root_oid,
-            take_profit_client_oid=root_oid,
+            take_profit=root.active_take_profit_price or root.planned_take_profits[0],
+            stop_loss_client_oid=plan_client_oid,
+            take_profit_client_oid=self._native_plan_client_oid(root, "TP"),
             stop_loss_provider_order_id=sl_id,
             take_profit_provider_order_id=tp_id,
         )
@@ -607,7 +536,9 @@ class BitgetOperatorGateway:
             quantity,
             provider_order_id=sl_id,
             planned_stop_loss=normalized_stop,
-            planned_take_profits=root.planned_take_profits,
+            planned_take_profits=(root.active_take_profit_price,)
+            if root.active_take_profit_price
+            else root.planned_take_profits,
             stop_mutation_root_oid=root_oid,
             stop_mutation_take_profit_id=tp_id,
         )
@@ -622,7 +553,7 @@ class BitgetOperatorGateway:
                 self._client.modify_position_stop_loss(
                     symbol=symbol,
                     order_id=sl_id,
-                    client_oid=root_oid,
+                    client_oid=plan_client_oid,
                     trigger_price=str(normalized_stop),
                 )
             )
@@ -635,7 +566,7 @@ class BitgetOperatorGateway:
         if (
             not isinstance(submitted, Mapping)
             or str(submitted.get("orderId") or "") != sl_id
-            or str(submitted.get("clientOid") or "") != root_oid
+            or str(submitted.get("clientOid") or "") != plan_client_oid
         ):
             intent.state = "unknown"
             self._intent_store.update(intent)

@@ -457,7 +457,7 @@ async def test_source_service_uses_runtime_owned_cancellation_before_real_gatewa
     )
     monkeypatch.setattr(
         "fatty_trader.storage.live_intents.PostgresLiveIntentStore",
-        lambda _: InMemoryLiveIntentStore(),
+        lambda _, **__: InMemoryLiveIntentStore(),
     )
 
     async def stop_after_cycle(_interval: float) -> None:

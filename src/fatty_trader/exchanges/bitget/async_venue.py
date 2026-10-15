@@ -134,7 +134,7 @@ class AsyncBitgetVenue:
             and account.short_leverage == expected
         )
 
-    async def preflight(self, symbol: str) -> BitgetPreflightSnapshot:
+    async def preflight(self, symbol: str, *, read_only: bool = False) -> BitgetPreflightSnapshot:
         contracts = await self._client.get_contracts()
         if not isinstance(contracts, list) or any(
             not isinstance(row, dict)
@@ -152,6 +152,10 @@ class AsyncBitgetVenue:
         account = await read_account_state(self._client, symbol)
         position = await read_position_state(self._client, symbol)
         if account.margin_mode != "isolated":
+            if read_only:
+                raise ValueError(
+                    "Bitget account margin mode must be isolated; preview never changes it"
+                )
             # Set margin mode; Bitget returns the confirmed mode in the response.
             # Trust it, but verify with a short-delayed read-back before rejecting.
             import asyncio

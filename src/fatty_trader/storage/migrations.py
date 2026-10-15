@@ -13,9 +13,11 @@ and must never drop tables, columns, or data.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any, Final, Protocol
 
+from fatty_trader.console.schema import CONSOLE_SCHEMA_SQL
 from fatty_trader.storage.bitget_baseline_schema import BITGET_BASELINE_SCHEMA_SQL
 from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
 from fatty_trader.storage.intake_schema import INTAKE_COVERAGE_SCHEMA_SQL
@@ -383,6 +385,7 @@ MIGRATIONS: Final = [
             CHECK (action IN ('TP1_BOOKED','TP_BOOKED','SL_TO_ENTRY','CLOSE'));
         """,
     ),
+    (26, CONSOLE_SCHEMA_SQL),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
@@ -394,7 +397,66 @@ _IDEMPOTENT_ERROR_MARKERS: Final = (
 
 
 def _iter_statements(sql: str) -> list[str]:
-    return [part.strip() for part in sql.split(";") if part.strip()]
+    """Split SQL without cutting quoted literals, comments or function bodies."""
+    statements: list[str] = []
+    start = 0
+    index = 0
+    quote: str | None = None
+    dollar: str | None = None
+    escape_string = False
+    comment_depth = 0
+    line_comment = False
+    while index < len(sql):
+        char = sql[index]
+        pair = sql[index : index + 2]
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+        elif comment_depth:
+            if pair == "/*":
+                comment_depth += 1
+                index += 1
+            elif pair == "*/":
+                comment_depth -= 1
+                index += 1
+        elif dollar is not None:
+            if sql.startswith(dollar, index):
+                index += len(dollar) - 1
+                dollar = None
+        elif quote is not None:
+            if char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = None
+            elif char == "\\" and quote == "'" and escape_string:
+                index += 1
+        elif pair == "--":
+            line_comment = True
+            index += 1
+        elif pair == "/*":
+            comment_depth = 1
+            index += 1
+        elif char in ("'", '"'):
+            quote = char
+            escape_string = char == "'" and index > 0 and sql[index - 1] in ("e", "E")
+        elif char == "$":
+            match = re.match(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$", sql[index:])
+            if match is not None:
+                dollar = match.group(0)
+                index += len(dollar) - 1
+        elif char == ";":
+            statement = sql[start:index].strip()
+            if statement:
+                statements.append(statement)
+            start = index + 1
+        index += 1
+    if quote is not None or dollar is not None or comment_depth:
+        raise ValueError("unterminated migration SQL literal or comment")
+    remainder = sql[start:].strip()
+    if remainder:
+        statements.append(remainder)
+    return statements
 
 
 def _is_idempotent_error(exc: Exception) -> bool:

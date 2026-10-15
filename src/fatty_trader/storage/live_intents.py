@@ -171,8 +171,13 @@ def build_emergency_close_intent(entry: LiveIntentRecord, quantity: Decimal) -> 
 class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     """PostgreSQL-backed live intent store with insert-before-submit semantics."""
 
-    def __init__(self, connection_factory: Callable[[], Connection]) -> None:
+    def __init__(
+        self, connection_factory: Callable[[], Connection], *, console_enabled: bool = False
+    ) -> None:
         self._connection_factory = connection_factory
+        self.console_enabled = console_enabled
+        self.entry_claim_authority: Callable[[Any], None] | None = None
+        self.cancel_claim_authority: Callable[[Any], None] | None = None
 
     @property
     def verified_close_lifecycle(self) -> PostgresVerifiedCloseLifecycle:
@@ -400,7 +405,10 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
     def claim(self, record: LiveIntentRecord) -> bool:
         connection = self._connection_factory()
         try:
-            claimed = self._insert(connection.cursor(), record)
+            cursor = connection.cursor()
+            if record.role == "ENTRY" and self.entry_claim_authority is not None:
+                self.entry_claim_authority(cursor)
+            claimed = self._insert(cursor, record)
             connection.commit()
             return claimed
         except Exception:
@@ -412,6 +420,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            if self.entry_claim_authority is not None:
+                self.entry_claim_authority(cursor)
             claimed = self._insert(cursor, market)
             if claimed and not self._insert(cursor, limit):
                 raise ValueError("split child exists without root")
@@ -425,6 +435,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            if self.entry_claim_authority is not None:
+                self.entry_claim_authority(cursor)
             cursor.execute(
                 """UPDATE live_order_intents SET state='requested', updated_at=clock_timestamp()
                 WHERE exchange='bitget' AND client_order_id=%s AND role='ENTRY'
@@ -443,15 +455,23 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            if self.cancel_claim_authority is not None:
+                self.cancel_claim_authority(cursor)
             cursor.execute(
-                """UPDATE live_order_intents
-                SET cancel_requested_by=%s, provider_terminal=(state='staged'),
-                    state=CASE WHEN state='staged' THEN 'cancelled' ELSE state END,
+                """UPDATE live_order_intents i
+                SET cancel_requested_by=%s, provider_terminal=(i.state='staged'),
+                    state=CASE WHEN i.state='staged' THEN 'cancelled' ELSE i.state END,
                     updated_at=clock_timestamp()
-                WHERE exchange='bitget' AND client_order_id=%s AND role='ENTRY'
-                  AND entry_leg='limit' AND order_type='limit' AND dispatch_id IS NOT NULL
-                  AND cancel_requested_by IS NULL AND NOT provider_terminal
-                RETURNING client_order_id""",
+                FROM bitget_margin_reservations r,dispatches d
+                WHERE i.exchange='bitget' AND i.client_order_id=%s AND i.role='ENTRY'
+                  AND i.order_type='limit' AND d.id=i.dispatch_id AND d.id=r.dispatch_id
+                  AND r.id=i.margin_reservation_id
+                  AND i.cancel_requested_by IS NULL AND NOT i.provider_terminal
+                  AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b
+                      WHERE (b.record_kind='intent' AND b.record_id=i.id)
+                         OR (b.record_kind='reservation' AND b.record_id=r.id)
+                         OR (b.record_kind='dispatch' AND b.record_id=d.id))
+                RETURNING i.client_order_id""",
                 (management_id, client_oid),
             )
             won = cursor.fetchone() is not None
@@ -466,12 +486,18 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         try:
             cursor = connection.cursor()
             cursor.execute(
-                """UPDATE live_order_intents SET cancel_post_claimed=TRUE,
+                """UPDATE live_order_intents i SET cancel_post_claimed=TRUE,
                     updated_at=clock_timestamp()
-                WHERE exchange='bitget' AND client_order_id=%s AND role='ENTRY'
-                  AND entry_leg='limit' AND cancel_requested_by IS NOT NULL
-                  AND NOT cancel_post_claimed AND NOT provider_terminal
-                RETURNING client_order_id""",
+                FROM bitget_margin_reservations r,dispatches d
+                WHERE i.exchange='bitget' AND i.client_order_id=%s AND i.role='ENTRY'
+                  AND i.order_type='limit' AND i.cancel_requested_by IS NOT NULL
+                  AND r.id=i.margin_reservation_id AND d.id=i.dispatch_id AND d.id=r.dispatch_id
+                  AND NOT i.cancel_post_claimed AND NOT i.provider_terminal
+                  AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b
+                      WHERE (b.record_kind='intent' AND b.record_id=i.id)
+                         OR (b.record_kind='reservation' AND b.record_id=r.id)
+                         OR (b.record_kind='dispatch' AND b.record_id=d.id))
+                RETURNING i.client_order_id""",
                 (client_oid,),
             )
             won = cursor.fetchone() is not None
@@ -485,18 +511,29 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         self, symbol: str | None = None, management_id: Any = None
     ) -> tuple[LiveIntentRecord, ...]:
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        cursor.execute(
-            """SELECT client_order_id FROM live_order_intents
-            WHERE exchange='bitget' AND role='ENTRY' AND entry_leg='limit'
-              AND (NOT provider_terminal OR cancel_requested_by = %s::uuid)
-              AND (%s::text IS NULL OR symbol = %s::text)
-            ORDER BY client_order_id""",
-            (management_id, symbol, symbol),
-        )
-        ids = []
-        while (row := cursor.fetchone()) is not None:
-            ids.append(row[0])
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT e.client_order_id FROM live_order_intents e
+                JOIN bitget_margin_reservations r ON r.id=e.margin_reservation_id
+                JOIN dispatches d ON d.id=e.dispatch_id AND d.id=r.dispatch_id
+                WHERE e.exchange='bitget' AND e.role='ENTRY' AND e.order_type='limit'
+                  AND (NOT e.provider_terminal OR e.cancel_requested_by = %s::uuid)
+                  AND (%s::text IS NULL OR e.symbol = %s::text)
+                  AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b
+                      WHERE (b.record_kind='intent' AND b.record_id=e.id)
+                         OR (b.record_kind='reservation' AND b.record_id=r.id)
+                         OR (b.record_kind='dispatch' AND b.record_id=d.id))
+                ORDER BY e.client_order_id""",
+                (management_id, symbol, symbol),
+            )
+            ids = []
+            while (row := cursor.fetchone()) is not None:
+                ids.append(row[0])
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
         loaded = [self.get(oid) for oid in ids]
         if any(record is None for record in loaded):
             raise ValueError("pending entry disappeared")
@@ -563,7 +600,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                    planned_stop_loss, planned_take_profits, dispatch_id, entry_leg,
                    order_type, limit_price, cancel_requested_by, provider_terminal,
                    cancel_post_claimed, active_stop_loss_price, stop_mutation_root_oid,
-                   stop_mutation_take_profit_id, protection_root_oid
+                   stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price
             FROM live_order_intents
             WHERE client_order_id = %s
             """,
@@ -575,7 +612,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         values = list(row.values()) if isinstance(row, dict) else list(row)
         # Preserve compatibility with legacy row fakes and pre-admission snapshots;
         # production SELECTs include all admission columns.
-        values.extend([None] * (31 - len(values)))
+        values.extend([None] * (32 - len(values)))
         raw_fill_ids = values[11] or []
         if isinstance(raw_fill_ids, str):
             raw_fill_ids = json.loads(raw_fill_ids)
@@ -618,6 +655,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             stop_mutation_root_oid=values[28],
             stop_mutation_take_profit_id=values[29],
             protection_root_oid=values[30],
+            active_take_profit_price=Decimal(str(values[31])) if values[31] is not None else None,
         )
 
     def update(self, record: LiveIntentRecord) -> None:

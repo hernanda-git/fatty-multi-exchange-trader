@@ -204,6 +204,10 @@ async def test_operator_health_is_written_by_polling_thread_only(monkeypatch, tm
         "BITGET_API_KEY": "test",
         "BITGET_API_SECRET": "test",
         "BITGET_API_PASSPHRASE": "test",
+        "CONSOLE_ENABLED": "1",
+        "CONSOLE_ACCOUNT_ID": "isolated-account",
+        "CONSOLE_ORIGIN": "http://localhost:18081",
+        "CONSOLE_ALLOW_LOCALHOST_HTTP": "1",
     }
     monkeypatch.setattr(telegram_polling.TelegramBotApi, "set_my_commands", lambda self: None)
 

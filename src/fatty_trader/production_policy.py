@@ -7,6 +7,7 @@ PRODUCTION_BITGET_SERVICES = (
     "monitor-bitget",
     "operator-bot",
     "source-management",
+    "console-worker",
 )
 PRODUCTION_VALUES = {
     "FATTY_PRODUCTION_LIVE_ONLY": "1",

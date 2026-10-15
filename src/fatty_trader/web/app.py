@@ -11,7 +11,14 @@ def create_app(
     *,
     runtime_health_reader: Callable[[], Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Fatty Multi-Exchange Trader", version="0.1.0")
+    console_enabled = environ.get("CONSOLE_ENABLED", "0") == "1"
+    app = FastAPI(
+        title="Fatty Multi-Exchange Trader",
+        version="0.1.0",
+        docs_url=None if console_enabled else "/docs",
+        redoc_url=None if console_enabled else "/redoc",
+        openapi_url=None if console_enabled else "/openapi.json",
+    )
 
     def report() -> dict[str, object]:
         runtime = None
@@ -32,5 +39,10 @@ def create_app(
     @app.get("/health/telemetry")
     def health_telemetry() -> dict[str, object]:
         return report()
+
+    if console_enabled:
+        from fatty_trader.console.api import mount_console
+
+        mount_console(app, environ)
 
     return app

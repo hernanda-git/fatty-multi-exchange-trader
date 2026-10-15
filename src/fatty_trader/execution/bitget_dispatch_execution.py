@@ -72,6 +72,7 @@ class BitgetDispatchExecution:
         self._recovery_protection = recovery_protection
         self.recovery_ready = False
         self.recovery_issues: tuple[str, ...] = ()
+        self.console_cancel_claim: Callable[[str], bool] | None = None
 
     async def recover_entry_lifecycles(self) -> int:
         """GET-only recovery, including consumed reservations and terminal fills.
@@ -209,7 +210,11 @@ class BitgetDispatchExecution:
                     "durable-split-replay",
                 ),
             )
-        if submission.entry_route is not None and submission.entry_route.limit_quantity > 0:
+        if (
+            submission.entry_route is not None
+            and submission.entry_route.limit_quantity > 0
+            and submission.entry_route.market_quantity > 0
+        ):
             return await self._submit_split(dispatch, submission)
         intent = self._intent(dispatch, submission)
         if self._store.get(intent.client_oid) is None:
@@ -507,6 +512,11 @@ class BitgetDispatchExecution:
             return "EXPIRED"
         return None
 
+    def _claim_cancel_post(self, client_oid: str) -> bool:
+        if self.console_cancel_claim is not None:
+            return self.console_cancel_claim(client_oid)
+        return self._store.claim_cancel_post(client_oid)
+
     async def cancel_pending_entries(
         self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
     ) -> bool:
@@ -517,6 +527,25 @@ class BitgetDispatchExecution:
                 await binding()
             for limit in self._store.pending_entries(symbol, management_id):
                 if reconciliation_only and limit.cancel_requested_by != management_id:
+                    continue
+                if limit.entry_leg != "limit":
+                    if not reconciliation_only:
+                        self._store.claim_cancel(limit.client_oid, management_id)
+                    refreshed = self._store.get(limit.client_oid)
+                    if refreshed is None:
+                        return False
+                    cancel = getattr(self._execution, "cancel_pending_entry", None)
+                    result = (
+                        await cancel(
+                            refreshed, lambda oid=limit.client_oid: self._claim_cancel_post(oid)
+                        )
+                        if callable(cancel) and not reconciliation_only
+                        else await self._execution.reconcile_intent(refreshed)
+                    )
+                    self._persist_readback(refreshed, result)
+                    if not refreshed.provider_terminal:
+                        return False
+                    self._resolve_reservation(refreshed, _dispatcher_status(result.status))
                     continue
                 root = self._store.get(limit.client_oid.removesuffix("-limit"))
                 if root is None:
@@ -532,7 +561,7 @@ class BitgetDispatchExecution:
                     cancel = getattr(self._execution, "cancel_pending_entry", None)
                     result = (
                         await cancel(
-                            limit, (lambda oid=limit.client_oid: self._store.claim_cancel_post(oid))
+                            limit, (lambda oid=limit.client_oid: self._claim_cancel_post(oid))
                         )
                         if callable(cancel) and not reconciliation_only
                         else await self._execution.reconcile_intent(limit)
@@ -553,7 +582,9 @@ class BitgetDispatchExecution:
                         direction=Direction.LONG if root.side == "BUY" else Direction.SHORT,
                         quantity=aggregate.filled_qty,
                         stop_loss=stop_loss_val,
-                        take_profits=aggregate.planned_take_profits,
+                        take_profits=(aggregate.active_take_profit_price,)
+                        if aggregate.active_take_profit_price
+                        else aggregate.planned_take_profits,
                     )
                     if self._recovery_protection is not None:
                         # Cancellation readiness is terminal ENTRY proof, not an
@@ -697,6 +728,8 @@ class BitgetDispatchExecution:
             symbol=dispatch.pair_token,
             side=side,
             requested_qty=submission.quantity,
+            order_type=dispatch.order_type.lower(),
+            limit_price=dispatch.entry_price if dispatch.order_type == "LIMIT" else None,
             planned_leverage=submission.effective_leverage,
             planned_margin_usdt=submission.planned_margin_usdt,
             planned_notional_usdt=submission.planned_notional_usdt,
@@ -718,8 +751,10 @@ class BitgetDispatchExecution:
             symbol=dispatch.pair_token,
             direction=Direction(dispatch.direction),
             quantity=filled_qty,
-            stop_loss=intent.planned_stop_loss,
-            take_profits=intent.planned_take_profits,
+            stop_loss=intent.active_stop_loss_price or intent.planned_stop_loss,
+            take_profits=(intent.active_take_profit_price,)
+            if intent.active_take_profit_price
+            else intent.planned_take_profits,
         )
 
     def release_reservation(self, submission: BitgetEntrySubmission) -> None:

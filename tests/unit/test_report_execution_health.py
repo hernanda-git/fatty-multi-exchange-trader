@@ -190,7 +190,7 @@ def test_operator_command_loads_stream_latch_through_shared_reader():
         create_shared_health_reader,
         load_operator_health_snapshot,
     )
-    from fatty_trader.operator.live_commands import OperatorCommandService
+    from fatty_trader.operator.live_commands import OperatorReadService
 
     snapshot = load_operator_health_snapshot(
         Gateway(),
@@ -200,12 +200,12 @@ def test_operator_command_loads_stream_latch_through_shared_reader():
         execution_enabled=True,
     )
     assert snapshot["metrics"]["active_kill_switches"][0]["scope"] == "bitget-protection-stream"
-    service = OperatorCommandService(
+    service = OperatorReadService(
         Gateway(),
         operator_id=42,
         health_reader=create_shared_health_reader(lambda: snapshot),
     )
-    text = service._on_health()
+    text = service.handle("/health", sender_id=42, is_private=True, is_forwarded=False)
     assert "DEGRADED" in text
     assert "bitget-protection-stream: socket-not-connected" in text
     assert "not fill evidence" in text

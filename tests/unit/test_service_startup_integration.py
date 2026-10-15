@@ -310,7 +310,9 @@ def test_runtime_injects_durable_dispatch_repository(monkeypatch):
 
     expected = object()
     monkeypatch.setattr(
-        bitget_dispatch_repository, "PostgresBitgetDispatchRepository", lambda factory: expected
+        bitget_dispatch_repository,
+        "PostgresBitgetDispatchRepository",
+        lambda factory, **_: expected,
     )
     runtime = service.build_bitget_execution_runtime(
         dict(

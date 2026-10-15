@@ -59,6 +59,9 @@ class BitgetDispatch:
     source_channel_id: int | None = None
     source_message_id: int | None = None
     source_received_at: datetime | None = None
+    order_type: str = "MARKET"
+    manual_margin: Decimal | None = None
+    manual_leverage: int | None = None
 
 
 _CLAIM_SQL = (
@@ -130,8 +133,16 @@ SELECT dispatch_id FROM reservation;
 class PostgresBitgetDispatchRepository:
     """Lease-safe dispatch repository; every mutation is transactional and auditable."""
 
-    def __init__(self, connection_factory: Callable[[], Connection]) -> None:
+    def __init__(
+        self,
+        connection_factory: Callable[[], Connection],
+        *,
+        console_enabled: bool = False,
+        console_scope: str = "bitget:configured-bitget:LIVE",
+    ) -> None:
         self._connection_factory = connection_factory
+        self._console_enabled = console_enabled
+        self._console_scope = console_scope
 
     def claim(self, worker_id: str, lease_seconds: int) -> BitgetDispatch | None:
         if not worker_id:
@@ -155,6 +166,28 @@ class PostgresBitgetDispatchRepository:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
+            if self._console_enabled:
+                cursor.execute(
+                    "SELECT active FROM console_admission_pauses WHERE scope=%s",
+                    (self._console_scope,),
+                )
+                pause = cursor.fetchone()
+                if pause is not None and pause[0]:
+                    connection.commit()
+                    return False
+                cursor.execute(
+                    """SELECT d.state, m.expires_at > clock_timestamp(), true
+                    FROM dispatches d JOIN console_manual_entries m ON m.id=d.source_id
+                    JOIN console_jobs j ON j.id=m.job_id
+                    WHERE d.id=%s AND d.source_type='console_manual'
+                      AND j.state IN ('running','reconciliation_pending')
+                    FOR UPDATE OF d""",
+                    (dispatch_id,),
+                )
+                manual = cursor.fetchone()
+                if manual is not None:
+                    connection.commit()
+                    return bool(manual[0] in {"QUEUED", "SUBMITTING"} and manual[1] and manual[2])
             cursor.execute(
                 "SELECT d.state, COALESCE(("
                 + SOURCE_ELIGIBLE_SQL.format(alias="tm")
@@ -208,6 +241,38 @@ class PostgresBitgetDispatchRepository:
             rows = []
             while (row := cursor.fetchone()) is not None:
                 if row[4] is None or row[9] is None:
+                    if self._console_enabled:
+                        manual_cursor = connection.cursor()
+                        manual_cursor.execute(
+                            """SELECT m.symbol,m.direction,m.entry_price,m.stop_loss,
+                                      m.take_profits,m.order_type
+                            FROM console_manual_entries m JOIN dispatches d ON d.source_id=m.id
+                            WHERE d.id=%s AND d.source_type='console_manual'""",
+                            (row[0],),
+                        )
+                        manual = manual_cursor.fetchone()
+                        if manual is not None:
+                            targets = manual[4]
+                            if isinstance(targets, str):
+                                targets = json.loads(targets)
+                            rows.append(
+                                (
+                                    BitgetDispatch(
+                                        row[0],
+                                        row[1],
+                                        row[2] or "",
+                                        row[3],
+                                        manual[0],
+                                        manual[1],
+                                        Decimal(str(manual[2])),
+                                        Decimal(str(manual[3])),
+                                        tuple(Decimal(str(p)) for p in targets),
+                                        order_type=manual[5],
+                                    ),
+                                    str(row[11]),
+                                )
+                            )
+                            continue
                     raise ValueError("recovery canonical source missing")
                 rows.append((_dispatch_from_row(row[:11]), str(row[11])))
             connection.commit()

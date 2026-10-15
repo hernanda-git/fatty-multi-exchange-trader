@@ -14,7 +14,7 @@ from fatty_trader.exchanges.bitget.live import (
 )
 from fatty_trader.exchanges.bitget.reconciliation import Reconciler, ReconcilerConfig
 from fatty_trader.operator.command_parser import parse_operator_command
-from fatty_trader.operator.live_commands import OperatorCommandService
+from fatty_trader.operator.live_commands import OperatorReadService
 from fatty_trader.risk.sizing import SymbolMetadata
 
 
@@ -313,9 +313,7 @@ def test_demo_verify_public_symbol_metadata_and_price(demo: DemoBitgetClient) ->
 
 
 def test_demo_price_and_balance_commands(demo: DemoBitgetClient) -> None:
-    svc = OperatorCommandService(
-        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
-    )
+    svc = OperatorReadService(gateway=demo, operator_id=1)
     price_alert = svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
     assert "BTCUSDT" in price_alert and "60000" in price_alert
     bal_alert = svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=False)
@@ -394,23 +392,18 @@ def test_demo_reconciler_flags_unprotected_position(demo: DemoBitgetClient) -> N
     assert any("protection" in m.lower() for m in rec.last_mismatches)
 
 
-def test_demo_operator_open_price_balance_positions_flow(demo: DemoBitgetClient) -> None:
-    svc = OperatorCommandService(
-        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
-    )
-    cmd = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
-    # /open
-    open_alert = svc.handle(cmd, sender_id=1, is_private=True, is_forwarded=False)
-    assert "BTCUSDT" in open_alert and "LONG" in open_alert
-    # /positions
-    pos_alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
-    assert "BTCUSDT" in pos_alert
-    # /balance
-    bal_alert = svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=False)
-    assert "1000" in bal_alert
-    # /price
-    price_alert = svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
-    assert "60000" in price_alert
+def test_demo_operator_reads_cannot_open(demo: DemoBitgetClient) -> None:
+    from fatty_trader.operator.command_parser import CommandError
+
+    service = OperatorReadService(gateway=demo, operator_id=1)
+    with pytest.raises(CommandError, match="shared durable"):
+        service.handle(
+            "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto",
+            sender_id=1,
+            is_private=True,
+            is_forwarded=False,
+        )
+    assert demo.positions == []
 
 
 def test_demo_invalid_symbol_rejected(demo: DemoBitgetClient) -> None:
@@ -426,27 +419,21 @@ def test_demo_invalid_symbol_rejected(demo: DemoBitgetClient) -> None:
         )
 
 
-def test_demo_insufficient_margin_skips(demo: DemoBitgetClient) -> None:
-    demo.balance = Decimal("0")
-    svc = OperatorCommandService(
-        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
-    )
-    cmd = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
-    alert = svc.handle(cmd, sender_id=1, is_private=True, is_forwarded=False)
-    # Alert returned, position not created due to zero qty
-    assert demo.positions == [] or "0" in alert
+def test_demo_read_only_service_has_no_mutation_authority(demo: DemoBitgetClient) -> None:
+    from fatty_trader.operator.command_parser import CommandError
+
+    service = OperatorReadService(gateway=demo, operator_id=1)
+    with pytest.raises(CommandError, match="shared durable"):
+        service.handle("/close all", sender_id=1, is_private=True, is_forwarded=False)
+    assert demo.positions == []
 
 
 def test_demo_every_alert_contains_no_secrets(demo: DemoBitgetClient) -> None:
-    svc = OperatorCommandService(
-        gateway=demo, operator_id=1, require_confirmation=False, mutations_enabled=True
-    )
-    cmd = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
+    svc = OperatorReadService(gateway=demo, operator_id=1)
     alerts = [
         svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False),
         svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=False),
         svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False),
-        svc.handle(cmd, sender_id=1, is_private=True, is_forwarded=False),
     ]
     for alert in alerts:
         lower = alert.lower()

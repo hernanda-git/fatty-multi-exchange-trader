@@ -43,8 +43,11 @@ class PostgresBitgetMarginReservationRepository:
     account read immediately before calling this method and reject stale evidence.
     """
 
-    def __init__(self, connection_factory: Callable[[], Connection]) -> None:
+    def __init__(
+        self, connection_factory: Callable[[], Connection], *, console_enabled: bool = False
+    ) -> None:
         self._connection_factory = connection_factory
+        self._console_enabled = console_enabled
 
     def reserve(
         self,
@@ -114,6 +117,18 @@ class PostgresBitgetMarginReservationRepository:
                 (dispatch_id,),
             )
             source = cursor.fetchone()
+            if self._console_enabled and (source is None or not source[1]):
+                cursor.execute(
+                    """SELECT d.state, m.expires_at > clock_timestamp()
+                    FROM dispatches d JOIN console_manual_entries m ON m.id=d.source_id
+                    JOIN console_jobs j ON j.id=m.job_id
+                    WHERE d.id=%s AND d.source_type='console_manual'
+                      AND j.state='running' FOR UPDATE OF d""",
+                    (dispatch_id,),
+                )
+                manual = cursor.fetchone()
+                if manual is not None:
+                    source = manual
             entry_states = {"QUEUED", "PREFLIGHT", "SIZED", "VALIDATED", "SUBMITTING"}
             if source is None or source[0] not in entry_states or not source[1]:
                 if source is not None and source[0] in entry_states:

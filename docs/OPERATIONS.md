@@ -124,3 +124,106 @@ Verified close release validates the requested close identity, state, timestamps
 `OwnedQuantityEvidenceError` denotes contradictory durable ownership/fill evidence. Release returns a rejected admission for that explicit evidence failure; new close binding refuses it without recording permission to mutate. SQL/connection failures are not converted to evidence rejection: they roll back and propagate. Reservations and fill economics remain unchanged on rejection or transaction failure.
 
 Standalone `PostgresLiveIntentStore.get()` and `remaining_owned_quantity()` close the read connection on success, absent records, decoding/validation errors, and SQL failures. A cursor supplied to residual calculation remains caller-owned: the helper does not commit, roll back, or close its transaction. Full-suite regression evidence and real-PostgreSQL smoke results are recorded in the remediation tracker.
+
+## Console host operations boundary
+
+The web process has no Docker socket, exchange credentials, private secret key,
+or host command runner. `deploy/systemd/fatty-console-ops-worker.service` runs
+`scripts/console_ops_worker.py` in a dedicated host virtual environment.
+The template is a user unit using `%h/apps/fatty-multi-exchange-trader` and a
+dedicated `runtime/console-ops-venv`; it does not install into unrelated app
+environments. Docker group membership is root-equivalent host authority and
+belongs only to the trusted host executor, never the web UID. The unit sets
+no-new-privileges and umask 0077; filesystem isolation is enforced by dedicated
+directories and runner path allowlists, not assumed user namespaces. No other
+Compose project or host service is in its allowlist.
+
+Host environment requires `CONSOLE_OPS_WORKER=1`, `CONSOLE_ENABLED=1`,
+`CONSOLE_REPOSITORY_ROOT`, `CONSOLE_OPS_STATE_DIR`, `CONSOLE_BACKUP_DIR`,
+`CONSOLE_COMPOSE_PROJECT`, and the existing approved LIVE/LIVE/1 and provider
+credentials. `CONSOLE_COMPOSE_NETWORK` can select the exact approved private
+network; otherwise it is `<project>_default`. The launcher resolves only the
+project's PostgreSQL container IP and maps `POSTGRES_PASSWORD` into private
+`PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD`; it never publishes a database port.
+
+Secret replacement uses `CONSOLE_SECRET_STAGE_DIR`,
+`CONSOLE_SECRET_PUBLIC_KEY_FILE`, and host-only
+`CONSOLE_SECRET_PRIVATE_KEY_FILE`. Generate a standard RSA key of at least
+3072 bits. Private key and host state must be mode 0600/0700. The web mounts only
+the public key and encrypted spool, not the host runtime override. For a shared
+spool, configure the exact trusted `CONSOLE_SECRET_STAGE_GID`; the spool must
+be setgid 2770 with no other-user access and encrypted stage files are 0640.
+Without shared-group configuration the spool is 0700 and files are 0600.
+RSA-OAEP SHA256 seals a per-stage Fernet key. Stages expire after 15 minutes,
+bind actor/account/kind, and contain no database plaintext. Supported kinds are
+`BITGET_API_KEY`, `BITGET_API_SECRET`, `BITGET_API_PASSPHRASE`, `TG_BOT_TOKEN`.
+
+Config drafts are immutable typed revisions. Only poll/delivery intervals,
+notification attempt count, evidenced live-source channel IDs and bounded intake
+channels (negative IDs or `@username`) are editable; risk caps, gate activation,
+margin/leverage, LIVE policy and execution are policy-pinned and cannot be changed
+by generic config. `source.configure` creates a draft, not admission, and applies
+intake and analyzer configuration only to their exact consumers.
+Approved `config.apply` atomically persists a private Compose JSON override,
+recreates only affected consumers after quiescence and fresh authenticated
+flat proof, and separately observes exact-container nonsecret configuration.
+Desired and effective versions remain distinct if readback fails. All future
+Compose commands must preserve `COMPOSE_FILE` in order:
+`docker-compose.yml`, existing `runtime.compose.json`, existing
+`release.compose.json` under the private ops state directory. These override
+files are not web mounts and must remain 0600.
+
+`maintenance.prepare` produces a scoped one-hour reviewed no-replay plan.
+Service jobs accept only enumerated application services. Disruptive operations
+require fresh authenticated flat inventory and refuse unknown/nonflat state;
+they never stop existing position protection to make maintenance possible.
+Release deploy/rollback accepts only an approved catalog artifact with immutable
+OCI image digest, source digest, matching Compose digest and exact schema
+version. No branch/ref, shell command, provider URL or filesystem path is a
+command argument. Rollback never down-migrates the database.
+
+Register a verified current or rollback artifact through authenticated SSH, using
+the host worker's approved environment and dedicated virtual environment:
+`python scripts/console_ops_worker.py --register-release RELEASE_ID --image
+sha256:EXACT_LOCAL_IMAGE_DIGEST --approval-reference APPROVAL_REFERENCE`.
+An OCI `repository@sha256:DIGEST` is also accepted. Tags/branches are rejected.
+Registration inspects the exact image, hashes its copied source in a read-only,
+network-none, capability-dropped container, and binds the current Compose/schema
+digests. This host administrator enrollment path is not a web command.
+
+Backups invoke the existing integrity-checking backup script with automatic
+retention disabled; catalog deletion is an explicit reviewed action respecting
+retention/holds. SHA256, size and `pg_restore --list` are checked before verify,
+delete or restore. Restore requires all application consumers stopped, fresh
+flat proof, and an unchanged durable trading-evidence digest since backup.
+Changed provider claims/fills/history refuse restore rather than replaying an
+older database. The current console control-plane dump is preserved and restored
+around the existing restore script; consumers remain stopped and dedicated
+admission pause stays active until separately reviewed readiness/reconciliation.
+
+Every host effect has a durable pre-effect receipt in PostgreSQL and a private
+filesystem journal surviving database restore. A crash or existing effect claim
+uses GET-only reobservation, never another dangerous start/stop/restart, deploy,
+restore or latch-release call. Running containers alone do not prove a restart.
+`latch.prove` and `latch.release_approved` invoke the exact existing scoped
+recovery script with baseline/account/reason/digest binding and continuous
+consumer exclusion; no blanket latch clear exists. Dedicated audited
+`admission.pause/resume` affects only new-entry admission, preserving monitor,
+native/fallback protection and close recovery. Resume refuses incident latches,
+unready ledger or stale independent observations.
+
+Notification tests use the configured owner-approved delivery destination.
+Requeue creates a distinct linked delivery attempt and preserves original
+dedup/failed-at/attempt evidence; it never replays trading.
+`notification.send_health` queues a full independently collected health snapshot
+rendered by the canonical shared health formatter; it never accepts arbitrary HTML.
+`notification.configure_schedule` changes only the existing user
+`fatty-health-report.timer` interval to 1/2/3/6/12/24 hours, with durable claim,
+fixed systemctl commands, and observed effective monotonic interval/state.
+Actual timer fields and next/last trigger observations are reported separately;
+an absent timer is unavailable evidence, not an invented six-hour schedule.
+The user service must have its existing `XDG_RUNTIME_DIR`/D-Bus environment.
+Signal reanalysis uses the existing full analyzer but records only a separate analysis run,
+without rewriting source receipt/revision, canonical dispatch or eligibility.
+Exports are bounded authenticated job results, with coverage/expiry metadata
+and CSV formula escaping; no unrestricted filesystem download is introduced.

@@ -44,3 +44,43 @@ Implementation boundaries: `analyzer/trade_management.py`, `execution/source_man
 Local regressions cover flat accounts with waiting entry, fills racing cancellation, unknown cancellation/restart, duplicate updates, mutation gates, generic/later booking semantics and truthful notification rendering. The entry lifecycle regressions must additionally prove exact-owned cancellation, protective-order survival and no cancellation POST retry after a persisted claim. The integration owner runs checks after all slices land. No verification or deployment claim is made by this document.
 
 See [AGENTS.md](../AGENTS.md) for the agentic workflow and [PRODUCTION-LIVE-POLICY.md](PRODUCTION-LIVE-POLICY.md) for production admission/deployment constraints. Live enablement never clears safety gates or authorizes live mutations without the applicable approvals.
+
+## Durable console trading
+
+Console and private Telegram mutations use the same typed preview, authorization,
+passkey step-up, durable job and worker authority. Telegram does not manufacture
+step-up evidence or maintain process-local confirmation tokens. Read-only operator
+cards retain no provider mutation methods.
+
+Manual MARKET and LIMIT entries have genuine `console_manual` dispatch provenance
+bound to the authorized job and a short database-clock eligibility window; they
+never create a fake Telegram message or claim source freshness. Explicit LIMIT
+orders retain exact ENTRY ownership and cancellation claims. Optional manual margin
+may only narrow the pinned 1-USDT cap; requested leverage is constrained to 5–20x,
+venue bounds and the same liquidation guard. Source routing and its 25/75 policy are
+unchanged. Preview reads only persisted, fresh, account-bound provider observations
+and worker effective configuration, calls the same sizing policy without reservation,
+and never prepares margin mode or leverage.
+
+Selected closes cancel owned waiting entries, observe the position again, validate
+the exact owned residual and persist a stable reduce-only close intent and verified
+reservation binding before POST. The shared advisory-locked binding excludes a
+second unresolved exit for the same reservation, including source-management exits.
+Partial close evidence requires real provider fills and matching residual readback;
+full close release additionally retains the existing authenticated flat/economic
+contract. Ambiguous claims are GET-only on restart.
+
+Native SL/TP modification retains the opposite exact plan, uses canonical root
+`-sl`/`-tp` identities, persists intent before POST and requires strict full-quantity
+readback. Repair places only missing plans. Immutable provider epochs can be recorded
+only from initial owned entry readback or already-proved native/fallback ownership;
+they are not an external-position adoption path. Fallback registration/update stays
+behind its existing mutation gate and exact epoch. Disabling fallback additionally
+requires proved native protection. External/baseline and account-wide close/cancel,
+protective-plan cancellation, stream-mutation enablement and blind POST retry remain
+policy-prohibited.
+
+The dedicated account/environment console admission pause is checked at final ENTRY
+eligibility, including automatic entries. It never disables required protection,
+readback, cancellation or closes and never clears another safety latch. These are
+source implementation contracts, not live execution or deployment evidence.

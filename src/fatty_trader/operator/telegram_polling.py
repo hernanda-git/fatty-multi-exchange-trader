@@ -115,12 +115,20 @@ class TelegramBotApi:
             {"command": "intents", "description": "recent durable intents"},
             {"command": "dispatches", "description": "dispatch lifecycle"},
             {"command": "signals", "description": "recent source signals"},
-            {"command": "close", "description": "close a position"},
-            {"command": "cancel", "description": "cancel pending orders"},
-            {"command": "setsl", "description": "set native stop loss"},
-            {"command": "settp", "description": "set native take profit"},
-            {"command": "open", "description": "open a guarded position"},
-            {"command": "trade", "description": "open a Bitget trade"},
+            {"command": "close", "description": "preview exact owned reduce-only close"},
+            {"command": "cancel", "description": "preview exact owned entry cancellation"},
+            {"command": "setsl", "description": "preview owned native stop modification"},
+            {"command": "settp", "description": "preview owned native target modification"},
+            {"command": "open", "description": "preview canonical manual MARKET or LIMIT"},
+            {"command": "trade", "description": "preview canonical Bitget trade"},
+            {"command": "confirm", "description": "enqueue durable preview after passkey step-up"},
+            {
+                "command": "approve",
+                "description": "approve exact durable job after passkey step-up",
+            },
+            {"command": "reject", "description": "reject exact durable job"},
+            {"command": "job", "description": "read durable job evidence"},
+            {"command": "jobcancel", "description": "cancel queued job without provider retry"},
         ]
         self._post("setMyCommands", {"commands": commands})
 

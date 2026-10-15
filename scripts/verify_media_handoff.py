@@ -170,7 +170,11 @@ def verify_real_default_uid_handoff_and_cleanup():
     config = subprocess.run(
         ["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"],
         cwd=repository,
-        env={**environment, "POSTGRES_PASSWORD": "synthetic-unused"},
+        env={
+            **environment,
+            "POSTGRES_PASSWORD": "synthetic-unused",
+            "CONSOLE_DB_PASSWORD": "synthetic-unused-console",
+        },
         text=True,
         capture_output=True,
         timeout=30,

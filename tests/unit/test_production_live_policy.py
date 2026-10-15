@@ -41,7 +41,11 @@ def test_rendered_compose_enforces_production_identity() -> None:
     )
 
     root = Path(__file__).parents[2]
-    environment = {"PATH": os.environ["PATH"], "POSTGRES_PASSWORD": "test-only"}
+    environment = {
+        "PATH": os.environ["PATH"],
+        "POSTGRES_PASSWORD": "test-only",
+        "CONSOLE_DB_PASSWORD": "console-test-only",
+    }
     rendered = subprocess.run(
         ["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"],
         cwd=root,
@@ -76,6 +80,7 @@ def test_compose_policy_cli_rejects_disabled_override_before_any_mutation(overri
         env={
             "PATH": os.environ["PATH"],
             "POSTGRES_PASSWORD": "test-only",
+            "CONSOLE_DB_PASSWORD": "console-test-only",
             **override,
         },
         text=True,
@@ -242,7 +247,11 @@ def test_web_reports_configured_live_gate_without_claiming_order_readiness() -> 
     rendered = subprocess.run(
         ["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"],
         cwd=root,
-        env={"PATH": os.environ["PATH"], "POSTGRES_PASSWORD": "test-only"},
+        env={
+            "PATH": os.environ["PATH"],
+            "POSTGRES_PASSWORD": "test-only",
+            "CONSOLE_DB_PASSWORD": "console-test-only",
+        },
         check=True,
         text=True,
         capture_output=True,

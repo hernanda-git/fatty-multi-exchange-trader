@@ -13,6 +13,9 @@ dependencies = [
   "telethon>=1.42,<2",
   "uvicorn>=0.34,<1",
   "websockets>=14,<16",
+  "webauthn>=2.7,<3",
+  "cryptography>=46,<47",
+  "jsonschema>=4.26,<5",
 ]
 
 [dependency-groups]
@@ -46,11 +49,14 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["telethon", "telethon.*"]
+module = ["telethon", "telethon.*", "jsonschema", "jsonschema.*"]
 ignore_missing_imports = true

@@ -511,6 +511,13 @@ class _RecordingStore:
         self.claimed.append(intent)
         return True
 
+    def claim_protection(self, records: tuple[LiveIntentRecord, ...]) -> bool:
+        self.claimed.extend(records)
+        return True
+
+    def update(self, intent: LiveIntentRecord) -> None:
+        pass
+
 
 @pytest.mark.asyncio
 async def test_native_unsupported_fallback_is_refused_when_monitor_cannot_mutate() -> None:

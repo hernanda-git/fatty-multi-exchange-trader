@@ -2,14 +2,14 @@
 set -euo pipefail
 
 compose_bin="${COMPOSE_BIN:-docker compose}"
-running_services=(postgres intake analyzer dispatcher-bitget monitor-bitget operator-bot notification-sender source-management web)
+running_services=(postgres intake analyzer dispatcher-bitget monitor-bitget operator-bot notification-sender source-management console-worker web)
 completed_services=(migrate init)
 
 printf 'runtime_sha=%s\n' "$(git rev-parse HEAD)"
 # Default invocation includes: docker compose ps.
 bash "$(dirname "${BASH_SOURCE[0]}")/check_production_live_policy.sh"
 # A valid host rendering is not proof of the environment baked into containers.
-for service in dispatcher-bitget monitor-bitget operator-bot source-management; do
+for service in dispatcher-bitget monitor-bitget operator-bot source-management console-worker; do
   runtime_policy="$($compose_bin exec -T "$service" sh -lc 'printf "%s|%s|%s" "$TRADER_MODE" "$BITGET_MODE" "$BITGET_EXECUTION_ENABLED"')"
   if test "$runtime_policy" != 'LIVE|LIVE|1'; then
     printf 'runtime_blocked=production_live_policy service=%s require=LIVE/LIVE/1\n' "$service" >&2

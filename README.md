@@ -33,6 +33,29 @@ claiming readiness.
 - [Console phase progress and evidence tracker](docs/BOT-CONSOLE-PROGRESS.md)
 - [Console capability and safety inventory](docs/BOT-CONSOLE-CAPABILITIES.md)
 - [Console UI/API interaction specification](docs/BOT-CONSOLE-UI-API-SPEC.md)
+- [Console operator/trader/recovery/admin user guide](docs/BOT-CONSOLE-USER-GUIDE.md)
+
+## Management console access
+
+The console is private by default. After its approved deployment, establish the
+existing host tunnel with `ssh -N -L 18081:127.0.0.1:18081 fspmi-hostinger`, then
+open `http://localhost:18081`. Use the exact configured origin; an IP address or
+different port is not interchangeable for passkey verification.
+
+Initial enrollment uses a short-lived one-use token delivered privately to the
+configured Telegram owner. Enter it in the enrollment form and register a
+user-verified passkey; no enrollment token belongs in a URL or browser storage.
+Subsequent login and action-specific consent use that passkey. Two-person actions
+require a distinct enrolled scoped owner and cannot be self-approved.
+
+All 15 screens share authenticated observations and durable action jobs. A preview
+is not execution; only provider or host readback proves an outcome. A blocked
+entry latch is displayed independently from application health and is not cleared
+by deployment. Read [implementation decisions](docs/BOT-CONSOLE-IMPLEMENTATION.md),
+[host operations](docs/OPERATIONS.md#console-host-operations-boundary), and the
+[evidence tracker](docs/BOT-CONSOLE-PROGRESS.md) for actual acceptance and rollout
+status.
+
 
 ## Safety invariants
 

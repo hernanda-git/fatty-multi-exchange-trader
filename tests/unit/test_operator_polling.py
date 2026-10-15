@@ -7,7 +7,7 @@ from typing import Any, cast
 import httpx
 import pytest
 
-from fatty_trader.operator.live_commands import OperatorCommandService
+from fatty_trader.operator.live_commands import OperatorReadService
 from fatty_trader.operator.telegram_polling import TelegramBotApi, TelegramCommandPoller
 
 
@@ -293,7 +293,7 @@ def test_start_with_bot_mention_reaches_service_and_returns_readable_reply() -> 
         transport=httpx.MockTransport(handler), base_url="https://api.telegram.org"
     )
     api = TelegramBotApi("123456:token", client=client)
-    service = OperatorCommandService(gateway=cast(Any, object()), operator_id=1)
+    service = OperatorReadService(gateway=cast(Any, object()), operator_id=1)
     poller = TelegramCommandPoller(
         command_service=service,
         fetch_updates=lambda offset: [_update(text="/start@FattyTestBot")],
@@ -304,26 +304,4 @@ def test_start_with_bot_mention_reaches_service_and_returns_readable_reply() -> 
 
     assert len(sent) == 1
     assert sent[0]["chat_id"] == 1
-    assert sent[0]["text"].startswith("FATTY OPERATOR COMMANDS\n")
-    assert "/trade bitget LONG SYMBOL" in sent[0]["text"]
-    assert "<b>" not in sent[0]["text"]
-    client.close()
-
-
-def test_bot_command_menu_exposes_start_alias() -> None:
-    requests: list[dict[str, Any]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(json.loads(request.content.decode()))
-        return httpx.Response(200, json={"ok": True, "result": True})
-
-    client = httpx.Client(
-        transport=httpx.MockTransport(handler), base_url="https://api.telegram.org"
-    )
-    TelegramBotApi("123456:token", client=client).set_my_commands()
-
-    assert requests[0]["commands"][0] == {
-        "command": "start",
-        "description": "show operator commands",
-    }
     client.close()

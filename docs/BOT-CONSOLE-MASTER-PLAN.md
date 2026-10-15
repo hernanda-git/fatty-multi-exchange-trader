@@ -2,6 +2,12 @@
 
 Date: 2026-10-14. Owner approved the planning proposal and requested documentation, phase tracking, commit/push, and work to start. This approval covers repository development and publication, not provider mutations, test trades, production console rollout, latch release, changed risk limits, or credential substitution.
 
+The subsequent instruction to complete everything autonomously extends authority to
+the full implementation, publication and exposure-safe private console rollout.
+It does not authorize test trades, incident-latch release, risk expansion or
+enrollment of an authenticator on the owner's behalf. Current receipts and phase
+states are maintained in the progress tracker, not inferred from this plan.
+
 ## Document map and status authority
 
 - [Progress tracker](BOT-CONSOLE-PROGRESS.md): current work, dependencies, evidence and release checkpoints.

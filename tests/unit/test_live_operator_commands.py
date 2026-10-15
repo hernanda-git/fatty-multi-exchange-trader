@@ -1,536 +1,143 @@
-from __future__ import annotations
-
 from decimal import Decimal
-from typing import Any
-from uuid import uuid4
+from types import SimpleNamespace
 
 import pytest
 
+from fatty_trader.console.telegram import TelegramCommandAdapter
 from fatty_trader.operator.command_parser import CommandError
-from fatty_trader.operator.live_commands import (
-    OperatorCommandService,
+from fatty_trader.operator.live_commands import OperatorReadService
+
+SCOPE = {"account_id": "configured-bitget", "venue": "bitget", "environment": "LIVE"}
+
+
+class Store:
+    def __init__(self):
+        self.linked = True
+        self.preview = {
+            "id": "preview-1",
+            "policy_version": "policy",
+            "resource_version": "version",
+        }
+
+    def one(self, sql, params=()):
+        if "console_identity_links" in sql:
+            return (
+                {"id": "owner", "session_id": "real-passkey-session", "roles": ["owner"]}
+                if self.linked
+                else None
+            )
+        if "console_previews" in sql:
+            return self.preview
+        return None
+
+    def query(self, sql, params=()):
+        return [{"client_order_id": "owned-root"}]
+
+    def latest_snapshot(self, kind, scope):
+        return {"data": {"values": {"lastPr": "10"}}}
+
+
+class Commands:
+    def __init__(self):
+        self.previews = []
+        self.enqueues = []
+
+    async def preview(self, request, principal, scope):
+        self.previews.append((request, principal, scope))
+        return {
+            "id": "preview-1",
+            "preview_digest": "digest",
+            "confirmation_phrase": "CONFIRM owned-root",
+        }
+
+    def enqueue(self, request, principal, key):
+        self.enqueues.append((request, principal, key))
+        return {"id": "job-1", "state": "queued"}
+
+
+def adapter():
+    store, commands = Store(), Commands()
+    return TelegramCommandAdapter(store, commands, operator_id=1, scope=SCOPE), store, commands
+
+
+def handle(service, text, **overrides):
+    options = dict(sender_id=1, is_private=True, is_forwarded=False)
+    options.update(overrides)
+    return service.handle(text, **options)
+
+
+@pytest.mark.parametrize(
+    "override", [{"sender_id": 2}, {"is_private": False}, {"is_forwarded": True}]
 )
-
-
-class FakeLiveGateway:
-    """Minimal LiveGateway fake for operator command tests."""
-
-    def __init__(self) -> None:
-        self.balance = Decimal("1000")
-        self.price = Decimal("60000")
-        self.positions: list[dict[str, Any]] = []
-        self.orders: list[dict[str, Any]] = []
-        self.cancel_calls: list[str] = []
-        self.close_calls: list[str] = []
-        self.last_open: dict[str, Any] | None = None
-        self.protection_calls: list[tuple[str, Decimal | None, Decimal | None]] = []
-
-    def get_price(self, symbol: str) -> Decimal:
-        return self.price
-
-    def get_balance(self) -> Decimal:
-        return self.balance
-
-    def get_positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        if symbol:
-            return [p for p in self.positions if p["symbol"] == symbol]
-        return self.positions
-
-    def get_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
-        if symbol:
-            return [o for o in self.orders if o["symbol"] == symbol]
-        return self.orders
-
-    def open_position(
-        self,
-        *,
-        symbol: str,
-        direction: str,
-        quantity: Decimal,
-        leverage: int,
-        entry: str,
-        stop_loss: Decimal | str,
-        take_profits: tuple[Decimal | str, ...],
-    ) -> dict[str, Any]:
-        result = {
-            "order_id": f"oid-{uuid4().hex[:8]}",
-            "symbol": symbol,
-            "side": direction,
-            "qty": quantity,
-            "leverage": leverage,
-            "entry": entry,
-            "state": "filled",
-            "fill_price": self.price,
-            "sl": stop_loss,
-            "tp": take_profits,
-        }
-        self.last_open = result
-        self.positions.append(
-            {
-                "symbol": symbol,
-                "side": direction,
-                "size": quantity,
-                "entry": self.price,
-            }
-        )
-        return result
-
-    def cancel_order(self, target: str) -> dict[str, Any]:
-        self.cancel_calls.append(target)
-        return {"cancelled": target, "count": 1}
-
-    def cancel_all(self) -> dict[str, Any]:
-        self.cancel_calls.append("all")
-        n = len(self.orders)
-        self.orders = []
-        return {"cancelled": "all", "count": n}
-
-    def close_position(self, target: str) -> dict[str, Any]:
-        self.close_calls.append(target)
-        return {"closed": target}
-
-    def close_all(self) -> dict[str, Any]:
-        self.close_calls.append("all")
-        n = len(self.positions)
-        self.positions = []
-        return {"closed": "all", "count": n}
-
-    def set_position_protection(
-        self, symbol: str, *, stop_loss: Decimal | None, take_profit: Decimal | None
-    ) -> dict[str, Any]:
-        self.protection_calls.append((symbol, stop_loss, take_profit))
-        return {"symbol": symbol, "stop_loss": stop_loss, "take_profit": take_profit}
-
-
-def make_service() -> tuple[OperatorCommandService, FakeLiveGateway]:
-    gw = FakeLiveGateway()
-    svc = OperatorCommandService(
-        gateway=gw, operator_id=1, require_confirmation=True, mutations_enabled=True
-    )
-    return svc, gw
-
-
-def test_open_is_blocked_when_operator_mutations_are_disabled() -> None:
-    gateway = FakeLiveGateway()
-    service = OperatorCommandService(gateway=gateway, operator_id=1)
-
-    with pytest.raises(CommandError, match="mutations are disabled"):
-        service.handle(
-            "/open BTCUSDT LONG margin=10 leverage=10 entry=market sl=59000 tp=62000",
-            sender_id=1,
-            is_private=True,
-            is_forwarded=False,
-        )
-    assert gateway.last_open is None
-
-
-def test_open_requires_a_bound_confirmation_before_gateway_call() -> None:
-    service, gateway = make_service()
-    text = "/open BTCUSDT LONG margin=10 leverage=10 entry=market sl=59000 tp=62000"
-
-    challenge = service.handle(text, sender_id=1, is_private=True, is_forwarded=False)
-
-    assert challenge.startswith("CONFIRM open BTCUSDT")
-    token = challenge.rsplit("confirm=", 1)[1]
-    assert gateway.last_open is None
-    result = service.handle(
-        f"{text} confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-
-    assert result.startswith("OPEN BTCUSDT LONG")
-    assert gateway.last_open is not None
-
-
-def test_open_confirmation_cannot_be_reused_for_changed_parameters() -> None:
-    service, gateway = make_service()
-    text = "/open BTCUSDT LONG margin=10 leverage=10 entry=market sl=59000 tp=62000"
-    challenge = service.handle(text, sender_id=1, is_private=True, is_forwarded=False)
-    token = challenge.rsplit("confirm=", 1)[1]
-
-    with pytest.raises(CommandError, match="does not match"):
-        service.handle(
-            f"""/open BTCUSDT LONG margin=100 leverage=10 entry=market sl=59000 tp=62000 confirm={
-                (token)
-            }""",
-            sender_id=1,
-            is_private=True,
-            is_forwarded=False,
-        )
-
-    assert gateway.last_open is None
-
-
-def test_trade_requires_a_bound_confirmation_before_gateway_call() -> None:
-    service, gateway = make_service()
-    text = "/trade bitget LONG BTCUSDT margin=1 leverage=20 entry=market sl=59000 tp=62000"
-
-    challenge = service.handle(text, sender_id=1, is_private=True, is_forwarded=False)
-
-    assert challenge.startswith("CONFIRM trade ")
-    token = challenge.rsplit("confirm=", 1)[1]
-    assert gateway.last_open is None
-    result = service.handle(
-        f"{text} confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-
-    assert result.startswith("OPEN BTCUSDT LONG")
-    assert gateway.last_open is not None
-
-
-def test_help_lists_read_only_and_mutating_commands() -> None:
-    service, _ = make_service()
-    result = service.handle("/help", sender_id=1, is_private=True, is_forwarded=False)
-    assert "/health" in result
-    assert "/reconcile" in result
-    assert "/close SYMBOL" in result
-
-
-def test_diagnostic_command_uses_read_only_reader() -> None:
-    gateway = FakeLiveGateway()
-    service = OperatorCommandService(
-        gateway=gateway,
-        operator_id=1,
-        diagnostic_reader=lambda kind: f"DIAGNOSTIC:{kind}",
-    )
-    assert (
-        service.handle("/fills", sender_id=1, is_private=True, is_forwarded=False)
-        == "DIAGNOSTIC:fills"
-    )
-    assert gateway.close_calls == []
-    assert gateway.cancel_calls == []
-
-
-def test_trade_command_is_wired_to_bitget_open_path() -> None:
-    service, gateway = make_service()
-    challenge = service.handle(
-        "/trade bitget LONG BTCUSDT margin=10 leverage=20 entry=market sl=59000 tp=62000",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert challenge.startswith("CONFIRM trade ")
-    token = challenge.rsplit("confirm=", 1)[1]
-    assert gateway.last_open is None
-    result = service.handle(
-        "/trade bitget LONG BTCUSDT margin=10 leverage=20 entry=market sl=59000 tp=62000 "
-        f"confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert "BTCUSDT" in result
-    assert gateway.last_open is not None
-
-
-def test_price_command_returns_formatted_alert() -> None:
-    svc, gw = make_service()
-    alert = svc.handle("/price BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
-    assert "BTCUSDT" in alert
-    assert "60000" in alert
-
-
-def test_operator_mutations_are_closed_until_live_cutover_enables_them() -> None:
-    gateway = FakeLiveGateway()
-    svc = OperatorCommandService(gateway=gateway, operator_id=1, require_confirmation=True)
-
-    with pytest.raises(CommandError, match="mutations are disabled"):
-        svc.handle("/setsl WLDUSDT 0.47", sender_id=1, is_private=True, is_forwarded=False)
-
-    assert gateway.protection_calls == []
-
-
-def test_health_command_uses_read_only_report_reader() -> None:
-    gateway = FakeLiveGateway()
-    service = OperatorCommandService(
-        gateway=gateway,
-        operator_id=1,
-        health_reader=lambda: "HEALTH REPORT",
-    )
-
-    assert (
-        service.handle("/health", sender_id=1, is_private=True, is_forwarded=False)
-        == "HEALTH REPORT"
-    )
-    assert gateway.close_calls == []
-    assert gateway.cancel_calls == []
-
-
-def test_balance_command_shows_available() -> None:
-    svc, gw = make_service()
-    alert = svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=False)
-    assert "1000" in alert
-
-
-def test_positions_empty() -> None:
-    svc, gw = make_service()
-    alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
-    assert "posisi" in alert.lower()
-
-
-def test_positions_shows_native_sl_and_tp() -> None:
-    svc, gw = make_service()
-    gw.positions = [
-        {
-            "symbol": "WLDUSDT",
-            "side": "LONG",
-            "size": Decimal("100"),
-            "entry": Decimal("0.47"),
-            "stop_loss": Decimal("0.47"),
-            "take_profit": Decimal("0.51"),
-        }
-    ]
-
-    alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
-
-    assert "WLDUSDT LONG" in alert
-    assert "Native SL  0.47" in alert
-    assert "Native TP  0.51" in alert
-
-
-def test_setsl_requires_confirmation_and_updates_only_sl() -> None:
-    svc, gw = make_service()
-
-    first = svc.handle("/setsl WLDUSDT 0.47", sender_id=1, is_private=True, is_forwarded=False)
-    assert "confirm" in first.lower()
-    assert gw.protection_calls == []
-    token = svc._pending.token if svc._pending else ""
-
-    result = svc.handle(
-        f"/setsl WLDUSDT 0.47 confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-
-    assert "SL WLDUSDT 0.47" in result
-    assert gw.protection_calls == [("WLDUSDT", Decimal("0.47"), None)]
-
-
-def test_settp_requires_confirmation_and_updates_only_tp() -> None:
-    svc, gw = make_service()
-
-    svc.handle("/settp WLDUSDT 0.51", sender_id=1, is_private=True, is_forwarded=False)
-    token = svc._pending.token if svc._pending else ""
-    result = svc.handle(
-        f"/settp WLDUSDT 0.51 confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-
-    assert "TP WLDUSDT 0.51" in result
-    assert gw.protection_calls == [("WLDUSDT", None, Decimal("0.51"))]
-
-
-def test_open_market_alert_contains_required_fields() -> None:
-    svc, gw = make_service()
-    command = "/open BTCUSDT LONG margin=auto leverage=20 entry=market sl=auto tp=auto"
-    challenge = svc.handle(
-        command,
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    token = challenge.rsplit("confirm=", 1)[1]
-    alert = svc.handle(
-        f"{command} confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert gw.last_open is not None
-    assert "BTCUSDT" in alert
-    assert "LONG" in alert
-    # Never leak secrets
-    for banned in ("api_key", "secret", "passphrase", "signature"):
-        assert banned not in alert.lower()
-
-
-def test_cancel_all_requires_confirmation_first() -> None:
-    svc, gw = make_service()
-    gw.orders = [
-        {
-            "symbol": "BTCUSDT",
-            "order_id": "a",
-            "side": "BUY",
-            "price": Decimal("60000"),
-            "size": Decimal("0.01"),
-        },
-    ]
-    first = svc.handle("/cancel all", sender_id=1, is_private=True, is_forwarded=False)
-    assert "confirm" in first.lower()
-    # Second call with confirm token
-    token = svc._pending.token if svc._pending else ""
-    second = svc.handle(
-        f"/cancel all confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert "cancel" in second.lower()
-
-
-def test_cancel_symbol_requires_confirmation() -> None:
-    svc, gw = make_service()
-    first = svc.handle("/cancel BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
-    assert "confirm" in first.lower()
-    assert gw.cancel_calls == []
-    token = svc._pending.token if svc._pending else ""
-    second = svc.handle(
-        f"/cancel BTCUSDT confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert "cancel" in second.lower()
-    assert gw.cancel_calls == ["BTCUSDT"]
-
-
-def test_close_all_requires_confirmation_first() -> None:
-    svc, gw = make_service()
-    gw.positions = [
-        {"symbol": "BTCUSDT", "side": "LONG", "size": Decimal("0.01"), "entry": Decimal("60000")},
-    ]
-    first = svc.handle("/close all", sender_id=1, is_private=True, is_forwarded=False)
-    assert "confirm" in first.lower()
-    token = svc._pending.token if svc._pending else ""
-    second = svc.handle(
-        f"/close all confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert "close" in second.lower()
-
-
-def test_close_position_by_id_requires_confirmation() -> None:
-    svc, gw = make_service()
-    gw.positions = [
-        {"symbol": "BTCUSDT", "side": "LONG", "size": Decimal("0.01"), "entry": Decimal("60000")},
-    ]
-    first = svc.handle("/close position_id=pos-1", sender_id=1, is_private=True, is_forwarded=False)
-    assert "confirm" in first.lower()
-    assert gw.close_calls == []
-    token = svc._pending.token if svc._pending else ""
-    alert = svc.handle(
-        f"/close position_id=pos-1 confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
-    )
-    assert "pos-1" in alert
-    assert gw.close_calls == ["position_id=pos-1"]
-
-
-def test_orders_lists_pending() -> None:
-    svc, gw = make_service()
-    gw.orders = [
-        {
-            "symbol": "ETHUSDT",
-            "order_id": "x",
-            "side": "SELL",
-            "price": Decimal("3000"),
-            "size": Decimal("0.1"),
-        },
-    ]
-    alert = svc.handle("/orders", sender_id=1, is_private=True, is_forwarded=False)
-    assert "ETHUSDT" in alert
-
-
-def test_unauthorized_sender_rejected() -> None:
-    svc, _ = make_service()
+def test_private_identity_required_before_preview(override):
+    service, _, commands = adapter()
     with pytest.raises(PermissionError):
-        svc.handle("/balance", sender_id=999, is_private=True, is_forwarded=False)
+        handle(service, "/close BTCUSDT", **override)
+    assert commands.previews == []
 
 
-def test_public_sender_rejected() -> None:
-    svc, _ = make_service()
-    with pytest.raises(PermissionError):
-        svc.handle("/balance", sender_id=1, is_private=False, is_forwarded=False)
+def test_close_uses_same_typed_durable_preview():
+    service, _, commands = adapter()
+    reply = handle(service, "/close BTCUSDT")
+    request, principal, scope = commands.previews[0]
+    assert request["action"] == "position.close"
+    assert request["arguments"] == {"client_oid": "owned-root"}
+    assert principal["session_id"] == "real-passkey-session"
+    assert scope == SCOPE
+    assert "preview-1" in reply
+    assert commands.enqueues == []
 
 
-def test_forwarded_sender_rejected() -> None:
-    svc, _ = make_service()
-    with pytest.raises(PermissionError):
-        svc.handle("/balance", sender_id=1, is_private=True, is_forwarded=True)
+def test_confirmation_is_persisted_preview_and_shared_authority():
+    service, _, commands = adapter()
+    reply = handle(service, "/confirm preview-1 digest CONFIRM owned-root")
+    request, principal, key = commands.enqueues[0]
+    assert request["preview_id"] == "preview-1"
+    assert request["preview_digest"] == "digest"
+    assert request["confirmation_phrase"] == "CONFIRM owned-root"
+    assert request["resource_version"] == "version"
+    assert request["channel"] == "telegram"
+    assert "job-1" in reply
 
 
-def test_unknown_command_raises() -> None:
-    svc, _ = make_service()
+@pytest.mark.parametrize("text", ["/close all", "/cancel all", "/close BTCUSDT confirm=legacy"])
+def test_unsafe_account_wide_and_legacy_tokens_prohibited(text):
+    service, _, commands = adapter()
     with pytest.raises(CommandError):
-        svc.handle("/foobar", sender_id=1, is_private=True, is_forwarded=False)
+        handle(service, text)
+    assert commands.previews == []
 
 
-def test_secrets_never_in_alerts() -> None:
-    svc, gw = make_service()
-    # Inject a position with suspicious-looking data; alert must still not leak secret-like strings
-    gw.positions = [
-        {"symbol": "BTCUSDT", "side": "LONG", "size": Decimal("0.01"), "entry": Decimal("60000")},
-    ]
-    alert = svc.handle("/positions", sender_id=1, is_private=True, is_forwarded=False)
-    lower = alert.lower()
-    assert "api_key" not in lower
-    assert "secret" not in lower
-    assert "passphrase" not in lower
-    assert "signature" not in lower
+def test_unlinked_identity_cannot_fabricate_passkey_session():
+    service, store, commands = adapter()
+    store.linked = False
+    with pytest.raises(CommandError, match="passkey"):
+        handle(service, "/close BTCUSDT")
+    assert commands.previews == []
 
 
-def test_confirmation_token_cannot_authorize_a_different_emergency_action() -> None:
-    svc, gw = make_service()
-
-    svc.handle("/cancel all", sender_id=1, is_private=True, is_forwarded=False)
-    token = svc._pending.token if svc._pending else ""
-    with pytest.raises(CommandError, match="does not match"):
-        svc.handle(f"/close all confirm={token}", sender_id=1, is_private=True, is_forwarded=False)
-
-    assert gw.close_calls == []
-    assert gw.cancel_calls == []
-
-
-def test_confirmation_token_is_one_time_even_when_provider_fails() -> None:
-    svc, gw = make_service()
-    svc.handle("/cancel all", sender_id=1, is_private=True, is_forwarded=False)
-    token = svc._pending.token if svc._pending else ""
-
-    svc.handle(f"/cancel all confirm={token}", sender_id=1, is_private=True, is_forwarded=False)
-    with pytest.raises(CommandError, match="invalid or expired"):
-        svc.handle(f"/cancel all confirm={token}", sender_id=1, is_private=True, is_forwarded=False)
-
-    assert gw.cancel_calls == ["all"]
+def test_manual_market_and_limit_share_risk_admission():
+    service, _, commands = adapter()
+    handle(service, "/open BTCUSDT LONG margin=auto leverage=20 entry=limit:10 sl=9 tp=11")
+    assert commands.previews[0][0]["arguments"] == {
+        "symbol": "BTCUSDT",
+        "direction": "LONG",
+        "order_type": "LIMIT",
+        "entry_price": "10",
+        "stop_loss": "9",
+        "take_profit": "11",
+        "leverage": 20,
+    }
+    assert "margin" not in commands.previews[0][0]["arguments"]
 
 
-def test_malformed_emergency_command_makes_no_provider_request() -> None:
-    svc, gw = make_service()
-
-    with pytest.raises(CommandError):
-        svc.handle("/close all unexpected=value", sender_id=1, is_private=True, is_forwarded=False)
-
-    assert gw.close_calls == []
-
-
-def test_close_reports_reconciliation_pending_not_closed_success() -> None:
-    svc, gw = make_service()
-
-    def pending_close(_: str) -> dict[str, Any]:
-        gw.close_calls.append("BTCUSDT")
-        return {"closed": "BTCUSDT", "state": "reconciliation-pending"}
-
-    gw.close_position = pending_close  # type: ignore[method-assign]
-    first = svc.handle("/close BTCUSDT", sender_id=1, is_private=True, is_forwarded=False)
-    token = svc._pending.token if svc._pending else ""
-    alert = svc.handle(
-        f"/close BTCUSDT confirm={token}",
-        sender_id=1,
-        is_private=True,
-        is_forwarded=False,
+def test_read_only_service_has_no_confirmation_or_mutation_authority():
+    gateway = SimpleNamespace(
+        get_price=lambda symbol: Decimal("10"), get_balance=lambda: Decimal("3")
     )
-
-    assert "confirm" in first.lower()
-    assert "reconciliation-pending" in alert
-    assert "success" not in alert.lower()
+    service = OperatorReadService(gateway, operator_id=1)
+    assert "10" in handle(service, "/price BTCUSDT")
+    assert "3" in handle(service, "/balance")
+    assert not hasattr(service, "_pending")
+    with pytest.raises(CommandError, match="shared durable"):
+        handle(service, "/close BTCUSDT")
