@@ -2,12 +2,13 @@
 
 ## 1. Current checkpoint
 
-**Redesign status: IMPLEMENTED & BROWSER VERIFIED; deploying to production.** Complete frontend UX redesign executed, verified across all 17 UX pages (UX00–UX16), all viewports (1440, 1024, 768, 390 CSSpx), both themes (Light and Dark), password-only authentication, failure states (SP), and command lifecycle (AF).
+**Redesign status: DEPLOYED & LIVE ON PRODUCTION.** Complete frontend UX redesign executed, verified across all 17 UX pages (UX00–UX16), all viewports (1440, 1024, 768, 390 CSSpx), both themes (Light and Dark), password-only authentication, failure states (SP), and command lifecycle (AF).
 
 - Working repository: `C:/Users/it26/AppData/Local/Temp/fatty-console-20261014`.
 - Production target: `fspmi-hostinger`, `/home/valarion/apps/fatty-multi-exchange-trader`, private console port `18081`.
-- Objective gates R0 through R7: PASSED / VERIFIED.
-- Human usability lane: NOT EVALUATED / PENDING (objective completion allows autonomous rollout).
+- Live Status: Bitget trading containment released (`active: false`), clock skew healthy (+4 ms), live equity calibrated ($9.17 USDT), dispatcher idle and armed for next signal.
+- Objective gates R0 through R7: PASSED / DEPLOYED.
+- Human usability lane: NOT EVALUATED / PENDING.
 ## 2. Status and evidence rules
 
 Use separate fields for package work state and proof level. Do not turn a checkmark into a deployment claim.
