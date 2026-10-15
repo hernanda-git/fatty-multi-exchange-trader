@@ -9,6 +9,30 @@
 - Live Status: Bitget trading containment released (`active: false`), clock skew healthy (+4 ms), live equity calibrated ($9.17 USDT), dispatcher idle and armed for next signal.
 - Objective gates R0 through R7: PASSED / DEPLOYED.
 - Human usability lane: NOT EVALUATED / PENDING.
+
+### Automated sizing defaults correction — 2026-10-15
+
+- Published/deployed implementation: `aadb778`. Recreated only `web`,
+  `dispatcher-bitget`, and `console-worker`; no settings draft was applied and no
+  synthetic LIVE trade was submitted during this verification.
+- Runtime config readback: `current_version=0`, margin mode `PERCENTAGE`,
+  allocation `0.20`, default leverage `20`, fixed margin `1`, safety cap `1`.
+- Fixed missing apply-time settings consumers, ignored automated leverage,
+  available-versus-equity allocation, fixed-mode percentage clipping, and draft
+  form version/effective-value binding. Manual dispatches carry explicit provenance.
+- Integrated checks: 325 tests passed across console auth/reads/operations/trading,
+  service admission/preflight, live sizing, and fail-closed behavior; frontend build
+  passed. Credential-free actual preflight: percentage margin `0.60` at `20x`;
+  fixed margin `0.8` at `10x`, using synthetic venue evidence and reservation store.
+- Isolated browser exercised effective-value initialization, percentage/fixed mode
+  draft arguments, missing-version disabled state, and mobile layout at 390px
+  without horizontal overflow. Temporary scenario removed afterward.
+- Production authenticated browser settings/apply was not exercised: no plaintext
+  console password was available. Private tunnel login rendering and server-side
+  config telemetry are separate, narrower production evidence.
+- Bundle: `index-HFppenib.js`; web image:
+  `sha256:c128aad65d03ed4b2814f84d48060b9240e095ae88a3fcd445e4209519b07511`.
+
 ## 2. Status and evidence rules
 
 Use separate fields for package work state and proof level. Do not turn a checkmark into a deployment claim.
