@@ -503,11 +503,16 @@ export function AccountDetailsView({data}: {data: RecordData}) {
     : isObjectRecord(rawReservations) && Array.isArray(rawReservations.items)
     ? (rawReservations.items as RecordData[])
     : [];
+  const provObj = isObjectRecord(data.provider) ? data.provider : {};
+  const provAccount = isObjectRecord(provObj.values)
+    ? (provObj.values as RecordData)
+    : isObjectRecord(provObj.account)
+    ? (isObjectRecord(provObj.account.values) ? (provObj.account.values as RecordData) : (provObj.account as RecordData))
+    : null;
 
-  const rawEquity = latestSnapshot?.equity ?? latestSnapshot?.total_balance;
-  const rawAvail = latestSnapshot?.available_balance;
-  const coin = String(latestSnapshot?.margin_coin || 'USDT');
-
+  const rawEquity = provAccount?.equity ?? provAccount?.accountEquity ?? provAccount?.usdtEquity ?? latestSnapshot?.equity ?? latestSnapshot?.total_balance;
+  const rawAvail = provAccount?.available ?? provAccount?.available_balance ?? latestSnapshot?.available_balance;
+  const coin = String(provAccount?.margin_coin ?? provAccount?.marginCoin ?? latestSnapshot?.margin_coin ?? 'USDT');
   const equityDisplay = rawEquity !== undefined && rawEquity !== null
     ? `$${formatNumber(Number(rawEquity).toFixed(2))}`
     : '—';
@@ -535,7 +540,7 @@ export function AccountDetailsView({data}: {data: RecordData}) {
         <div className="metric-tile">
           <span className="metric-tile-label">Gross Realized P&amp;L</span>
           <span className={`metric-tile-value ${Number(usdtGroup?.gross_realized_pnl || 0) >= 0 ? 'text-success' : 'text-danger'}`}>
-            {usdtGroup ? `${Number(usdtGroup.gross_realized_pnl) >= 0 ? '+' : ''}$${formatNumber(Number(usdtGroup.gross_realized_pnl).toFixed(2))}` : '—'}
+            {usdtGroup ? `${Number(usdtGroup.gross_realized_pnl) < 0 ? '-' : Number(usdtGroup.gross_realized_pnl) > 0 ? '+' : ''}$${formatNumber(Math.abs(Number(usdtGroup.gross_realized_pnl)).toFixed(2))}` : '—'}
           </span>
           <span className="metric-tile-sub">{usdtGroup ? `${usdtGroup.fill_count} ledger fills` : 'No fills recorded'}</span>
         </div>

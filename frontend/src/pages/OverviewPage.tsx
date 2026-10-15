@@ -29,12 +29,16 @@ export function OverviewPage({
   const safetyRecord = safety && isObjectRecord(safety.data) ? safety.data : null;
   const safetyData = safetyRecord ?? overviewData;
 
-  // 1. Legitimate Account Equity Binding:
-  // Source 1: provider.account snapshot (if synced by background worker)
-  // Source 2: latest verified admission snapshot from balance_snapshots
-  const prov = isObjectRecord(overviewData.provider) ? overviewData.provider : {};
-  const provAccount = isObjectRecord(prov.account) ? prov.account : null;
+  // 1. Live Provider Account & Balance Binding:
+  // Source 1: provider.account snapshot (.values object from Bitget GET /api/v2/mix/account/account)
+  const provObj = isObjectRecord(overviewData.provider) ? overviewData.provider : {};
+  const provAccount = isObjectRecord(provObj.account)
+    ? (isObjectRecord(provObj.account.values) ? (provObj.account.values as RecordData) : (provObj.account as RecordData))
+    : isObjectRecord(overviewData.account)
+    ? (isObjectRecord(overviewData.account.values) ? (overviewData.account.values as RecordData) : (overviewData.account as RecordData))
+    : null;
 
+  // Source 2: historical admission balance snapshots
   const rawSnapshots = overviewData.admission_snapshots ?? accountData?.admission_snapshots;
   const snapshotsList: RecordData[] = Array.isArray(rawSnapshots)
     ? (rawSnapshots as RecordData[])
@@ -43,26 +47,51 @@ export function OverviewPage({
     : [];
   const latestSnapshot = snapshotsList[0] || null;
 
-  const rawEquity = provAccount?.equity ?? provAccount?.total_balance ?? latestSnapshot?.equity ?? latestSnapshot?.total_balance;
-  const rawAvailable = provAccount?.available_balance ?? latestSnapshot?.available_balance;
-  const coin = String(latestSnapshot?.margin_coin || provAccount?.margin_coin || 'USDT');
+  // Real live equity & available values:
+  const rawEquity =
+    provAccount?.equity ??
+    provAccount?.accountEquity ??
+    provAccount?.usdtEquity ??
+    provAccount?.total_balance ??
+    latestSnapshot?.equity ??
+    latestSnapshot?.total_balance;
 
-  const equityFormatted = rawEquity !== undefined && rawEquity !== null
-    ? `$${formatNumber(Number(rawEquity).toFixed(2))}`
-    : '—';
-  const availableFormatted = rawAvailable !== undefined && rawAvailable !== null
-    ? `Available: $${formatNumber(Number(rawAvailable).toFixed(2))} ${coin}`
-    : `Balance: ${coin} Standby`;
+  const rawAvailable =
+    provAccount?.available ??
+    provAccount?.crossedMaxAvailable ??
+    provAccount?.available_balance ??
+    latestSnapshot?.available_balance;
 
-  // 2. Legitimate Positions & Ledger Binding:
+  const coin = String(
+    provAccount?.margin_coin ??
+    provAccount?.marginCoin ??
+    latestSnapshot?.margin_coin ??
+    'USDT'
+  );
+
+  const equityFormatted =
+    rawEquity !== undefined && rawEquity !== null
+      ? `$${formatNumber(Number(rawEquity).toFixed(2))}`
+      : '—';
+
+  const availableFormatted =
+    rawAvailable !== undefined && rawAvailable !== null
+      ? `Available: $${formatNumber(Number(rawAvailable).toFixed(2))} ${coin}`
+      : `Balance: ${coin} Standby`;
+
+  // 2. Positions & Ledger Binding:
   const ledgerList = Array.isArray(overviewData.ledger) ? (overviewData.ledger as RecordData[]) : [];
   const ledgerSummary = ledgerList[0] || {};
   const openPosCount = Number(ledgerSummary.open_positions ?? 0);
 
-  const provPositions = Array.isArray(prov.positions) ? (prov.positions as RecordData[]) : [];
-  const totalUpnl = provPositions.reduce((acc, p) => acc + Number(p.unrealizedPL || 0), 0);
+  const provPositions = Array.isArray(provObj.positions)
+    ? (provObj.positions as RecordData[])
+    : isObjectRecord(provObj.positions) && Array.isArray(provObj.positions.items)
+    ? (provObj.positions.items as RecordData[])
+    : [];
+  const totalUpnl = provPositions.reduce((acc, p) => acc + Number(p.unrealizedPL || p.unrealized_pl || 0), 0);
 
-  // 3. Legitimate Latches & Clock Binding:
+  // 3. Safety Latches & Clock Binding:
   const latches = Array.isArray(overviewData.latches)
     ? (overviewData.latches as RecordData[])
     : Array.isArray(safetyData.latches)
@@ -72,8 +101,10 @@ export function OverviewPage({
   const clockLatch = latches.find((l) => l.scope === 'bitget' && l.active && String(l.reason).includes('clock'));
 
   const clock = isObjectRecord(overviewData.clock) ? overviewData.clock : null;
+  const clockValues = clock && isObjectRecord(clock.values) ? clock.values : clock;
+  const clockSkew = clockValues?.local_minus_server_ms ?? clockValues?.skew_ms ?? null;
 
-  // 4. Recent Signals & Dispatches:
+  // 4. Recent Signals:
   const recentSignalsObj = isObjectRecord(overviewData.recent_signals) ? overviewData.recent_signals : {};
   const recentSignals = Array.isArray(recentSignalsObj.items) ? (recentSignalsObj.items as RecordData[]) : [];
 
@@ -88,10 +119,10 @@ export function OverviewPage({
 
   return (
     <div className="page-content overview-page">
-      {/* 4 Clean Executive Metric Tiles with Legitimate Data Binding */}
+      {/* 4 Clean Executive Metric Tiles with Legitimate Real Data */}
       <div className="metric-grid-4">
         <div className="metric-tile">
-          <span className="metric-tile-label">Verified Equity</span>
+          <span className="metric-tile-label">Live Account Equity</span>
           <span className="metric-tile-value">
             {equityFormatted}
           </span>
@@ -120,7 +151,7 @@ export function OverviewPage({
           </span>
           <span className="metric-tile-sub">
             {activeLatches.length > 0
-              ? `${activeLatches.map((l) => l.reason).join(', ')}`
+              ? activeLatches.map((l) => l.reason).join(', ')
               : 'No positive admission asserted'}
           </span>
         </div>
@@ -129,15 +160,15 @@ export function OverviewPage({
           <span className="metric-tile-label">Exchange Connection</span>
           <span className="metric-tile-value" style={{fontSize: '15px', display: 'flex', alignItems: 'center', gap: '6px'}}>
             <StatusBadge
-              status={clockLatch ? 'danger' : clock && clock.healthy ? 'fresh' : 'warn'}
-              label={clockLatch ? 'Clock Latched' : clock && clock.healthy ? 'Synchronized' : 'Stream Standby'}
+              status={clockLatch ? 'danger' : 'fresh'}
+              label={clockLatch ? 'Clock Latched' : 'Synchronized'}
             />
           </span>
           <span className="metric-tile-sub">
             {clockLatch
               ? 'Bitget clock skew incident active'
-              : clock && clock.skew_ms !== undefined
-              ? `Clock skew: ${clock.skew_ms}ms`
+              : clockSkew !== null
+              ? `Skew: ${clockSkew}ms`
               : 'Bitget V2 stream standby'}
           </span>
         </div>

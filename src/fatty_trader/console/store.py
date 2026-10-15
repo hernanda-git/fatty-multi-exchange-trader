@@ -274,9 +274,15 @@ class ConsoleStore:
 
     def latest_snapshot(self, kind: str, scope: dict[str, str]) -> dict[str, Any] | None:
         row = self.one(
-            """SELECT * FROM console_snapshots WHERE kind=%s AND account_id=%s
+            """SELECT * FROM console_snapshots WHERE kind=%s
+                       AND (account_id=%s OR account_id IN (
+                           SELECT (data->'values'->>'provider_account_id')
+                           FROM console_snapshots
+                           WHERE kind='account_identity' AND environment=%s
+                           ORDER BY id DESC LIMIT 1
+                       ))
                        AND environment=%s ORDER BY collected_at DESC,id DESC LIMIT 1""",
-            (kind, scope["account_id"], scope["environment"]),
+            (kind, scope["account_id"], scope["environment"], scope["environment"]),
         )
         return cast(dict[str, Any], safe_json(row)) if row is not None else None
 

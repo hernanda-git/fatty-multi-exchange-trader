@@ -529,14 +529,21 @@ class ReadService:
             if not latest_good and self._cursor_sql is None:
                 return cast(dict[str, Any] | None, self.store.latest_snapshot(kind, self.scope))
             rows = self._query(
-                "SELECT * FROM console_snapshots WHERE kind=%s AND scope=%s::jsonb"
+                "SELECT * FROM console_snapshots WHERE kind=%s"
+                + " AND (account_id=%s OR account_id IN ("
+                + "     SELECT (data->'values'->>'provider_account_id')"
+                + "     FROM console_snapshots"
+                + "     WHERE kind='account_identity' AND environment=%s"
+                + "     ORDER BY id DESC LIMIT 1"
+                + " ))"
+                + " AND environment=%s"
                 + (
                     " AND data IS NOT NULL AND error IS NULL AND observed_at IS NOT NULL"
                     if latest_good
                     else ""
                 )
                 + " ORDER BY collected_at DESC,id DESC LIMIT 1",
-                (kind, json.dumps(self.scope)),
+                (kind, self.scope["account_id"], self.scope["environment"], self.scope["environment"]),
                 f"persisted:{kind}",
             )
             return rows[0] if rows else None
