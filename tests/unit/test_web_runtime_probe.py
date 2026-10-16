@@ -1,4 +1,5 @@
 import importlib
+import os
 
 import httpx
 import pytest
@@ -43,6 +44,7 @@ class Cursor:
         return (1,)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_actual_main_assembly_reads_live_progress_and_read_only_db(monkeypatch, tmp_path):
     import psycopg
 
@@ -117,6 +119,7 @@ def test_invalid_clock_or_overdue_db_probe_cannot_be_ready(ticks):
         "malformed",
     ],
 )
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_worker_evidence_fails_closed(tmp_path, mutation):
     import json
 
@@ -175,6 +178,7 @@ def test_invalid_max_age_never_probes_database(max_age):
 
 
 @pytest.mark.parametrize("count", [0, 3])
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_actual_analyzer_idle_and_busy_cycles_produce_readiness(monkeypatch, tmp_path, count):
     import asyncio
 
@@ -198,6 +202,7 @@ async def test_actual_analyzer_idle_and_busy_cycles_produce_readiness(monkeypatc
     assert read()["analyzer"]["state"] != "ready"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_real_worker_subprocess_stall_and_death_invalidate_web_probe(tmp_path):
     import os
     import signal
@@ -248,6 +253,7 @@ def test_real_worker_subprocess_stall_and_death_invalidate_web_probe(tmp_path):
 
 
 @pytest.mark.parametrize("state", ["idle", "sent", "retry", "failed"])
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_actual_notification_cycle_success_controls_web_evidence(
     monkeypatch, tmp_path, state
 ):

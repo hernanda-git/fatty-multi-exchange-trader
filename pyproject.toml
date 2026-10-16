@@ -37,6 +37,7 @@ packages = ["src/fatty_trader"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 filterwarnings = [
   "ignore::DeprecationWarning",

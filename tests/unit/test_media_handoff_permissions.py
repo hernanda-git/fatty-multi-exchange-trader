@@ -10,6 +10,7 @@ from fatty_trader.intake import media
 from fatty_trader.intake.media import persist_media_bytes
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file ownership and modes")
 def test_complete_media_is_group_readable_without_world_access_even_with_private_umask(tmp_path):
     root = tmp_path / "dedicated-media"
     previous = os.umask(0o077)
@@ -30,6 +31,7 @@ def test_complete_media_is_group_readable_without_world_access_even_with_private
     assert artifact.path.stat().st_gid == os.getegid()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file ownership and modes")
 def test_existing_private_root_permissions_are_not_broadened(tmp_path):
     root = tmp_path / "operator-owned-root"
     root.mkdir(mode=0o700)
@@ -44,6 +46,7 @@ def test_existing_private_root_permissions_are_not_broadened(tmp_path):
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file ownership and modes")
 def test_incomplete_bytes_remain_private_until_atomic_complete_publication(tmp_path, monkeypatch):
     original_write = Path.write_bytes
     original_link = os.link
@@ -77,6 +80,7 @@ def test_incomplete_bytes_remain_private_until_atomic_complete_publication(tmp_p
     assert not list(tmp_path.rglob("*.tmp"))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX file ownership and modes")
 def test_collision_preserves_original_inode_hash_and_permissions(tmp_path):
     arguments = dict(channel_id=7, message_id=1, revision_hash="c" * 64, mime_type="image/png")
     original = persist_media_bytes(tmp_path, data=b"original-image", **arguments)

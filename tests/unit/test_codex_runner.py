@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 from collections.abc import Callable
 from typing import Any
+
+import pytest
 
 from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunnerConfig
 
@@ -49,6 +52,7 @@ def factory_for(
     return factory
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process signals")
 def test_runner_uses_literal_codex_exec_argv_without_a_shell() -> None:
     calls: list[tuple[list[str], dict[str, Any]]] = []
     runner = CodexRunner(popen_factory=factory_for(FakeProcess(stdout=b'{"signal": null}'), calls))
@@ -89,6 +93,7 @@ def test_runner_uses_literal_codex_exec_argv_without_a_shell() -> None:
     ]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process signals")
 def test_runner_returns_nonzero_exit_as_terminal_failure() -> None:
     runner = CodexRunner(
         popen_factory=factory_for(FakeProcess(stderr=b"bad request", returncode=7), [])
@@ -102,6 +107,7 @@ def test_runner_returns_nonzero_exit_as_terminal_failure() -> None:
     assert result.failure_reason == "codex exited with status 7"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process signals")
 def test_runner_bounds_and_redacts_terminal_output() -> None:
     runner = CodexRunner(
         config=CodexRunnerConfig(max_output_bytes=36),
@@ -130,6 +136,7 @@ def test_redacted_output_stays_within_configured_bound() -> None:
     assert len(result.stdout.encode("utf-8")) <= 15
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process signals")
 def test_runner_terminates_then_kills_when_grace_period_expires() -> None:
     process = FakeProcess(
         wait_results=[
@@ -153,6 +160,7 @@ def test_runner_terminates_then_kills_when_grace_period_expires() -> None:
     assert process.killed
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process signals")
 def test_runner_returns_timeout_failure_when_kill_cannot_be_confirmed() -> None:
     process = FakeProcess(
         wait_results=[
@@ -175,6 +183,7 @@ def test_runner_returns_timeout_failure_when_kill_cannot_be_confirmed() -> None:
     assert process.killed
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process signals")
 def test_runner_returns_spawn_errors_as_terminal_failures() -> None:
     def unavailable(_: list[str], **__: Any) -> FakeProcess:
         raise FileNotFoundError("codex")

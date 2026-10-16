@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from fatty_trader import service
 from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunnerConfig
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_service_passes_only_explicit_auth_to_isolated_process(monkeypatch, tmp_path):
     monkeypatch.setenv("BITGET_API_SECRET", "not-for-codex")
     monkeypatch.setenv("OPENAI_API_KEY", "ambient-not-for-codex")
@@ -59,6 +61,7 @@ def test_service_passes_only_explicit_auth_to_isolated_process(monkeypatch, tmp_
     assert not Path(options["cwd"]).exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_runner_does_not_inherit_ambient_auth(monkeypatch):
     monkeypatch.setenv("CODEX_HOME", "/production/auth")
     monkeypatch.setenv("OPENAI_API_KEY", "ambient-not-for-codex")

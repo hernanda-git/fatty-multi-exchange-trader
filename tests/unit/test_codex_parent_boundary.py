@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from test_codex_runner import FakeProcess
 from fatty_trader.analyzer import codex_runner
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_same_uid_child_cannot_read_parent_credentials_or_memory():
     root = Path(__file__).resolve().parents[2]
     env = {
@@ -89,6 +91,7 @@ def test_unavailable_hardening_does_not_spawn(monkeypatch, failure):
     assert_no_spawn()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_every_invocation_verifies_parent_before_spawn(monkeypatch):
     events = []
 

@@ -1,5 +1,6 @@
 """Behavioral startup assembly; no provider or Telegram I/O."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from fatty_trader import service
 @pytest.mark.parametrize(
     "ready,error", [(False, None), (False, RuntimeError("DB unavailable")), (True, None)]
 )
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_dispatch_loop_waits_for_full_recovery_and_always_closes(monkeypatch, ready, error):
     from fatty_trader.execution import bitget_dispatcher as module
 
@@ -61,6 +63,7 @@ async def test_dispatch_loop_waits_for_full_recovery_and_always_closes(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_dispatcher_keeps_reconciling_pending_fills_without_admitting_when_blocked(
     monkeypatch,
 ):

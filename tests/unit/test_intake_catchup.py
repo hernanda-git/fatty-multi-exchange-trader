@@ -8,6 +8,7 @@ resumed realtime rows must never move that watermark past an unconsumed blind wi
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -258,6 +259,7 @@ class FakeRepository:
         return True
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_run_intake_arms_catchup_and_pulls_the_missed_signal(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -287,6 +289,7 @@ def test_run_intake_arms_catchup_and_pulls_the_missed_signal(
     assert repository.enqueued == [16219] or 16219 in repository.enqueued
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_run_intake_stays_inert_without_a_connection_factory() -> None:
     client = FakeIntakeClient([])
     environ = {

@@ -351,8 +351,10 @@ def test_provider_failure_never_mutates_and_closes_client(name, monkeypatch):
 def shell_decision(source, prelude):
     import subprocess
 
+    from tests.support import posix_bash
+
     return subprocess.run(
-        ["/usr/bin/bash", "-c", "set -euo pipefail\n" + prelude + "\n" + source],
+        [posix_bash(), "-c", "set -euo pipefail\n" + prelude + "\n" + source],
         env={"PATH": "/nonexistent", "HOME": "/tmp"},
         capture_output=True,
         text=True,

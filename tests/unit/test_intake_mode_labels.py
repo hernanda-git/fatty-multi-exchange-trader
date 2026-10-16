@@ -1,11 +1,14 @@
 """Intake startup labels describe the actual configured service mode."""
 
+import os
+
 import pytest
 
 from fatty_trader import service
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_disabled_live_intake_reports_live_mode(monkeypatch, capsys, tmp_path):
     async def stop(_seconds):
         raise RuntimeError("offline-stop")
@@ -19,6 +22,7 @@ async def test_disabled_live_intake_reports_live_mode(monkeypatch, capsys, tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_ready_live_intake_reports_live_mode(monkeypatch, capsys, tmp_path):
     class Client:
         async def start(self):

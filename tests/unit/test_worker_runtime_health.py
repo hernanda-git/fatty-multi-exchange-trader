@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -32,6 +33,7 @@ def test_notification_check_requires_live_progress(monkeypatch, tmp_path):
     assert notification_service.main() != 0
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_owned_health_requires_progress_and_invalidates_on_exit(tmp_path):
     from fatty_trader.worker_health import WorkerHealth, check_worker_health
 
@@ -49,6 +51,7 @@ def test_owned_health_requires_progress_and_invalidates_on_exit(tmp_path):
 
 
 @pytest.mark.parametrize("mutation", ["stale", "future", "nan", "pid", "identity", "disabled"])
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_health_rejects_invalid_evidence(tmp_path, mutation):
     from fatty_trader.worker_health import WorkerHealth, check_worker_health
 
@@ -72,6 +75,7 @@ def test_health_rejects_invalid_evidence(tmp_path, mutation):
     assert check_worker_health("analyzer", env) == 1
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_probe_rejects_stopped_and_dead_worker_process(tmp_path):
     import os
     import signal
@@ -118,6 +122,7 @@ def test_probe_rejects_stopped_and_dead_worker_process(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_owned_worker_decorator_clears_restart_and_exit(tmp_path):
     from fatty_trader.worker_health import (
         check_worker_health,
@@ -140,6 +145,7 @@ async def test_owned_worker_decorator_clears_restart_and_exit(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_analyzer_idle_cycle_records_progress_then_cancellation_invalidates(
     monkeypatch, tmp_path
 ):
@@ -162,6 +168,7 @@ async def test_analyzer_idle_cycle_records_progress_then_cancellation_invalidate
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state, expected", [("idle", 0), ("sent", 0), ("retry", 1), ("failed", 1)])
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_notification_progress_requires_successful_cycle(
     monkeypatch, tmp_path, state, expected
 ):
@@ -193,6 +200,7 @@ async def test_notification_progress_requires_successful_cycle(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_operator_health_is_written_by_polling_thread_only(monkeypatch, tmp_path):
     from fatty_trader.operator import telegram_polling
     from fatty_trader.worker_health import check_worker_health
@@ -230,6 +238,7 @@ async def test_operator_health_is_written_by_polling_thread_only(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 async def test_intake_connected_event_loop_progress_and_disconnect_cleanup(monkeypatch, tmp_path):
     from fatty_trader.worker_health import check_worker_health
 

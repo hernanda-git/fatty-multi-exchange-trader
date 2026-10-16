@@ -11,6 +11,7 @@ import pytest
 from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunnerConfig
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups and signal semantics")
 def test_subprocess_has_isolated_environment_cwd_and_readonly_policy(tmp_path):
     seen = {}
 
@@ -31,6 +32,7 @@ def test_subprocess_has_isolated_environment_cwd_and_readonly_policy(tmp_path):
 
 
 @pytest.mark.parametrize("auth_key", ["OPENAI_API_KEY", "CODEX_HOME"])
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups and signal semantics")
 def test_auth_is_explicit_not_inherited(auth_key):
     seen = {}
 
@@ -43,6 +45,7 @@ def test_auth_is_explicit_not_inherited(auth_key):
     assert seen["env"][auth_key] == "test-only-not-a-key"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups and signal semantics")
 def test_environment_does_not_inherit_credentials(monkeypatch):
     for key in ("OPENAI_API_KEY", "CODEX_HOME", "DATABASE_URL", "BITGET_SECRET", "TELEGRAM_TOKEN"):
         monkeypatch.setenv(key, "fake-inherited-value")
@@ -67,6 +70,7 @@ def test_auth_rejects_unscoped_capabilities():
         CodexRunner(auth_env={"DATABASE_URL": "fake-db"})
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups and signal semantics")
 def test_timeout_is_bounded_when_fake_cli_descendant_holds_pipes():
     # Run the actual runner in a separately bounded driver. Never invoke Codex.
     driver = """
@@ -106,6 +110,7 @@ print('bounded-timeout')
         process.wait(timeout=1)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups and signal semantics")
 def test_reader_joins_have_one_bounded_deadline(monkeypatch):
     import io
 

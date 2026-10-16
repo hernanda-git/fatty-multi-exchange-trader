@@ -16,6 +16,7 @@ def no_database(**kwargs):
     raise OSError("offline")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_socket_proves_owner_without_web_pid_namespace(monkeypatch, tmp_path):
     path, endpoint = tmp_path / "health.json", tmp_path / "owner.sock"
     child = subprocess.Popen(
@@ -67,6 +68,7 @@ def test_socket_proves_owner_without_web_pid_namespace(monkeypatch, tmp_path):
         child.stdout.close()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_compose_isolates_each_owner_socket_and_web_has_read_only_mounts(monkeypatch):
     compose = json.loads(
         subprocess.check_output(
@@ -137,6 +139,7 @@ def test_compose_isolates_each_owner_socket_and_web_has_read_only_mounts(monkeyp
 @pytest.mark.parametrize(
     "mutation", ["pid", "identity", "owner_token", "service", "missing_socket"]
 )
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_socket_rejects_wrong_owner_and_never_falls_back_to_local_pid(tmp_path, mutation):
     from fatty_trader.worker_health import WorkerHealth
 
@@ -164,6 +167,7 @@ def test_socket_rejects_wrong_owner_and_never_falls_back_to_local_pid(tmp_path, 
     assert not path.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX /proc process identity")
 def test_attestation_thread_cannot_refresh_progress_and_old_token_cannot_validate_restart(tmp_path):
     from fatty_trader.worker_health import WorkerHealth
 

@@ -3,6 +3,7 @@
 import pytest
 
 from fatty_trader.service import service_config
+from tests.support import compose_cli, posix_bash, script_environment
 
 
 @pytest.mark.parametrize(
@@ -29,7 +30,7 @@ def test_production_rejects_nonlive_or_disabled_execution(
         service_config(service, environment)
 
 
-def test_rendered_compose_enforces_production_identity() -> None:
+def test_rendered_compose_enforces_production_identity(tmp_path) -> None:
     import json
     import os
     import subprocess
@@ -41,6 +42,8 @@ def test_rendered_compose_enforces_production_identity() -> None:
     )
 
     root = Path(__file__).parents[2]
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("", encoding="utf-8")
     environment = {
         "PATH": os.environ["PATH"],
         "POSTGRES_PASSWORD": "test-only",
@@ -48,7 +51,14 @@ def test_rendered_compose_enforces_production_identity() -> None:
         "WORKER_DB_PASSWORD": "worker-test-only",
     }
     rendered = subprocess.run(
-        ["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"],
+        [
+            *compose_cli(tmp_path, environment),
+            "--env-file",
+            str(empty_env),
+            "config",
+            "--format",
+            "json",
+        ],
         cwd=root,
         env=environment,
         check=True,
@@ -69,22 +79,29 @@ def test_rendered_compose_enforces_production_identity() -> None:
         {"TRADER_MODE": "DEMO", "BITGET_MODE": "DEMO"},
     ],
 )
-def test_compose_policy_cli_rejects_disabled_override_before_any_mutation(override) -> None:
+def test_compose_policy_cli_rejects_disabled_override_before_any_mutation(
+    tmp_path, override
+) -> None:
     import os
     import subprocess
     from pathlib import Path
 
+    from tests.support import posix_bash, script_environment
+
     root = Path(__file__).parents[2]
     result = subprocess.run(
-        ["bash", "scripts/check_production_live_policy.sh"],
+        [posix_bash(), "scripts/check_production_live_policy.sh"],
         cwd=root,
-        env={
-            "PATH": os.environ["PATH"],
-            "POSTGRES_PASSWORD": "test-only",
-            "CONSOLE_DB_PASSWORD": "console-test-only",
-            "WORKER_DB_PASSWORD": "worker-test-only",
-            **override,
-        },
+        env=script_environment(
+            tmp_path,
+            {
+                "PATH": os.environ["PATH"],
+                "POSTGRES_PASSWORD": "test-only",
+                "CONSOLE_DB_PASSWORD": "console-test-only",
+                "WORKER_DB_PASSWORD": "worker-test-only",
+                **override,
+            },
+        ),
         text=True,
         capture_output=True,
     )
@@ -121,9 +138,9 @@ def test_runtime_verifier_rejects_disabled_container_before_db_or_provider(tmp_p
     )
     fake.chmod(0o755)
     result = subprocess.run(
-        ["bash", "scripts/verify_bitget_runtime.sh"],
+        [posix_bash(), "scripts/verify_bitget_runtime.sh"],
         cwd=root,
-        env={"PATH": os.environ["PATH"], "COMPOSE_BIN": str(fake)},
+        env=script_environment(tmp_path, {"PATH": os.environ["PATH"], "COMPOSE_BIN": str(fake)}),
         text=True,
         capture_output=True,
     )
@@ -191,9 +208,15 @@ def test_runtime_verifier_rejects_unsafe_runtime_without_provider_probe(
     )
     fake.chmod(0o755)
     result = subprocess.run(
-        ["bash", "scripts/verify_bitget_runtime.sh"],
+        [posix_bash(), "scripts/verify_bitget_runtime.sh"],
         cwd=root,
-        env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "COMPOSE_BIN": str(fake)},
+        env=script_environment(
+            tmp_path,
+            {
+                "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+                "COMPOSE_BIN": str(fake),
+            },
+        ),
         text=True,
         capture_output=True,
     )
@@ -238,7 +261,7 @@ def test_live_policy_does_not_bypass_existing_execution_safety(field) -> None:
         service_config("dispatcher-bitget", environment)
 
 
-def test_web_reports_configured_live_gate_without_claiming_order_readiness() -> None:
+def test_web_reports_configured_live_gate_without_claiming_order_readiness(tmp_path) -> None:
     import json
     import os
     import subprocess
@@ -247,15 +270,25 @@ def test_web_reports_configured_live_gate_without_claiming_order_readiness() -> 
     from fatty_trader.web.health import build_health_report
 
     root = Path(__file__).parents[2]
+    empty_env = tmp_path / "empty.env"
+    empty_env.write_text("", encoding="utf-8")
+    environment = {
+        "PATH": os.environ["PATH"],
+        "POSTGRES_PASSWORD": "test-only",
+        "CONSOLE_DB_PASSWORD": "console-test-only",
+        "WORKER_DB_PASSWORD": "worker-test-only",
+    }
     rendered = subprocess.run(
-        ["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"],
+        [
+            *compose_cli(tmp_path, environment),
+            "--env-file",
+            str(empty_env),
+            "config",
+            "--format",
+            "json",
+        ],
         cwd=root,
-        env={
-            "PATH": os.environ["PATH"],
-            "POSTGRES_PASSWORD": "test-only",
-            "CONSOLE_DB_PASSWORD": "console-test-only",
-            "WORKER_DB_PASSWORD": "worker-test-only",
-        },
+        env=environment,
         check=True,
         text=True,
         capture_output=True,
@@ -330,9 +363,15 @@ def test_runtime_verifier_checks_complete_pipeline_health_before_provider(tmp_pa
     )
     fake.chmod(0o755)
     result = subprocess.run(
-        ["bash", "scripts/verify_bitget_runtime.sh"],
+        [posix_bash(), "scripts/verify_bitget_runtime.sh"],
         cwd=Path(__file__).parents[2],
-        env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "COMPOSE_BIN": str(fake)},
+        env=script_environment(
+            tmp_path,
+            {
+                "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+                "COMPOSE_BIN": str(fake),
+            },
+        ),
         text=True,
         capture_output=True,
     )
@@ -391,9 +430,15 @@ def test_runtime_verifier_requires_bounded_logs_and_worker_database_role(
     )
     fake.chmod(0o755)
     result = subprocess.run(
-        ["bash", "scripts/verify_bitget_runtime.sh"],
+        [posix_bash(), "scripts/verify_bitget_runtime.sh"],
         cwd=Path(__file__).parents[2],
-        env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "COMPOSE_BIN": str(fake)},
+        env=script_environment(
+            tmp_path,
+            {
+                "PATH": os.pathsep.join((str(tmp_path), os.environ["PATH"])),
+                "COMPOSE_BIN": str(fake),
+            },
+        ),
         text=True,
         capture_output=True,
     )
