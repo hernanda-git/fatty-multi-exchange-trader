@@ -592,4 +592,40 @@ matches the host checkout again (`runtime_source_digest=d7a4e74e…`), the runti
 verifier passes from the deployed revision, schema remains 31, the staged rollout
 repeated the authenticated flat-account gate, and no signal was replayed.
 
+## LIVE margin cap raised to 1.1 USDT (2026-10-17)
 
+Owner directive: the 2026-10-16 NEAR signal was refused and must be fixed.
+
+**Why it was refused.** Dispatch `7d8d9fd3-1dbc-4679-884b-a10741c2854e` (message
+#16314, received 13:20:51 UTC) reached the 25/75 split route because price had
+passed the signal entry inside the 60-second window. That route needs a total
+quantity on a four-step venue grid: 4 NEAR = 20.88 USDT notional = 1.044 USDT
+margin at 20x, while the pinned 1 USDT cap afforded only 3.83 NEAR. The grid
+quantised to zero and the dispatcher refused with `split-sizing-refused` before
+submitting anything (`provider_effect: not_submitted`; no live intent, no
+reservation). Reproduced with the deployed code plus live NEARUSDT metadata and
+maintenance-margin tiers: the refusal tag is
+`split-market-min-qty: child 0 < min_qty=1`, and the acceptance boundary is
+1.04 USDT (refused) versus 1.045 USDT (accepted, qty 4, margin 1.044).
+
+**Change.** `_LIVE_MAX_MARGIN_PER_TRADE_USDT` and both Compose pins are `1.1 USDT`;
+the startup guard still rejects any other value, so a mismatch fails closed. The
+console hint, user guide, operations doc, MMR/cap doc and the contract tests
+follow. At 20x this covers symbols whose `size_step x price <= 5.5`; the split
+route is still refused — never approximated, never replaced by a full-market
+entry — for pricier symbols.
+
+**Verified before deploy:** Linux full suite `2515 passed, 0 failed, 1 skipped`
+(needs local `initdb`), `ruff check`/`ruff format --check` clean (325 files),
+`mypy src` clean (123 files), Windows full suite `2083 passed, 0 failed`.
+
+**Deployed:** revision `caa6377`; ten containers healthy; `runtime_check=PASS`;
+runtime source digest `fa2b2111...`; schema unchanged at 31; the staged rollout
+repeated the authenticated flat-account gate and replayed no signal. All four
+Bitget consumers report `BITGET_MAX_MARGIN_PER_TRADE_USDT=1.1`.
+
+**The NEAR signal itself was not traded.** The channel edited message #16314 at
+13:21:41 UTC (`edited-source-message` veto), its entry window closed at 13:25:51
+UTC, and price then traded to 5.02-5.05 — below the original 5.095 stop, so a late
+entry would place the stop above the entry. No manual entry was placed and none is
+pending.
