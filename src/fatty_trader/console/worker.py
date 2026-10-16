@@ -14,7 +14,7 @@ from typing import Any
 from uuid import uuid4
 
 from fatty_trader.console.commands import CommandError, CommandService
-from fatty_trader.console.store import ConsoleStore, EffectCancelled, LostLease
+from fatty_trader.console.store import ConsoleStore, EffectCancelled, LostLease, TelemetryRetention
 from fatty_trader.execution.async_storage import _run_sync_storage
 
 LOG = logging.getLogger(__name__)
@@ -203,6 +203,28 @@ async def process_job(
             await renewal
 
 
+async def maintain_telemetry(store: ConsoleStore, retention: TelemetryRetention) -> None:
+    """Retention failure is reported separately from collection and financial jobs."""
+    started = time.monotonic()
+    try:
+        result = await _run_sync_storage(store.prune_telemetry, retention)
+    except Exception as error:
+        LOG.warning(
+            "Console telemetry retention unavailable exception_type=%s elapsed_ms=%s",
+            type(error).__name__,
+            int((time.monotonic() - started) * 1000),
+        )
+        return
+    LOG.info(
+        "Console telemetry retention status=%s snapshots_deleted=%s events_deleted=%s "
+        "elapsed_ms=%s",
+        result["status"],
+        result["snapshots_deleted"],
+        result["events_deleted"],
+        result["elapsed_ms"],
+    )
+
+
 async def run_console_worker(environ: Mapping[str, str], *, host: bool = False) -> None:
     if environ.get("FATTY_PRODUCTION_LIVE_ONLY") == "1":
         from fatty_trader.production_policy import validate_production_live_policy
@@ -220,6 +242,14 @@ async def run_console_worker(environ: Mapping[str, str], *, host: bool = False) 
     interval = max(1, float(environ.get("CONSOLE_POLL_SECONDS", "2")))
     collection_interval = max(5, float(environ.get("CONSOLE_SNAPSHOT_SECONDS", "10")))
     next_collection = 0.0
+    retention = None
+    if not host:
+        try:
+            retention = TelemetryRetention.from_environ(environ)
+        except ValueError:
+            # Fail closed for deletion, not for protection/financial queue polling.
+            LOG.error("Console telemetry retention disabled: invalid retention configuration")
+    next_retention = 0.0
     heartbeat = Path(environ.get("CONSOLE_HEARTBEAT_FILE", "/tmp/console-worker-heartbeat"))
     while True:
         if host and time.monotonic() >= next_collection:
@@ -248,6 +278,9 @@ async def run_console_worker(environ: Mapping[str, str], *, host: bool = False) 
         job = await _run_sync_storage(store.claim_job, worker_id, set(handlers))
         if job:
             await process_job(store, commands, handlers, job)
+        if retention is not None and time.monotonic() >= next_retention:
+            await maintain_telemetry(store, retention)
+            next_retention = time.monotonic() + retention.interval_seconds
         # Written only after a successful durable queue poll; provider truth has
         # its separate timestamps/errors and is not implied by worker liveness.
         heartbeat.write_text(str(time.time()), encoding="ascii")
@@ -268,6 +301,16 @@ def main() -> None:
         except (OSError, ValueError):
             raise SystemExit(1) from None
         return
+    # Enable only this sanitized worker logger, not HTTP-library request logs.
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)sZ %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"
+    )
+    formatter.converter = time.gmtime
+    handler.setFormatter(formatter)
+    LOG.addHandler(handler)
+    LOG.setLevel(logging.INFO)
+    LOG.propagate = False
     asyncio.run(run_console_worker(os.environ, host=args.host))
 
 

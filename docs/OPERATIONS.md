@@ -21,16 +21,19 @@ The production topology on `fspmi-hostinger` requires `TRADER_MODE=LIVE`, `BITGE
 
 ```bash
 bash scripts/check_production_live_policy.sh
-POSTGRES_PASSWORD='use-a-local-secret-manager-value' docker compose up -d --build
+# Existing database must be running; keep .env private.
+PYTHONPATH=src python scripts/provision_worker_database.py --confirm
+docker compose up -d --build
 curl http://127.0.0.1:18081/health/telemetry
 ```
 
 The health payload is sanitized. Static mode/configuration, HTTP liveness and
 actual worker/dependency readiness are separate fields. Unknown, missing or
 stale worker evidence is not READY. It never returns environment credentials.
-The dashboard is published on loopback only and has no application login; never
-expose its port through an unauthenticated external proxy. Its container probe
-checks the health JSON readiness verdict, not only HTTP 200.
+The host port is published on loopback only. With `CONSOLE_ENABLED=1`, the console
+APIs require authenticated, scoped sessions behind the configured HTTPS origin.
+Sanitized health routes remain public; do not treat them as an authorization
+boundary. The container probe checks readiness verdicts, not only HTTP 200.
 
 The runtime verifier requires running, healthy PostgreSQL, intake, analyzer,
 dispatcher, monitor, operator, notification-sender, source-management and web
@@ -44,15 +47,94 @@ audit evidence, not proof of delivery.
 
 ## PostgreSQL Backup and Restore
 
-Backups are custom-format dumps written below `backups/` (gitignored) and pruned by `BACKUP_RETENTION_DAYS` (default 14). Run from the repository root with the database reachable from the host:
+Backups use the container-local PostgreSQL bootstrap administrator, not a runtime
+worker or web password. The database service must be running. Backup directories
+are owner-only `0700`; custom-format dumps are `0600`, validated before atomic,
+unique publication. `BACKUP_RETAIN_DAYS` defaults to 14 and prunes only expired,
+exactly named backup files, never arbitrary files or partial dumps.
 
 ```bash
-POSTGRES_PASSWORD="$POSTGRES_PASSWORD" ./scripts/backup_postgres.sh
-CONFIRM_RESTORE=YES POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-  ./scripts/restore_postgres.sh backups/fatty_trader_<timestamp>.dump
+BACKUP_DIR=/home/valarion/backups/fatty-trader bash scripts/backup_postgres.sh
+CONFIRM_ISOLATED_RESTORE=YES RESTORE_EXPECTED_SCHEMA_VERSION=31 \
+  bash scripts/verify_restore_postgres.sh /absolute/path/to/backup.dump
 ```
 
-Restore is intentionally an explicit destructive action. Stop application workers first, verify the dump filename, and keep the password in the environment or a secret manager; never commit an env file.
+The drill restores into its own generated, PUBLIC-inaccessible database using
+`--no-owner --no-acl`, validates schema version and ten durable tables, and verifies
+database removal. Require both `restore_verification_cleanup_verified=` and
+`restore_verified=` success receipts. It does not overwrite production or prove
+that external credentials, PostgreSQL roles, Telegram or exchange access can be
+recovered from the database dump alone.
+
+An actual restore is destructive and requires stopped application workers:
+
+```bash
+CONFIRM_RESTORE=YES bash scripts/restore_postgres.sh /absolute/path/to/backup.dump
+```
+
+Bootstrap required database roles before restoring ACLs into a new cluster;
+re-run worker provisioning after restore even if migration 30 is already recorded.
+Preserve the private environment separately. The deployed backup timer is a
+**user** unit: install `deploy/systemd/fatty-backup.service` under
+`~/.config/systemd/user/`, run `systemctl --user daemon-reload`, and inspect
+`systemctl --user status fatty-backup.timer fatty-backup.service`. Its service uses
+`UMask=0077`.
+
+## Runtime database and telemetry boundaries
+
+`fatty_app` remains the PostgreSQL bootstrap/migration administrator. All execution,
+intake, analyzer, console-worker and host operations workers use `fatty_worker`
+with the separate private `WORKER_DB_PASSWORD`; web uses `fatty_console_web`.
+Provision the worker with `scripts/provision_worker_database.py --confirm` before
+recreating services. The provisioner writes a strong distinct secret atomically
+to private `.env` without printing it and is repeatable. Runtime workers have
+table DML and sequence access, but no superuser, role/database creation, schema
+creation, temporary-table, table-truncation or migration-history mutation rights.
+Startup no longer performs runtime schema DDL. Future migrations must run through
+the administrative `migrate` service, whose default privileges cover new tables.
+Host-operation children do not inherit bootstrap/web credentials.
+
+On a fresh installation, initialize PostgreSQL first with distinct private admin,
+web and worker secrets so Compose interpolation can succeed, then provision,
+migrate and start applications. On an existing installation, provision against the
+running database before using the new worker-dependent Compose configuration.
+Never run role-mutating integration fixtures against production; use a disposable
+PostgreSQL **instance**, not merely a schema.
+
+Console telemetry cleanup defaults:
+
+- `CONSOLE_SNAPSHOT_RETENTION_DAYS=7`; latest and latest-good samples per
+  kind/account/environment remain even when older.
+- `CONSOLE_EVENT_RETENTION_HOURS=48`, minimum 24; preserve replay validity and a
+  high-water event for expired scopes so reconnects can reset correctly.
+- `CONSOLE_RETENTION_BATCH_SIZE=1000` per table, maximum 5000;
+  `CONSOLE_RETENTION_INTERVAL_SECONDS=60`.
+
+Cleanup is transaction-fenced, skips locked rows, and has bounded lock/statement
+timeouts. Invalid configuration disables deletion; cleanup failure does not stop
+financial polling. This retention never deletes trading intents, dispatches,
+transition evidence, reservations, fills, jobs, notifications or audit history.
+Create and restore-check a current backup before enabling cleanup.
+
+Every Compose service uses `json-file` logs with `max-size=10m`, `max-file=5`;
+existing containers require recreation to apply this. The runtime verifier checks
+actual log settings and database identities, not just configuration text.
+Hypervisor CPU steal is an external capacity risk: application health or reduced
+query cost cannot prove that the hosting provider has fixed contention.
+
+## HTTPS and protection display
+
+With the trusted `CONSOLE_ORIGIN` configured as HTTPS, all application responses
+include `Strict-Transport-Security: max-age=31536000`. Local HTTP does not enable
+HSTS, and forwarded request headers cannot select this policy. No preload or
+subdomain commitment is made. Responses also set `nosniff` and `no-referrer`.
+
+Native protection is verified only from a current `VENUE_PROTECTED` observation,
+not a registration or missing field. Missing/stale evidence is displayed as
+unverified/stale. Historical fallback rows lacking environment, owned epoch or
+position identity remain visible as ineligible legacy registrations; do not
+rewrite their historical state to pretend cancellation or protection. The
+protection table's repair action is explicitly labeled **Review native repair**.
 
 ## Deployment Boundary
 

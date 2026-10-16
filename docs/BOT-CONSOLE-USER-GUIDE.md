@@ -41,6 +41,19 @@ versions rather than adopting an arbitrary symbol as bot-owned.
 | **Activity** (`/audit`) | System audit trail (`/audit`), durable command jobs (`/audit?view=jobs`, `/audit/jobs/{id}`), approvals & Tier 3 governance (`/audit?view=approvals`), trade management instructions (`/management`), and notification deliveries (`/notifications`). |
 | **Settings** (`/config`) | Effective settings & encrypted secret staging (`/config`), drafts & revisions (`/config/drafts`, `/config/history`), safety latches & recovery proofs (`/recovery`, `/recovery/baselines`), container services & logs (`/services`), release catalog (`/services?view=releases`), backups (`/backups`), and password-only access policy & sessions (`/access`). |
 
+### Protection evidence and legacy registrations
+
+**Native protection verified** requires a fresh `VENUE_PROTECTED` observation,
+not a fallback registration or a missing field. The table ages observations even
+without new stream events; missing or expired evidence is unverified/stale.
+An empty position list is not proof that the provider account is flat.
+
+The protection page separately lists historical fallback registrations with
+incomplete environment, owned epoch or position identity. These are ineligible
+for close enforcement, not new open positions or proof of active protection.
+Their historical database state is preserved. **Review native repair** opens the
+repair authorization flow; it does not immediately close a position.
+
 ### Automated signal sizing defaults
 
 In **Settings → Configuration**, use **Trading & signal settings**. Fields show

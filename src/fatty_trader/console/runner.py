@@ -132,8 +132,8 @@ class HostOperationsRunner:
             "HOME",
             "LANG",
             "TZ",
-            "POSTGRES_PASSWORD",
-            "CONSOLE_DB_PASSWORD",
+            "WORKER_DB_PASSWORD",
+            "POSTGRES_ADMIN_USER",
             "POSTGRES_USER",
             "POSTGRES_DB",
             "PGHOST",
@@ -165,6 +165,10 @@ class HostOperationsRunner:
             if k.startswith(("BITGET_", "CONSOLE_", "NOTIFICATION_", "ANALYZER_"))
         )
         env = {k: v for k, v in self.environ.items() if k in allowed and isinstance(v, str)}
+        # Compose loads bootstrap/web interpolation secrets from the private .env;
+        # normal host-worker subprocesses receive only the runtime DB credential.
+        env.pop("POSTGRES_PASSWORD", None)
+        env.pop("CONSOLE_DB_PASSWORD", None)
         env.update(
             {
                 "COMPOSE_FILE": os.pathsep.join(str(p) for p in self.compose_files),

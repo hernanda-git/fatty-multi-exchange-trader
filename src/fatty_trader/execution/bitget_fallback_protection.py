@@ -18,8 +18,6 @@ from decimal import Decimal
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from fatty_trader.storage.fallback_schema import FALLBACK_OWNERSHIP_SCHEMA_SQL
-
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +32,7 @@ def _psycopg_connect() -> Any:
         host=os.environ.get("PGHOST", "postgres"),
         port=os.environ.get("PGPORT", "5432"),
         dbname=os.environ.get("PGDATABASE", "fatty_trader"),
-        user=os.environ.get("PGUSER", "fatty_app"),
+        user=os.environ["PGUSER"],
         password=os.environ.get("PGPASSWORD", ""),
     )
 
@@ -59,17 +57,6 @@ def _db_exec(sql: str, params: tuple[Any, ...] = ()) -> None:
     except Exception as exc:
         logger.error(f"_db_exec failed: {type(exc).__name__}: {exc}")
         raise
-
-
-# ── Schema ─────────────────────────────────────────────────────────────────
-
-
-_SCHEMA_SQL = FALLBACK_OWNERSHIP_SCHEMA_SQL
-
-
-def ensure_schema() -> None:
-    """Idempotent schema creation."""
-    _db_exec(_SCHEMA_SQL)
 
 
 # ── State management ────────────────────────────────────────────────────────
@@ -107,8 +94,6 @@ def register_fallback(
             raise ValueError(
                 "fallback identity must include canonical epoch, environment and entry key"
             )
-    if connection is None:
-        ensure_schema()
     tp_json = json.dumps([str(t) for t in take_profits])
     from psycopg.rows import tuple_row
 

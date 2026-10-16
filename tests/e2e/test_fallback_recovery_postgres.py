@@ -38,7 +38,6 @@ def database(monkeypatch):
         with connect() as conn:
             apply_initial_schema(conn.cursor())
             apply_migrations(conn.cursor())
-            conn.execute(fallback._SCHEMA_SQL)
         yield connect
     finally:
         with psycopg.connect(dsn, autocommit=True) as conn:

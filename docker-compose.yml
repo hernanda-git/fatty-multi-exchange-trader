@@ -1,5 +1,12 @@
+x-bounded-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
+    logging: *bounded-logging
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: fatty_trader
@@ -15,6 +22,7 @@ services:
     restart: unless-stopped
 
   migrate:
+    logging: *bounded-logging
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "migrate"]
     environment:
@@ -29,6 +37,7 @@ services:
     restart: "no"
 
   init:
+    logging: *bounded-logging
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "init"]
     environment:
@@ -40,6 +49,7 @@ services:
     restart: "no"
 
   web:
+    logging: *bounded-logging
     build: .
     group_add: ["${CONSOLE_HOST_GID:-5013}"]
     environment:
@@ -92,6 +102,7 @@ services:
     restart: unless-stopped
 
   intake:
+    logging: *bounded-logging
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "intake"]
     environment:
@@ -102,8 +113,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       TG_API_ID: ${TG_API_ID:-}
       TG_API_HASH: ${TG_API_HASH:-}
       TELEGRAM_SESSION: ${TELEGRAM_SESSION:-}
@@ -126,6 +137,7 @@ services:
     restart: unless-stopped
 
   analyzer:
+    logging: *bounded-logging
     build: .
     user: "${CODEX_HOST_UID:-5013}:${CODEX_HOST_GID:-5013}"
     # Image-only dedicated tree: intake UID/GID 10001 owns RW; analyzer only
@@ -144,8 +156,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       CODEX_HOME: /app/runtime/codex-home
       # Operator-supplied label only; this is NOT an auth probe (the analyzer prints it
       # as codex_account_label). Auth comes from the mounted ~/.codex/auth.json.
@@ -167,6 +179,7 @@ services:
     restart: unless-stopped
 
   dispatcher-binance:
+    logging: *bounded-logging
     profiles: ["binance-disabled"]
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-binance"]
@@ -176,8 +189,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       BINANCE_API_KEY: ${BINANCE_API_KEY:-}
       BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
     depends_on:
@@ -188,6 +201,7 @@ services:
     restart: unless-stopped
 
   dispatcher-bitget:
+    logging: *bounded-logging
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "dispatcher-bitget"]
     environment:
@@ -198,8 +212,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       BITGET_API_KEY: ${BITGET_API_KEY:-}
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
@@ -305,6 +319,7 @@ services:
       start_period: 60s
 
   operator-bot:
+    logging: *bounded-logging
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "operator-bot"]
     environment:
@@ -317,8 +332,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TG_OPERATOR_ID: ${TG_OPERATOR_ID:-}
       TELEGRAM_SOURCE_CHANNELS: ${TELEGRAM_SOURCE_CHANNELS:-}
@@ -343,6 +358,7 @@ services:
     restart: unless-stopped
 
   notification-sender:
+    logging: *bounded-logging
     build: .
     volumes:
       - health-notification:/run/fatty-health/notification
@@ -352,8 +368,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       TG_BOT_TOKEN: ${TG_BOT_TOKEN:-}
       TELEGRAM_TARGET_CHAT_ID: ${TELEGRAM_TARGET_CHAT_ID:-}
       WEB_PUSH_VAPID_PRIVATE_KEY_FILE: /run/web-push-private.pem
@@ -373,6 +389,7 @@ services:
     restart: unless-stopped
 
   source-management:
+    logging: *bounded-logging
     build: .
     command: ["/app/.venv/bin/python", "-m", "fatty_trader.service", "--service", "source-management"]
     environment:
@@ -383,8 +400,8 @@ services:
       PGHOST: postgres
       PGPORT: "5432"
       PGDATABASE: fatty_trader
-      PGUSER: fatty_app
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in server environment}
+      PGUSER: fatty_worker
+      PGPASSWORD: ${WORKER_DB_PASSWORD:?set WORKER_DB_PASSWORD for isolated runtime worker role}
       BITGET_API_KEY: ${BITGET_API_KEY:-}
       BITGET_API_SECRET: ${BITGET_API_SECRET:-}
       BITGET_API_PASSPHRASE: ${BITGET_API_PASSPHRASE:-}
@@ -420,6 +437,10 @@ services:
       CONSOLE_ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:18081}
       CONSOLE_ALLOW_LOCALHOST_HTTP: ${CONSOLE_ALLOW_LOCALHOST_HTTP:-0}
       CONSOLE_HEARTBEAT_FILE: /tmp/console-worker-heartbeat
+      CONSOLE_SNAPSHOT_RETENTION_DAYS: ${CONSOLE_SNAPSHOT_RETENTION_DAYS:-7}
+      CONSOLE_EVENT_RETENTION_HOURS: ${CONSOLE_EVENT_RETENTION_HOURS:-48}
+      CONSOLE_RETENTION_BATCH_SIZE: ${CONSOLE_RETENTION_BATCH_SIZE:-1000}
+      CONSOLE_RETENTION_INTERVAL_SECONDS: ${CONSOLE_RETENTION_INTERVAL_SECONDS:-60}
       BITGET_OPERATOR_MUTATIONS_ENABLED: ${BITGET_OPERATOR_MUTATIONS_ENABLED:-0}
       BITGET_FALLBACK_MUTATIONS_ENABLED: ${BITGET_FALLBACK_MUTATIONS_ENABLED:-0}
       BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-1}

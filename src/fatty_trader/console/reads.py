@@ -670,8 +670,13 @@ class ReadService:
                     data = self._read(section, resource_id, selected, limit, cursor)
                     events = self._query(
                         "SELECT coalesce(max(id),0) AS event_cursor FROM console_event_outbox "
-                        "WHERE scope=%s::jsonb",
-                        (json.dumps(self.scope),),
+                        "WHERE scope=%s::jsonb AND scope->>'account_id'=%s "
+                        "AND scope->>'environment'=%s",
+                        (
+                            json.dumps(self.scope),
+                            self.scope["account_id"],
+                            self.scope["environment"],
+                        ),
                         name="event_cursor",
                     )
                     event_cursor = events[0]["event_cursor"] if events else None
@@ -1632,6 +1637,25 @@ class ReadService:
             (self.scope["environment"],),
             "fallback_registrations",
         )
+        if fallbacks is not None:
+            fallbacks = [
+                {
+                    **registration,
+                    "identity_complete": bool(
+                        registration.get("environment") == self.scope["environment"]
+                        and registration.get("provider_position_epoch")
+                        and registration.get("position_key")
+                    ),
+                    "enforcement": "not-proven"
+                    if (
+                        registration.get("environment") == self.scope["environment"]
+                        and registration.get("provider_position_epoch")
+                        and registration.get("position_key")
+                    )
+                    else "ineligible-legacy-registration",
+                }
+                for registration in fallbacks
+            ]
         intents = self._query(
             "SELECT i.*,br.baseline_id FROM live_order_intents i "
             "LEFT JOIN bitget_baseline_records br ON br.record_kind='intent' "
@@ -1758,7 +1782,7 @@ class ReadService:
                 row["last_known"] = bool(provider.get("last_known"))
                 row["observation_complete"] = bool(provider.get("complete"))
                 rows.append(row)
-        return self._list_memory(
+        result = self._list_memory(
             section,
             rows,
             resource,
@@ -1776,6 +1800,13 @@ class ReadService:
                 ),
             },
         )
+        if not resource and isinstance(result, dict) and section == "protection":
+            result["unverified_fallback_registrations"] = [
+                registration
+                for registration in fallbacks or []
+                if not registration["identity_complete"]
+            ]
+        return result
 
     def _pnl(self, filters: dict[str, str]) -> Any:
         where = "f.exchange='bitget'"

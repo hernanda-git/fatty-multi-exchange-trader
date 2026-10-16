@@ -15,6 +15,12 @@ def prepare_host_environment(environ: Mapping[str, str]) -> dict[str, str]:
     env = dict(environ)
     if env.get("CONSOLE_OPS_WORKER") != "1":
         raise ValueError("dedicated host worker marker is required")
+    password = env.get("WORKER_DB_PASSWORD")
+    if not password or password in {
+        env.get("POSTGRES_PASSWORD"),
+        env.get("CONSOLE_DB_PASSWORD"),
+    }:
+        raise ValueError("a separate runtime database credential is required")
     root = Path(env["CONSOLE_REPOSITORY_ROOT"]).resolve(strict=True)
     files = [root / "docker-compose.yml"]
     state_path = Path(env["CONSOLE_OPS_STATE_DIR"])
@@ -92,12 +98,20 @@ def prepare_host_environment(environ: Mapping[str, str]) -> dict[str, str]:
         {
             "PGHOST": address,
             "PGPORT": "5432",
-            "PGUSER": "fatty_app",
+            "PGUSER": "fatty_worker",
             "PGDATABASE": "fatty_trader",
-            "PGPASSWORD": env["POSTGRES_PASSWORD"],
+            "PGPASSWORD": password,
         }
     )
-    env.pop("DATABASE_URL", None)
+    for key in (
+        "DATABASE_URL",
+        "POSTGRES_PASSWORD",
+        "CONSOLE_DB_PASSWORD",
+        "PGSERVICE",
+        "PGSERVICEFILE",
+        "PGPASSFILE",
+    ):
+        env.pop(key, None)
     return env
 
 
@@ -110,6 +124,7 @@ def main() -> None:
     parser.add_argument("--approval-reference")
     args = parser.parse_args()
     env = prepare_host_environment(os.environ)
+    os.environ.clear()
     os.environ.update(env)
     if args.register_release:
         if not args.image or not args.approval_reference:

@@ -30,6 +30,25 @@ for service in "${running_services[@]}"; do
     printf 'runtime_blocked=service_unhealthy service=%s state=%s\n' "$service" "$state" >&2
     exit 1
   }
+  log_limits="$(docker inspect --format '{{.HostConfig.LogConfig.Type}}:{{index .HostConfig.LogConfig.Config "max-size"}}:{{index .HostConfig.LogConfig.Config "max-file"}}' "$container_id")"
+  test "$log_limits" = "json-file:10m:5" || {
+    printf 'runtime_blocked=unbounded_container_logs service=%s\n' "$service" >&2
+    exit 1
+  }
+  if test "$service" != postgres; then
+    expected_role=fatty_worker
+    test "$service" != web || expected_role=fatty_console_web
+    if ! $compose_bin exec -T "$service" /app/.venv/bin/python -c \
+      'import os,sys,psycopg
+with psycopg.connect() as connection:
+    row=connection.execute("SELECT current_user,rolsuper,rolcreatedb,rolcreaterole FROM pg_roles WHERE rolname=current_user").fetchone()
+    if row is None or row[0]!=sys.argv[1] or any(row[1:]):
+        raise SystemExit("runtime database privilege boundary failed")
+print("runtime_database_role="+row[0])' "$expected_role"; then
+      printf 'runtime_blocked=database_privilege_boundary service=%s\n' "$service" >&2
+      exit 1
+    fi
+  fi
 done
 
 for service in "${completed_services[@]}"; do

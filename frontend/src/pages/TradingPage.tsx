@@ -21,6 +21,8 @@ export function TradingPage({
 }) {
   const data = envelope ? envelope.data : null;
   const items = isObjectRecord(data) && Array.isArray(data.items) ? data.items.filter(isObjectRecord) : [];
+  const legacyFallbacks = isObjectRecord(data) && Array.isArray(data.unverified_fallback_registrations)
+    ? data.unverified_fallback_registrations.filter(isObjectRecord) : [];
 
   // Manual New Trade form state (UX05)
   const [symbol, setSymbol] = useState('BTCUSDT');
@@ -214,6 +216,16 @@ export function TradingPage({
             </button>
           )}
         </div>
+        {readSection === 'protection' && legacyFallbacks.length > 0 && (
+          <section role="status" className="alert alert-info" data-testid="legacy-fallback-warning">
+            <strong>Historical fallback registrations are not verified protection</strong>
+            <p>These records lack an exact environment or provider-position identity.
+              They cannot authorize closes and are not counted as protected positions.</p>
+            <ul>{legacyFallbacks.map(row => (
+              <li key={String(row.id)}>{String(row.symbol)} · {String(row.id)} · ownership unverified</li>
+            ))}</ul>
+          </section>
+        )}
 
         {readSection === 'positions' && (
           <PositionsTable
@@ -234,6 +246,7 @@ export function TradingPage({
         {readSection === 'protection' && (
           <PositionsTable
             items={items}
+            actionLabel="Review native repair"
             onClose={(item) => onOpenAction('protection.repair_native', {}, [String(item.id)])}
           />
         )}

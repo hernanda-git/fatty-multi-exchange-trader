@@ -782,3 +782,44 @@ def test_shared_password_access_projection_does_not_advertise_identity_enrollmen
         if "FROM console_principals t" in sql or "FROM console_sessions t" in sql:
             assert "console-password-owner" in params
             assert "scopes @>" in sql
+
+
+def test_legacy_fallback_identity_is_visible_but_never_claims_protection(monkeypatch):
+    legacy = {
+        "id": "legacy-pump",
+        "symbol": "PUMPUSDT",
+        "state": "active",
+        "environment": None,
+        "provider_position_epoch": None,
+        "position_key": "old-root",
+    }
+    complete = {
+        "id": "identified",
+        "symbol": "BTCUSDT",
+        "state": "active",
+        "environment": "LIVE",
+        "provider_position_epoch": "123",
+        "position_key": "new-root",
+    }
+    service = ReadService(MemoryStore(), SCOPE)
+    monkeypatch.setattr(
+        service,
+        "_snapshot",
+        lambda kind: {"items": [], "complete": True, "last_known": False},
+    )
+
+    def query(sql, params=(), name=None):
+        return [legacy, complete] if name == "fallback_registrations" else []
+
+    monkeypatch.setattr(service, "_query", query)
+    result = service._positions("protection", None, {}, 25, None)
+    assert result["items"] == []
+    assert result["unverified_fallback_registrations"] == [
+        {
+            **legacy,
+            "identity_complete": False,
+            "enforcement": "ineligible-legacy-registration",
+        }
+    ]
+    assert legacy["state"] == "active"
+    assert "identity_complete" not in legacy

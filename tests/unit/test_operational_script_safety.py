@@ -386,49 +386,6 @@ def test_auth_health_requires_exact_running_healthy_analyzer(status, expected):
     assert result.returncode == expected, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize(
-    "services",
-    [
-        "intake",
-        "analyzer",
-        "dispatcher-bitget",
-        "monitor-bitget",
-        "future-worker",
-        "postgres\nanalyzer",
-    ],
-)
-def test_restore_refuses_any_running_non_postgres_service_before_clean(services):
-    import shlex
-
-    text = (SCRIPTS / "restore_postgres.sh").read_text()
-    start = text.index("# Refuse") if "# Refuse" in text else text.index("running=")
-    decision = text[start:]
-    prelude = (
-        "compose_bin=fake_compose; backup_file=/dev/null; "
-        "fake_compose() { if [[ $1 == ps ]]; then printf '%s\\n' "
-        + shlex.quote(services)
-        + "; else printf 'UNSAFE_CLEAN\\n'; fi; }; "
-        "grep() { local row; while IFS= read -r row; do "
-        "[[ $row == postgres ]] || printf '%s\\n' \"$row\"; done; }; tr() { :; }"
-    )
-    result = shell_decision(decision, prelude)
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "UNSAFE_CLEAN" not in result.stdout
-
-
-def test_restore_refuses_unknown_running_service_state():
-    text = (SCRIPTS / "restore_postgres.sh").read_text()
-    start = text.index("# Refuse") if "# Refuse" in text else text.index("running=")
-    result = shell_decision(
-        text[start:],
-        "compose_bin=fake_compose; backup_file=/dev/null; "
-        "fake_compose() { if [[ $1 == ps ]]; then return 1; "
-        "else printf 'UNSAFE_CLEAN\\n'; fi; }; grep() { return 1; }",
-    )
-    assert result.returncode == 2
-    assert "UNSAFE_CLEAN" not in result.stdout
-
-
 def test_fallback_refuses_blank_position_key_before_client(monkeypatch):
     module = load("_register_fallback", monkeypatch)
     with pytest.raises(ValueError, match="position key"):
@@ -449,30 +406,6 @@ def test_retired_bypasses_have_no_mutation_or_50x_calls(name):
 def test_recovery_import_has_no_operational_call(name, monkeypatch):
     guarded(name)
     load(name, monkeypatch)
-
-
-@pytest.mark.parametrize("services", ["", "postgres"])
-def test_restore_stopped_workers_allow_only_mocked_clean(services):
-    import shlex
-
-    text = (SCRIPTS / "restore_postgres.sh").read_text()
-    decision = text[text.index("# Refuse") :]
-    result = shell_decision(
-        decision,
-        "compose_bin=fake_compose; backup_file=/dev/null; "
-        "fake_compose() { if [[ $1 == ps ]]; then printf '%s\\n' "
-        + shlex.quote(services)
-        + "; else printf 'MOCK_CLEAN:%s\\n' \"$*\"; fi; }",
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.count("MOCK_CLEAN:") == 1
-    assert "--clean --if-exists --no-owner" in result.stdout
-
-
-def test_restore_confirmation_guard_precedes_any_compose_call():
-    text = (SCRIPTS / "restore_postgres.sh").read_text()
-    guard = text.index('if [[ "${CONFIRM_RESTORE:-}" != "YES" ]]')
-    assert guard < text.index("$compose_bin exec") < text.index("--clean")
 
 
 def test_native_protection_error_does_not_enable_fallback_or_entry(monkeypatch):

@@ -7,8 +7,10 @@ import json
 import re
 from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from time import monotonic
 from typing import Any, cast
 from uuid import uuid4
 
@@ -93,6 +95,36 @@ class ResourceBusy(RuntimeError):
 
 class EffectCancelled(RuntimeError):
     """Authority was canceled while this worker still owned an unclaimed step."""
+
+
+@dataclass(frozen=True)
+class TelemetryRetention:
+    """Deletion limits; invalid configuration must never shorten the SSE window."""
+
+    snapshot_days: int = 7
+    event_hours: int = 48
+    batch_size: int = 1000
+    interval_seconds: int = 60
+
+    def __post_init__(self) -> None:
+        for name, minimum, maximum in (
+            ("snapshot_days", 1, 3650),
+            ("event_hours", 24, 87600),
+            ("batch_size", 1, 5000),
+            ("interval_seconds", 10, 3600),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise ValueError(f"Invalid telemetry retention setting: {name}")
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str]) -> TelemetryRetention:
+        return cls(
+            snapshot_days=int(environ.get("CONSOLE_SNAPSHOT_RETENTION_DAYS", "7")),
+            event_hours=int(environ.get("CONSOLE_EVENT_RETENTION_HOURS", "48")),
+            batch_size=int(environ.get("CONSOLE_RETENTION_BATCH_SIZE", "1000")),
+            interval_seconds=int(environ.get("CONSOLE_RETENTION_INTERVAL_SECONDS", "60")),
+        )
 
 
 class ConsoleStore:
@@ -236,11 +268,98 @@ class ConsoleStore:
 
     def event_bounds(self, scope: dict[str, str]) -> dict[str, Any] | None:
         return self.one(
-            """SELECT coalesce(min(id) FILTER(WHERE created_at>now()-interval '24 hours'),
-                        max(id)+1) AS first,max(id) AS last FROM console_event_outbox
-                        WHERE scope->>'account_id'=%s AND scope->>'environment'=%s""",
-            (scope["account_id"], scope["environment"]),
+            """SELECT coalesce(bounds.first,bounds.last+1) AS first,bounds.last
+               FROM (
+                   SELECT (
+                       SELECT id FROM console_event_outbox
+                       WHERE scope->>'account_id'=%s AND scope->>'environment'=%s
+                         AND created_at>now()-interval '24 hours'
+                       ORDER BY id LIMIT 1
+                   ) AS first, (
+                       SELECT id FROM console_event_outbox
+                       WHERE scope->>'account_id'=%s AND scope->>'environment'=%s
+                       ORDER BY id DESC LIMIT 1
+                   ) AS last
+               ) bounds""",
+            (
+                scope["account_id"],
+                scope["environment"],
+                scope["account_id"],
+                scope["environment"],
+            ),
         )
+
+    def prune_telemetry(self, retention: TelemetryRetention) -> dict[str, Any]:
+        """Commit at most one bounded batch per telemetry table, never durable history.
+
+        One global transaction advisory lock serializes cleanup across workers, not
+        snapshot/event writes. Statement and lock timeouts bound foreground impact.
+        Keep the last event per replay scope even after expiry so old cursors still
+        have a high-water mark and trigger the existing reset behavior.
+        """
+        started = monotonic()
+        with self.connection() as connection:
+            cursor = self.cursor(connection)
+            cursor.execute("SET LOCAL statement_timeout = '2000ms'")
+            cursor.execute("SET LOCAL lock_timeout = '250ms'")
+            cursor.execute("SELECT pg_try_advisory_xact_lock(1129270867,1413827653) AS acquired")
+            if not cursor.fetchone()["acquired"]:
+                return {
+                    "status": "busy",
+                    "snapshots_deleted": 0,
+                    "events_deleted": 0,
+                    "elapsed_ms": int((monotonic() - started) * 1000),
+                }
+            cursor.execute(
+                """WITH candidates AS (
+                       SELECT s.id FROM console_snapshots s
+                       WHERE s.collected_at < now() - %s * interval '1 day'
+                         AND s.id <> (
+                             SELECT latest.id FROM console_snapshots latest
+                             WHERE latest.kind=s.kind AND latest.account_id=s.account_id
+                               AND latest.environment=s.environment
+                             ORDER BY latest.collected_at DESC,latest.id DESC LIMIT 1
+                         )
+                         AND (s.error IS NOT NULL OR s.data IS NULL
+                              OR s.observed_at IS NULL OR s.id <> (
+                             SELECT good.id FROM console_snapshots good
+                             WHERE good.kind=s.kind AND good.account_id=s.account_id
+                               AND good.environment=s.environment
+                               AND good.error IS NULL AND good.data IS NOT NULL
+                               AND good.observed_at IS NOT NULL
+                             ORDER BY good.collected_at DESC,good.id DESC LIMIT 1
+                         ))
+                       ORDER BY s.collected_at,s.id LIMIT %s
+                       FOR UPDATE OF s SKIP LOCKED
+                   )
+                   DELETE FROM console_snapshots s USING candidates c WHERE s.id=c.id""",
+                (retention.snapshot_days, retention.batch_size),
+            )
+            snapshots_deleted = int(cursor.rowcount)
+            cursor.execute(
+                """WITH candidates AS (
+                       SELECT e.id FROM console_event_outbox e
+                       WHERE e.created_at < now() - %s * interval '1 hour'
+                         AND (e.scope->>'account_id' IS NULL
+                              OR e.scope->>'environment' IS NULL OR EXISTS (
+                             SELECT 1 FROM console_event_outbox newer
+                             WHERE newer.scope->>'account_id'=e.scope->>'account_id'
+                               AND newer.scope->>'environment'=e.scope->>'environment'
+                               AND newer.id>e.id
+                         ))
+                       ORDER BY e.created_at,e.id LIMIT %s
+                       FOR UPDATE OF e SKIP LOCKED
+                   )
+                   DELETE FROM console_event_outbox e USING candidates c WHERE e.id=c.id""",
+                (retention.event_hours, retention.batch_size),
+            )
+            events_deleted = int(cursor.rowcount)
+        return {
+            "status": "completed",
+            "snapshots_deleted": snapshots_deleted,
+            "events_deleted": events_deleted,
+            "elapsed_ms": int((monotonic() - started) * 1000),
+        }
 
     def put_snapshot(
         self,

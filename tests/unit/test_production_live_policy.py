@@ -45,6 +45,7 @@ def test_rendered_compose_enforces_production_identity() -> None:
         "PATH": os.environ["PATH"],
         "POSTGRES_PASSWORD": "test-only",
         "CONSOLE_DB_PASSWORD": "console-test-only",
+        "WORKER_DB_PASSWORD": "worker-test-only",
     }
     rendered = subprocess.run(
         ["docker", "compose", "--env-file", "/dev/null", "config", "--format", "json"],
@@ -81,6 +82,7 @@ def test_compose_policy_cli_rejects_disabled_override_before_any_mutation(overri
             "PATH": os.environ["PATH"],
             "POSTGRES_PASSWORD": "test-only",
             "CONSOLE_DB_PASSWORD": "console-test-only",
+            "WORKER_DB_PASSWORD": "worker-test-only",
             **override,
         },
         text=True,
@@ -163,7 +165,8 @@ def test_runtime_verifier_rejects_unsafe_runtime_without_provider_probe(
         f"config = {config!r}\n"
         "args = sys.argv[1:]\n"
         "if args[0] == 'inspect':\n"
-        "    print('exited:0' if args[-1] in {'migrate', 'init'} else 'running:healthy')\n"
+        "    print('json-file:10m:5' if 'LogConfig' in ' '.join(args) else (\n"
+        "        'exited:0' if args[-1] in {'migrate', 'init'} else 'running:healthy'))\n"
         "elif args[0] == 'config':\n"
         "    print(config if '--format' in args else '')\n"
         "elif args[0] == 'ps':\n"
@@ -251,6 +254,7 @@ def test_web_reports_configured_live_gate_without_claiming_order_readiness() -> 
             "PATH": os.environ["PATH"],
             "POSTGRES_PASSWORD": "test-only",
             "CONSOLE_DB_PASSWORD": "console-test-only",
+            "WORKER_DB_PASSWORD": "worker-test-only",
         },
         check=True,
         text=True,
@@ -316,9 +320,11 @@ def test_runtime_verifier_checks_complete_pipeline_health_before_provider(tmp_pa
         "    }\n"
         "    matched = args[-1] == broken_service\n"
         "    status = statuses.get(broken_state, '') if matched else 'running:healthy'\n"
-        "    print(status)\n"
+        "    print('json-file:10m:5' if 'LogConfig' in ' '.join(args) else status)\n"
         "elif args[:2] == ['exec', '-T'] and 'sh' in args:\n"
         "    print('LIVE|LIVE|1')\n"
+        "elif args[:2] == ['exec', '-T']:\n"
+        "    print('runtime_database_role=' + args[-1])\n"
         "else:\n"
         "    sys.exit('unexpected DB/provider probe before pipeline health')\n"
     )
@@ -334,4 +340,64 @@ def test_runtime_verifier_checks_complete_pipeline_health_before_provider(tmp_pa
     assert f"service={service}" in result.stderr
     assert "runtime_blocked=service_" in result.stderr
     assert "unexpected DB/provider" not in result.stderr
+    assert "runtime_check=PASS" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "scenario,blocker",
+    [
+        ("unbounded-logs", "unbounded_container_logs"),
+        ("wrong-database-role", "database_privilege_boundary"),
+    ],
+)
+def test_runtime_verifier_requires_bounded_logs_and_worker_database_role(
+    tmp_path, scenario, blocker
+) -> None:
+    import json
+    import os
+    import subprocess
+    from pathlib import Path
+
+    from fatty_trader.production_policy import PRODUCTION_BITGET_SERVICES, PRODUCTION_VALUES
+
+    config = json.dumps(
+        {
+            "services": {
+                name: {"environment": PRODUCTION_VALUES} for name in PRODUCTION_BITGET_SERVICES
+            }
+        }
+    )
+    fake = tmp_path / "docker"
+    fake.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        f"config = {config!r}\n"
+        f"scenario = {scenario!r}\n"
+        "args = sys.argv[1:]\n"
+        "if args[0] == 'config':\n"
+        "    print(config if '--format' in args else '')\n"
+        "elif args[0] == 'ps':\n"
+        "    print(args[-1])\n"
+        "elif args[0] == 'inspect':\n"
+        "    if 'LogConfig' in ' '.join(args):\n"
+        "        print('json-file:50m:5' if scenario == 'unbounded-logs' else 'json-file:10m:5')\n"
+        "    else:\n"
+        "        print('exited:0' if args[-1] in {'migrate', 'init'} else 'running:healthy')\n"
+        "elif args[:2] == ['exec', '-T'] and 'sh' in args:\n"
+        "    print('LIVE|LIVE|1')\n"
+        "elif args[:2] == ['exec', '-T']:\n"
+        "    sys.exit(1 if scenario == 'wrong-database-role' else 0)\n"
+        "else:\n"
+        "    sys.exit('unexpected command')\n"
+    )
+    fake.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "scripts/verify_bitget_runtime.sh"],
+        cwd=Path(__file__).parents[2],
+        env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "COMPOSE_BIN": str(fake)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert f"runtime_blocked={blocker}" in result.stderr
+    assert f"service={'postgres' if scenario == 'unbounded-logs' else 'intake'}" in result.stderr
     assert "runtime_check=PASS" not in result.stdout

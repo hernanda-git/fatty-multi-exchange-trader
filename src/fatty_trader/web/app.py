@@ -1,8 +1,11 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from os import environ
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import Response
 
 from fatty_trader.web.health import build_health_report
 
@@ -19,6 +22,23 @@ def create_app(
         redoc_url=None if console_enabled else "/redoc",
         openapi_url=None if console_enabled else "/openapi.json",
     )
+
+    # Trust the configured deployment origin, never a client-supplied proxy
+    # header. Local HTTP remains usable without pinning localhost to HTTPS.
+    secure_console = (
+        console_enabled and urlsplit(environ.get("CONSOLE_ORIGIN", "")).scheme == "https"
+    )
+
+    @app.middleware("http")
+    async def transport_security(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if secure_console:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000"
+        return response
 
     def report() -> dict[str, object]:
         runtime = None

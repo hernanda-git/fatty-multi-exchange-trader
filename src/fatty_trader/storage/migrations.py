@@ -29,6 +29,7 @@ from fatty_trader.storage.schema import (
     LIVE_SCHEMA_SQL,
 )
 from fatty_trader.storage.verified_close_schema import VERIFIED_CLOSE_SCHEMA_SQL
+from fatty_trader.storage.worker_privileges import WORKER_PRIVILEGES_SQL
 
 
 class MigrationCursor(Protocol):
@@ -404,6 +405,25 @@ MIGRATIONS: Final = [
         """
         GRANT SELECT, INSERT, UPDATE ON web_push_subscriptions TO fatty_console_web;
         GRANT INSERT ON notifications_outbox TO fatty_console_web;
+        """,
+    ),
+    (30, WORKER_PRIVILEGES_SQL),
+    (
+        31,
+        """
+        CREATE INDEX IF NOT EXISTS console_snapshot_retention
+            ON console_snapshots(collected_at,id);
+        CREATE INDEX IF NOT EXISTS console_snapshot_retention_latest
+            ON console_snapshots(kind,account_id,environment,collected_at DESC,id DESC);
+        CREATE INDEX IF NOT EXISTS console_snapshot_retention_good
+            ON console_snapshots(kind,account_id,environment,collected_at DESC,id DESC)
+            WHERE error IS NULL AND data IS NOT NULL AND observed_at IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS console_event_retention
+            ON console_event_outbox(created_at,id);
+        CREATE INDEX IF NOT EXISTS console_events_replay_bounds
+            ON console_event_outbox((scope->>'account_id'),(scope->>'environment'),id)
+            INCLUDE(created_at);
+        DROP INDEX IF EXISTS console_events_scope;
         """,
     ),
 ]

@@ -5,6 +5,7 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+UMask=0077
 WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
 # Keep dumps outside the repository; the repo tree must never carry a live snapshot.
 Environment=BACKUP_DIR=/home/valarion/backups/fatty-trader

@@ -20,7 +20,7 @@ def _db():
         host=os.environ.get("PGHOST", "localhost"),
         port=os.environ.get("PGPORT", "5432"),
         dbname=os.environ.get("PGDATABASE", "fatty_trader"),
-        user=os.environ.get("PGUSER", "fatty_app"),
+        user=os.environ["PGUSER"],
         password=os.environ.get("PGPASSWORD", ""),
     )
 

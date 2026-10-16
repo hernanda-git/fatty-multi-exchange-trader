@@ -1,4 +1,4 @@
-import React, {type ReactNode} from 'react';
+import React, {useEffect, useState, type ReactNode} from 'react';
 import {type RecordData, isObjectRecord} from './types';
 import {Link} from './nav';
 import {Value, StatusBadge, formatDateTime, formatNumber, human} from './primitives';
@@ -29,15 +29,24 @@ export function extractSignalSymbol(text: string): string | null {
 export function PositionsTable({
   items,
   onClose,
+  actionLabel = 'Close',
 }: {
   items: RecordData[];
   onClose?: (item: RecordData) => void;
+  actionLabel?: string;
 }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!items.length) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [items.length]);
+
   if (!items.length) {
     return (
       <div className="empty-state-box">
-        <p className="empty-title">No Open Positions (Flat)</p>
-        <p className="empty-subtext">The bot and account currently hold zero open futures contracts on Bitget.</p>
+        <p className="empty-title">No position rows in this view</p>
+        <p className="empty-subtext">An empty list does not prove the account is flat. Check fresh, complete provider and ledger evidence.</p>
         <div style={{marginTop: '12px'}}>
           <Link to="/trading" className="btn btn-primary btn-sm">
             + Open New Trade
@@ -73,7 +82,14 @@ export function PositionsTable({
             const mark = String(provider.markPrice || '0');
             const liq = String(provider.liquidationPrice || '0');
             const upnl = Number(provider.unrealizedPL || row.unrealized_pnl || 0);
-            const prot = String(row.native_protection_proof || 'ACTIVE');
+            const proof = isObjectRecord(row.native_protection_proof) ? row.native_protection_proof : null;
+            const proofTime = Date.parse(String(proof?.observed_at ?? ''));
+            const proofAge = now - proofTime;
+            const freshProof = Number.isFinite(proofAge) && proofAge >= 0 && proofAge <= 15000;
+            const protectedNow = row.last_known !== true && freshProof && proof?.state === 'VENUE_PROTECTED';
+            const staleProof = row.last_known === true || Boolean(proof && !freshProof);
+            const prot = protectedNow ? 'Native protection verified' :
+              staleProof ? 'Protection observation stale' : 'Protection not verified';
 
             return (
               <tr key={String(row.id ?? i)}>
@@ -96,8 +112,8 @@ export function PositionsTable({
                 </td>
                 <td>
                   <StatusBadge
-                    status={prot === 'PROVED_ACTIVE' || prot === 'ACTIVE' ? 'fresh' : 'warn'}
-                    label={prot === 'PROVED_ACTIVE' || prot === 'ACTIVE' ? 'Protected' : prot}
+                    status={protectedNow ? 'fresh' : 'warn'}
+                    label={prot}
                   />
                 </td>
                 <td className="text-right">
@@ -107,7 +123,7 @@ export function PositionsTable({
                       className="btn btn-secondary btn-sm"
                       onClick={() => onClose(row)}
                     >
-                      Close
+                      {actionLabel}
                     </button>
                   )}
                 </td>

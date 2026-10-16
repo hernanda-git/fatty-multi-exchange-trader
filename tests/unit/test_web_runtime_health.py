@@ -92,3 +92,26 @@ async def test_failed_runtime_reader_is_unknown(monkeypatch):
     assert response.status_code == 200
     assert response.json()["readiness"]["status"] == "unknown"
     assert "do not disclose" not in response.text
+
+
+@pytest.mark.parametrize(
+    "origin,forwarded,expected",
+    [
+        ("https://trade.example.test", "http", "max-age=31536000"),
+        ("http://localhost:18081", "https", None),
+        ("", "https", None),
+    ],
+)
+async def test_transport_policy_uses_configured_origin_not_forwarded_header(
+    monkeypatch, origin, forwarded, expected
+):
+    monkeypatch.setenv("CONSOLE_ENABLED", "1")
+    monkeypatch.setenv("CONSOLE_ORIGIN", origin)
+    monkeypatch.setattr("fatty_trader.console.api.mount_console", lambda app, env: None)
+    transport = httpx.ASGITransport(app=create_app(runtime_health_reader=evidence))
+    async with httpx.AsyncClient(transport=transport, base_url="http://internal") as client:
+        for path in ("/health", "/missing-resource"):
+            response = await client.get(path, headers={"X-Forwarded-Proto": forwarded})
+            assert response.headers.get("Strict-Transport-Security") == expected
+            assert response.headers["X-Content-Type-Options"] == "nosniff"
+            assert response.headers["Referrer-Policy"] == "no-referrer"
