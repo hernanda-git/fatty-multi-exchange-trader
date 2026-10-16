@@ -323,7 +323,6 @@ async def test_empty_valid_contract_lookup_proves_absence_without_account_reads(
     assert client.calls == ["contracts"]
 
 
-
 @pytest.mark.asyncio
 async def test_magic_preflight_accepts_public_unicode_catalog_neighbors() -> None:
     class MagicClient(Client):
@@ -449,8 +448,7 @@ def test_unicode_case_mapping_cannot_impersonate_ascii_requested_target() -> Non
 def test_catalog_diagnostics_are_bounded_and_do_not_dump_untrusted_fields() -> None:
     secret = "Bearer private-provider-secret"
     payload = [
-        {"symbol": secret, "Authorization": secret, "private_prompt": secret}
-        for _ in range(300)
+        {"symbol": secret, "Authorization": secret, "private_prompt": secret} for _ in range(300)
     ]
     observation = {}
     with catalog_audit_context(observation), pytest.raises(BitgetCatalogError) as error:
@@ -463,8 +461,9 @@ def test_catalog_diagnostics_are_bounded_and_do_not_dump_untrusted_fields() -> N
     assert [row["index"] for row in evidence["invalid_rows"]] == list(range(8))
     assert all(row["symbol_type"] == "str" for row in evidence["invalid_rows"])
     expected_hash = hashlib.sha256(
-        json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-        .encode("ascii")
+        json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode(
+            "ascii"
+        )
     ).hexdigest()
     assert evidence["payload_sha256"] == expected_hash
     assert secret not in serialized

@@ -131,6 +131,7 @@ class BitgetDispatcher:
         provider_effect = "not_submitted"
 
         def transition(expected: str, target: str, reason: str | None = None) -> None:
+            assert dispatch is not None
             self._repository.transition(
                 dispatch.id,
                 expected_state=expected,
@@ -150,6 +151,7 @@ class BitgetDispatcher:
 
         def reject(current: str, reason: str, exc: Exception | None = None) -> None:
             nonlocal stage
+            assert dispatch is not None
             if exc is not None:
                 diagnostics = sanitize_audit_evidence(getattr(exc, "audit_evidence", {}))
                 audit.update(_exception_evidence(exc))
@@ -296,7 +298,8 @@ class BitgetDispatcher:
                     "late_threshold_pct": str(snapshot.late_threshold_pct),
                     "near_limit_threshold_pct": (
                         str(snapshot.near_limit_threshold_pct)
-                        if snapshot.near_limit_threshold_pct is not None else None
+                        if snapshot.near_limit_threshold_pct is not None
+                        else None
                     ),
                 }
             except Exception as exc:
@@ -394,9 +397,7 @@ class BitgetDispatcher:
             release(submission)
         except Exception as exc:
             # A release failure must not make a rejected pre-POST admission spendable.
-            self._repository.alert(
-                dispatch.id, f"margin-release-error:{type(exc).__name__}"
-            )
+            self._repository.alert(dispatch.id, f"margin-release-error:{type(exc).__name__}")
 
 
 async def _resolve_preflight(
@@ -459,7 +460,7 @@ def _reason(exc: Exception) -> str:
         message = exc.args[0]
         sizing_prefix = "Bitget live sizing rejected: "
         if message.startswith(sizing_prefix):
-            detail = message[len(sizing_prefix):]
+            detail = message[len(sizing_prefix) :]
             for prefix, reason in (
                 ("position-cap:", "position-cap-exceeded"),
                 ("sl-guard:", "liquidation-stop-guard-refused"),
@@ -473,13 +474,22 @@ def _reason(exc: Exception) -> str:
             return "live-sizing-refused"
         admission_prefix = "Bitget margin admission rejected: "
         if message.startswith(admission_prefix):
-            detail = message[len(admission_prefix):]
+            detail = message[len(admission_prefix) :]
             allowed = {
-                "unsupported-exchange", "invalid-balance-snapshot", "invalid-balance-headroom",
-                "invalid-margin-cap", "margin-cap-exceeded", "invalid-reservation-ttl",
-                "missing-position-admission-evidence", "invalid-snapshot-age-policy",
-                "stale-balance-snapshot", "future-balance-snapshot", "legacy-unowned-reservation",
-                "symbol-already-owned", "position-cap-exceeded", "insufficient-reserved-headroom",
+                "unsupported-exchange",
+                "invalid-balance-snapshot",
+                "invalid-balance-headroom",
+                "invalid-margin-cap",
+                "margin-cap-exceeded",
+                "invalid-reservation-ttl",
+                "missing-position-admission-evidence",
+                "invalid-snapshot-age-policy",
+                "stale-balance-snapshot",
+                "future-balance-snapshot",
+                "legacy-unowned-reservation",
+                "symbol-already-owned",
+                "position-cap-exceeded",
+                "insufficient-reserved-headroom",
             }
             return detail if detail in allowed else "margin-admission-refused"
     if isinstance(exc, KeyError):

@@ -436,7 +436,8 @@ class PostgresBitgetDispatchRepository:
             "provider_effect": (
                 "submission_may_have_occurred"
                 if expected_state not in {"QUEUED", "PREFLIGHT", "SIZED", "VALIDATED"}
-                or target_state == "SUBMITTING" else "not_submitted"
+                or target_state == "SUBMITTING"
+                else "not_submitted"
             ),
             **(evidence or {}),
         }
@@ -613,7 +614,8 @@ def dispatch_evidence(dispatch: BitgetDispatch) -> dict[str, Any]:
         "source_revision": dispatch.source_revision,
         "source_received_at": (
             dispatch.source_received_at.astimezone(UTC).isoformat()
-            if dispatch.source_received_at else None
+            if dispatch.source_received_at
+            else None
         ),
         "worker_id": dispatch.claimed_by,
         "attempt": dispatch.attempts,
@@ -622,19 +624,62 @@ def dispatch_evidence(dispatch: BitgetDispatch) -> dict[str, Any]:
     }
 
 
-_PUBLIC_AUDIT_KEYS = frozenset({
-    "stage", "code", "requested_symbol", "row_count", "invalid_rows", "invalid_row_indexes",
-    "index", "row_index", "field", "field_types", "type", "row_type", "payload_type",
-    "payload_sha256", "response_hash", "public_response_hash", "offending_symbols",
-    "public_symbols", "symbols", "symbol", "symbol_type", "selected_metadata",
-    "target_metadata", "target_field_types", "target_metadata_types", "selected_symbol",
-    "symbolStatus", "minTradeNum", "minTradeUSDT", "volumePlace", "pricePlace",
-    "priceEndStep", "sizeMultiplier", "maxLever", "minLever", "productType",
-    "status", "count", "truncated", "invalid_count", "duplicate_count", "match_count",
-    "hash_encoding", "invalid_row_count", "matching_row_count", "matching_row_indexes",
-    "unicode_symbol_count", "unicode_symbols", "maxOrderQty", "maxMarketOrderQty",
-    "contractValue", "contractSize",
-})
+_PUBLIC_AUDIT_KEYS = frozenset(
+    {
+        "stage",
+        "code",
+        "requested_symbol",
+        "row_count",
+        "invalid_rows",
+        "invalid_row_indexes",
+        "index",
+        "row_index",
+        "field",
+        "field_types",
+        "type",
+        "row_type",
+        "payload_type",
+        "payload_sha256",
+        "response_hash",
+        "public_response_hash",
+        "offending_symbols",
+        "public_symbols",
+        "symbols",
+        "symbol",
+        "symbol_type",
+        "selected_metadata",
+        "target_metadata",
+        "target_field_types",
+        "target_metadata_types",
+        "selected_symbol",
+        "symbolStatus",
+        "minTradeNum",
+        "minTradeUSDT",
+        "volumePlace",
+        "pricePlace",
+        "priceEndStep",
+        "sizeMultiplier",
+        "maxLever",
+        "minLever",
+        "productType",
+        "status",
+        "count",
+        "truncated",
+        "invalid_count",
+        "duplicate_count",
+        "match_count",
+        "hash_encoding",
+        "invalid_row_count",
+        "matching_row_count",
+        "matching_row_indexes",
+        "unicode_symbol_count",
+        "unicode_symbols",
+        "maxOrderQty",
+        "maxMarketOrderQty",
+        "contractValue",
+        "contractSize",
+    }
+)
 
 
 def sanitize_audit_evidence(value: object) -> dict[str, Any]:
@@ -655,7 +700,7 @@ def sanitize_audit_evidence(value: object) -> dict[str, Any]:
                 return "[redacted]"
             return item
         if isinstance(item, dict):
-            result = {}
+            result: dict[str, Any] = {}
             for key, child in item.items():
                 if remaining <= 0 or len(result) >= 24:
                     break

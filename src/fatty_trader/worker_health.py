@@ -6,6 +6,7 @@ import json
 import math
 import os
 import socket
+import sys
 import time
 import uuid
 from collections.abc import Callable, Coroutine, Mapping
@@ -36,6 +37,8 @@ class WorkerHealth:
         if self._endpoint is not None:
             # Only this worker mounts this dedicated volume read/write. Web gets
             # metadata-only access; no host PID namespace, Docker socket or secrets.
+            if sys.platform == "win32":
+                raise RuntimeError("worker health sockets require a POSIX platform")
             self._endpoint.unlink(missing_ok=True)
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             try:

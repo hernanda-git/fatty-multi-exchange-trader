@@ -71,10 +71,13 @@ def test_claim_retires_unsafe_source_with_audit(postgres_schema, invalid):
         assert evidence["source_message_id"] == 101
         assert evidence["attempt"] == 0
         assert evidence["source_revision"]
-        assert c.execute(
-            "SELECT payload->'evidence' FROM notifications_outbox "
-            "WHERE payload->>'to_state'='EXPIRED'"
-        ).fetchone()[0] == evidence
+        assert (
+            c.execute(
+                "SELECT payload->'evidence' FROM notifications_outbox "
+                "WHERE payload->>'to_state'='EXPIRED'"
+            ).fetchone()[0]
+            == evidence
+        )
 
 
 def reserve(factory, dispatch_id, client_oid="offline-entry"):
@@ -508,7 +511,8 @@ async def test_source_ageing_during_async_leverage_setup_blocks_actual_post(post
 
 
 def test_transition_audit_failure_rolls_back_state_outbox_and_preserves_old_evidence(
-    postgres_schema, capsys,
+    postgres_schema,
+    capsys,
 ):
     from uuid import uuid4
 
@@ -532,7 +536,9 @@ def test_transition_audit_failure_rolls_back_state_outbox_and_preserves_old_evid
     capsys.readouterr()
     with pytest.raises(psycopg.errors.CheckViolation):
         PostgresBitgetDispatchRepository(factory).transition(
-            dispatch_id, expected_state="QUEUED", target_state="PREFLIGHT",
+            dispatch_id,
+            expected_state="QUEUED",
+            target_state="PREFLIGHT",
             evidence={"stage": "canonical_validation", "worker_id": "offline", "attempt": 1},
         )
     assert capsys.readouterr().out == ""

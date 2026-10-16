@@ -543,7 +543,12 @@ class ReadService:
                     else ""
                 )
                 + " ORDER BY collected_at DESC,id DESC LIMIT 1",
-                (kind, self.scope["account_id"], self.scope["environment"], self.scope["environment"]),
+                (
+                    kind,
+                    self.scope["account_id"],
+                    self.scope["environment"],
+                    self.scope["environment"],
+                ),
                 f"persisted:{kind}",
             )
             return rows[0] if rows else None
@@ -2248,7 +2253,9 @@ class SnapshotCollector:
                             if last_captured:
                                 age = (observed - last_captured).total_seconds()
                                 same_equity = str(last.get("equity")) == str(account["equity"])
-                                same_avail = str(last.get("available_balance")) == str(account["available"])
+                                same_avail = str(last.get("available_balance")) == str(
+                                    account["available"]
+                                )
                                 if age < 300 and same_equity and same_avail:
                                     should_record = False
                         if should_record:
@@ -2260,7 +2267,7 @@ class SnapshotCollector:
                                 (
                                     str(uuid4()),
                                     account["equity"],
-                                     account["available"],
+                                    account["available"],
                                     account["equity"],
                                     account.get("margin_coin", "USDT"),
                                     observed,

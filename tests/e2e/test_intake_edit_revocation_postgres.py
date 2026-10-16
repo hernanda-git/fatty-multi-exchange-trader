@@ -272,9 +272,12 @@ def test_ingestion_and_edit_veto_times_survive_duplicate_observation(postgres_sc
     assert original[2] >= ingested_at
     seed(factory)
     with factory() as connection:
-        assert connection.execute(
-            "SELECT id,ingested_at,edit_veto_recorded_at FROM telegram_messages ORDER BY id"
-        ).fetchall() == rows
+        assert (
+            connection.execute(
+                "SELECT id,ingested_at,edit_veto_recorded_at FROM telegram_messages ORDER BY id"
+            ).fetchall()
+            == rows
+        )
 
 
 def test_reobserving_legacy_edit_does_not_invent_historical_timestamps(postgres_schema):

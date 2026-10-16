@@ -128,12 +128,16 @@ def test_transition_evidence_outbox_and_json_log_share_committed_event(capsys) -
     }
 
     PostgresBitgetDispatchRepository(lambda: connection).transition(
-        dispatch_id, expected_state="PREFLIGHT", target_state="REJECTED",
-        reason="catalog_rows_invalid", evidence=evidence,
+        dispatch_id,
+        expected_state="PREFLIGHT",
+        target_state="REJECTED",
+        reason="catalog_rows_invalid",
+        evidence=evidence,
     )
 
     transition_sql, transition_params = next(
-        (sql, params) for sql, params in cursor.statements
+        (sql, params)
+        for sql, params in cursor.statements
         if "INSERT INTO dispatch_transitions" in sql
     )
     persisted = json.loads(transition_params[-1])
@@ -162,9 +166,7 @@ def test_failed_audit_transaction_rolls_back_and_never_logs_success(failure, cap
     class BrokenCursor(Cursor):
         def execute(self, statement, params=()):
             super().execute(statement, params)
-            if (
-                failure == "audit-insert" and "INSERT INTO dispatch_transitions" in statement
-            ) or (
+            if (failure == "audit-insert" and "INSERT INTO dispatch_transitions" in statement) or (
                 failure == "outbox-insert" and "INSERT INTO notifications_outbox" in statement
             ):
                 raise RuntimeError("audit write failed")
@@ -178,7 +180,9 @@ def test_failed_audit_transaction_rolls_back_and_never_logs_success(failure, cap
     connection = BrokenConnection(BrokenCursor([{"id": dispatch_id}]))
     with pytest.raises(RuntimeError):
         PostgresBitgetDispatchRepository(lambda: connection).transition(
-            dispatch_id, expected_state="VALIDATED", target_state="SUBMITTING",
+            dispatch_id,
+            expected_state="VALIDATED",
+            target_state="SUBMITTING",
             evidence={"stage": "provider_submission"},
         )
     assert connection.commits == 0
@@ -193,17 +197,19 @@ def test_audit_diagnostics_are_bounded_and_do_not_stringify_private_objects() ->
         def __str__(self):
             raise AssertionError("must not stringify a private provider object")
 
-    evidence = sanitize_audit_evidence({
-        "stage": "contract_catalog",
-        "Authorization": "Bearer secret",
-        "headers": {"api-key": "secret"},
-        "payload": {"account": "secret"},
-        "prompt": "private",
-        "requested_symbol": "MAGICUSDT",
-        "offending_symbols": ["龙虾USDT"] * 1000,
-        "invalid_rows": [{"index": i, "row_type": Private()} for i in range(1000)],
-        "selected_metadata": {"symbol": "Bearer secret", "maxLever": "x" * 10000},
-    })
+    evidence = sanitize_audit_evidence(
+        {
+            "stage": "contract_catalog",
+            "Authorization": "Bearer secret",
+            "headers": {"api-key": "secret"},
+            "payload": {"account": "secret"},
+            "prompt": "private",
+            "requested_symbol": "MAGICUSDT",
+            "offending_symbols": ["龙虾USDT"] * 1000,
+            "invalid_rows": [{"index": i, "row_type": Private()} for i in range(1000)],
+            "selected_metadata": {"symbol": "Bearer secret", "maxLever": "x" * 10000},
+        }
+    )
     assert evidence["requested_symbol"] == "MAGICUSDT"
     assert len(evidence["offending_symbols"]) == 12
     assert len(evidence["invalid_rows"]) == 12
@@ -220,7 +226,9 @@ def test_transition_reason_is_redacted_before_persistence_notifications_and_logs
     cursor = Cursor([{"id": dispatch_id}])
     connection = Connection(cursor)
     PostgresBitgetDispatchRepository(lambda: connection).transition(
-        dispatch_id, expected_state="SUBMITTING", target_state="UNKNOWN",
+        dispatch_id,
+        expected_state="SUBMITTING",
+        target_state="UNKNOWN",
         reason="Authorization: Bearer secret",
     )
     assert cursor.statements[0][1][1] == "redacted-transition-reason"

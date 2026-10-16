@@ -515,9 +515,9 @@ async def test_automated_budget_is_resolved_once_for_legacy_and_durable_admissio
     }
     if mode is not None:
         environ["BITGET_MARGIN_MODE_TYPE"] = mode
-    result = await _bitget_dispatch_preflight(
-        venue, environ, reservation_repository=reservations
-    )(dispatch)
+    result = await _bitget_dispatch_preflight(venue, environ, reservation_repository=reservations)(
+        dispatch
+    )
 
     if durable:
         assert result.submission.planned_margin_usdt == Decimal(expected)

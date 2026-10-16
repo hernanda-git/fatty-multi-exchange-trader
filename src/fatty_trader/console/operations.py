@@ -332,8 +332,12 @@ def create_config_revision(cursor: Any, job: dict[str, Any]) -> dict[str, Any]:
         "(id,kind,version,base_version,payload,state,actor_id,account_id,environment) "
         "VALUES (%s,'runtime',%s,%s,%s::jsonb,'draft',%s,%s,'LIVE')",
         (
-            revision["id"], current + 1, current, json.dumps(payload),
-            job["actor_id"], job["scope"]["account_id"],
+            revision["id"],
+            current + 1,
+            current,
+            json.dumps(payload),
+            job["actor_id"],
+            job["scope"]["account_id"],
         ),
     )
     return revision
@@ -845,7 +849,7 @@ class OperationsHandlers:
             elif action.startswith("notification."):
                 notification_id = str(uuid4())
                 if action == "notification.test":
-                    payload = {
+                    payload: dict[str, Any] = {
                         "event": "console_test",
                         "message": "Owner-approved console notification delivery test",
                         "job_id": str(job["id"]),

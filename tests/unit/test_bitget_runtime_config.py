@@ -147,5 +147,3 @@ def test_dispatcher_check_rejects_invalid_cutover_values(
     environment[name] = value
     with pytest.raises(ValueError, match=message):
         service_config("dispatcher-bitget", environment)
-
-

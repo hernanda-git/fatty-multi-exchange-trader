@@ -524,7 +524,9 @@ def _bitget_dispatch_preflight(
         or fixed_margin_usdt <= 0
         or fixed_margin_usdt > max_margin_per_trade
     ):
-        raise ValueError("BITGET_FIXED_MARGIN_USDT must be positive and within the pinned 1 USDT cap")
+        raise ValueError(
+            "BITGET_FIXED_MARGIN_USDT must be positive and within the pinned 1 USDT cap"
+        )
 
     async def preflight(dispatch: Any) -> Any:
         symbol = dispatch.pair_token if hasattr(dispatch, "pair_token") else dispatch

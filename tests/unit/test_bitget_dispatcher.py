@@ -488,8 +488,12 @@ async def test_preflight_failure_is_classified_correlated_and_never_logs_raw_exc
     from fatty_trader.exchanges.bitget.metadata import BitgetCatalogError
 
     dispatch = replace(
-        _dispatch(), source_channel_id=-100123, source_message_id=16310,
-        source_id=uuid4(), canonical_signal_id=uuid4(), source_revision="a" * 64,
+        _dispatch(),
+        source_channel_id=-100123,
+        source_message_id=16310,
+        source_id=uuid4(),
+        canonical_signal_id=uuid4(),
+        source_revision="a" * 64,
     )
     repository = Repository(dispatch)
     execution = Execution()
@@ -498,8 +502,10 @@ async def test_preflight_failure_is_classified_correlated_and_never_logs_raw_exc
         raise BitgetCatalogError(
             "Authorization: Bearer secret private account payload",
             {
-                "stage": "contract_catalog", "row_count": 834,
-                "requested_symbol": "BTCUSDT", "payload_sha256": "f" * 64,
+                "stage": "contract_catalog",
+                "row_count": 834,
+                "requested_symbol": "BTCUSDT",
+                "payload_sha256": "f" * 64,
                 "invalid_rows": [{"index": 321, "row_type": "str"}],
                 "headers": {"Authorization": "Bearer secret"},
             },
@@ -507,8 +513,10 @@ async def test_preflight_failure_is_classified_correlated_and_never_logs_raw_exc
         )
 
     dispatcher = BitgetDispatcher(
-        repository, gate=DispatchGate(execution_enabled=True),
-        execution=execution, preflight=refused,
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
+        preflight=refused,
     )
     assert await dispatcher.run_once("worker", 30) == "rejected"
     assert execution.post_count == 0
@@ -544,7 +552,9 @@ async def test_catalog_success_observation_survives_later_preflight_refusal() ->
         raise ValueError("private provider account payload must not be copied")
 
     dispatcher = BitgetDispatcher(
-        repository, gate=DispatchGate(execution_enabled=True), preflight=refused,
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        preflight=refused,
     )
     assert await dispatcher.run_once("worker", 30) == "rejected"
     evidence = repository.evidence[-1]
@@ -564,7 +574,8 @@ async def test_ambiguous_submission_never_claims_no_provider_effect(exception) -
 
     repository = Repository(_dispatch())
     dispatcher = BitgetDispatcher(
-        repository, gate=DispatchGate(execution_enabled=True, canary_max_orders=1),
+        repository,
+        gate=DispatchGate(execution_enabled=True, canary_max_orders=1),
         execution=AmbiguousExecution(),
         preflight=lambda _: (_spec(), _risk()),
     )
@@ -589,7 +600,9 @@ async def test_submitting_audit_failure_prevents_provider_invocation_and_success
     repository = FailingRepository(_dispatch())
     execution = Execution()
     dispatcher = BitgetDispatcher(
-        repository, gate=DispatchGate(execution_enabled=True), execution=execution,
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
         preflight=lambda _: (_spec(), _risk()),
     )
     with pytest.raises(RuntimeError, match="audit unavailable"):
@@ -606,10 +619,13 @@ async def test_successful_route_and_sizing_snapshot_survive_through_provider_res
 
     repository = Repository(replace(_dispatch(), pair_token="BTC"))
     dispatcher = BitgetDispatcher(
-        repository, gate=DispatchGate(execution_enabled=True), execution=RoutedExecution(),
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=RoutedExecution(),
         preflight=lambda _: (_spec(), _risk()),
         entry_routing=lambda _: EntryRoutingSnapshot(
-            market_price=Decimal("64000"), limit_context=None,
+            market_price=Decimal("64000"),
+            limit_context=None,
         ),
     )
     assert await dispatcher.run_once("worker", 30) == "filled"
@@ -677,7 +693,9 @@ async def test_failed_terminal_audit_does_not_report_filled_after_provider_invoc
     repository = FailingRepository(_dispatch())
     execution = Execution()
     dispatcher = BitgetDispatcher(
-        repository, gate=DispatchGate(execution_enabled=True), execution=execution,
+        repository,
+        gate=DispatchGate(execution_enabled=True),
+        execution=execution,
         preflight=lambda _: (_spec(), _risk()),
     )
     with pytest.raises(RuntimeError, match="terminal audit unavailable"):

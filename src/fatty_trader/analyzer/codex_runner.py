@@ -22,6 +22,8 @@ _SECRET_ASSIGNMENT = re.compile(
 )
 _BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
 _OPENAI_STYLE_KEY = re.compile(r"\bsk-[A-Za-z0-9_-]+")
+# Windows has no SIGKILL; terminate is the strongest signal it supports.
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
 class _Process(Protocol):
@@ -169,7 +171,7 @@ class CodexRunner:
         for reader in readers:
             reader.join(timeout=max(0.0, deadline - time.monotonic()))
         if any(reader.is_alive() for reader in readers):
-            _signal_process(process, signal.SIGKILL)
+            _signal_process(process, _SIGKILL)
             if not timed_out:
                 return self._failure("codex output pipes did not close")
 
@@ -210,7 +212,7 @@ class CodexRunner:
         try:
             return process.wait(timeout=self._config.terminate_grace_seconds)
         except subprocess.TimeoutExpired:
-            _signal_process(process, signal.SIGKILL)
+            _signal_process(process, _SIGKILL)
             try:
                 return process.wait(timeout=self._config.terminate_grace_seconds)
             except subprocess.TimeoutExpired:

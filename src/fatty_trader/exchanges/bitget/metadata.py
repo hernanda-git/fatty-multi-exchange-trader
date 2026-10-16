@@ -17,9 +17,17 @@ from fatty_trader.risk.sizing import SymbolMetadata
 _CATALOG_AUDIT: ContextVar[dict[str, Any] | None] = ContextVar("bitget_catalog_audit", default=None)
 _AUDIT_SAMPLE_LIMIT = 8
 _METADATA_FIELDS = (
-    "symbol", "pricePlace", "priceEndStep", "sizeMultiplier", "minTradeNum",
-    "maxOrderQty", "maxMarketOrderQty", "minTradeUSDT", "maxLever",
-    "contractValue", "contractSize",
+    "symbol",
+    "pricePlace",
+    "priceEndStep",
+    "sizeMultiplier",
+    "minTradeNum",
+    "maxOrderQty",
+    "maxMarketOrderQty",
+    "minTradeUSDT",
+    "maxLever",
+    "contractValue",
+    "contractSize",
 )
 
 
@@ -59,8 +67,10 @@ class BitgetContractNotFound(KeyError):
 
 
 def _safe_type(value: Any) -> str:
-    return type(value).__name__ if type(value) in (str, dict, list, int, float, bool) else (
-        "null" if value is None else "other"
+    return (
+        type(value).__name__
+        if type(value) in (str, dict, list, int, float, bool)
+        else ("null" if value is None else "other")
     )
 
 
@@ -73,8 +83,9 @@ def _public_symbol(value: Any) -> bool:
 def _catalog_evidence(contracts: Any, symbol: Any) -> dict[str, Any]:
     evidence: dict[str, Any] = {
         "stage": "contract_catalog",
-        "requested_symbol": symbol.upper() if isinstance(symbol, str)
-        and re.fullmatch(r"[A-Za-z0-9]{2,20}", symbol) else None,
+        "requested_symbol": symbol.upper()
+        if isinstance(symbol, str) and re.fullmatch(r"[A-Za-z0-9]{2,20}", symbol)
+        else None,
         "payload_type": _safe_type(contracts),
         "row_count": len(contracts) if isinstance(contracts, list) else None,
         "hash_encoding": "canonical-json-data-sha256",
@@ -129,12 +140,10 @@ def _decimal(value: Any, field: str, *, positive: bool = True) -> Decimal:
 def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
     """Normalize one Bitget V2 contract record; never selects another symbol."""
     raw_symbol = contract.get("symbol")
-    if not _public_symbol(raw_symbol):
+    if not isinstance(raw_symbol, str) or not _public_symbol(raw_symbol):
         raise ValueError("contract symbol is invalid")
     symbol = raw_symbol.upper()
-    price_precision = _integer(
-        contract.get("pricePlace"), "price precision", minimum=0, maximum=12
-    )
+    price_precision = _integer(contract.get("pricePlace"), "price precision", minimum=0, maximum=12)
     price_tick = _decimal(contract.get("priceEndStep"), "price end step") * Decimal(1).scaleb(
         -price_precision
     )
@@ -156,8 +165,10 @@ def metadata_from_contract(contract: dict[str, Any]) -> SymbolMetadata:
     )
     min_notional = _decimal(contract.get("minTradeUSDT", "0"), "minimum notional", positive=False)
     max_leverage = _integer(
-        contract.get("maxLever"), "maximum leverage",
-        minimum=1, maximum=MAX_VENUE_LEVERAGE_CEILING,
+        contract.get("maxLever"),
+        "maximum leverage",
+        minimum=1,
+        maximum=MAX_VENUE_LEVERAGE_CEILING,
     )
     contract_value = _decimal(
         contract.get("contractValue", contract.get("contractSize", "1")), "contract value"
@@ -249,13 +260,20 @@ def find_contract(
     unicode_count = 0
     for index, row in enumerate(contracts):
         row_symbol = row.get("symbol") if isinstance(row, dict) else None
-        if not isinstance(row, dict) or not _public_symbol(row_symbol):
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row_symbol, str)
+            or not _public_symbol(row_symbol)
+        ):
             invalid_count += 1
             if len(invalid_rows) < _AUDIT_SAMPLE_LIMIT:
-                invalid_rows.append({
-                    "index": index, "row_type": _safe_type(row),
-                    "symbol_type": _safe_type(row_symbol),
-                })
+                invalid_rows.append(
+                    {
+                        "index": index,
+                        "row_type": _safe_type(row),
+                        "symbol_type": _safe_type(row_symbol),
+                    }
+                )
             continue
         if not row_symbol.isascii():
             unicode_count += 1
@@ -264,14 +282,16 @@ def find_contract(
         # Never let Unicode case folding impersonate an ASCII requested target.
         elif row_symbol.upper() == requested:
             matching.append((index, row))
-    evidence.update({
-        "invalid_row_count": invalid_count,
-        "invalid_rows": invalid_rows,
-        "unicode_symbol_count": unicode_count,
-        "unicode_symbols": unicode_symbols,
-        "matching_row_count": len(matching),
-        "matching_row_indexes": [index for index, _ in matching[:_AUDIT_SAMPLE_LIMIT]],
-    })
+    evidence.update(
+        {
+            "invalid_row_count": invalid_count,
+            "invalid_rows": invalid_rows,
+            "unicode_symbol_count": unicode_count,
+            "unicode_symbols": unicode_symbols,
+            "matching_row_count": len(matching),
+            "matching_row_indexes": [index for index, _ in matching[:_AUDIT_SAMPLE_LIMIT]],
+        }
+    )
     if invalid_count:
         raise BitgetCatalogError(
             "Bitget contracts response contains invalid rows", evidence, "catalog_rows_invalid"
@@ -283,9 +303,7 @@ def find_contract(
             "Bitget requested contract is ambiguous", evidence, "target_ambiguous"
         )
     contract = matching[0][1]
-    evidence["field_types"] = {
-        field: _safe_type(contract.get(field)) for field in _METADATA_FIELDS
-    }
+    evidence["field_types"] = {field: _safe_type(contract.get(field)) for field in _METADATA_FIELDS}
     evidence["selected_metadata"] = _selected_metadata(contract)
     record_catalog_observation(evidence, "target_selected")
     return contract

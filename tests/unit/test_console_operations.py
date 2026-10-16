@@ -579,8 +579,11 @@ def config_save_scenario(tmp_path, monkeypatch, *, race=False, mismatch=False):
     events = []
     settings = {"BITGET_DEFAULT_LEVERAGE": 15}
     job = {
-        "id": str(uuid4()), "action": "config.save", "actor_id": "owner",
-        "scope": host.scope, "arguments": {"base_version": 0, "settings": settings},
+        "id": str(uuid4()),
+        "action": "config.save",
+        "actor_id": "owner",
+        "scope": host.scope,
+        "arguments": {"base_version": 0, "settings": settings},
     }
     monkeypatch.setattr(host, "_running", lambda: running.copy())
     monkeypatch.setattr(host, "_effect_guard", lambda job: None)
@@ -605,10 +608,14 @@ def config_save_scenario(tmp_path, monkeypatch, *, race=False, mismatch=False):
 
     def inspect(argv, **kwargs):
         value = "14" if mismatch else "15"
-        return json.dumps([
-            "BITGET_DEFAULT_LEVERAGE=" + value,
-            "TRADER_MODE=LIVE", "BITGET_MODE=LIVE", "BITGET_EXECUTION_ENABLED=1",
-        ])
+        return json.dumps(
+            [
+                "BITGET_DEFAULT_LEVERAGE=" + value,
+                "TRADER_MODE=LIVE",
+                "BITGET_MODE=LIVE",
+                "BITGET_EXECUTION_ENABLED=1",
+            ]
+        )
 
     def healthy(services):
         events.append(("healthy", *services))

@@ -327,7 +327,10 @@ class HostOperationsRunner:
         container = service.get("container_id")
         if not isinstance(container, str) or not re.fullmatch(r"[a-f0-9]{12,64}", container):
             return
-        evidence = {"container_id": container, "runtime_observed_at": now.isoformat()}
+        evidence: dict[str, Any] = {
+            "container_id": container,
+            "runtime_observed_at": now.isoformat(),
+        }
         try:
             image = self._run(
                 ["/usr/bin/docker", "inspect", "--format", "{{.Image}}", container], timeout=20

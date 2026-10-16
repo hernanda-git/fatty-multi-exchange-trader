@@ -162,7 +162,8 @@ class BitgetDispatchExecution:
                     "observed_at": datetime.now(UTC).isoformat(),
                     "provider_effect": (
                         "submission_may_have_occurred"
-                        if target == "UNKNOWN" else "provider_response_observed"
+                        if target == "UNKNOWN"
+                        else "provider_response_observed"
                     ),
                     "provider_effect_scope": "entry_submission",
                     "client_order_id": client_oid,

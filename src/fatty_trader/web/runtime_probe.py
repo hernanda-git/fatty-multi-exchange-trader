@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import socket
+import sys
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -31,6 +32,8 @@ def _owner_is_alive(evidence: dict[str, Any], endpoint: str | None) -> bool:
         return bool(evidence["identity"] == _process_identity(int(evidence["pid"])))
     # No fallback to a namespace-local PID on socket failure: PID 1 in web
     # must never validate a dead sibling's PID 1. Token binds restarts too.
+    if sys.platform == "win32":
+        return False
     challenge = uuid.uuid4().hex
     request = {key: evidence[key] for key in ("service", "pid", "identity", "owner_token")}
     request["challenge"] = challenge
