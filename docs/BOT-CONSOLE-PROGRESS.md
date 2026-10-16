@@ -491,3 +491,71 @@ it can never suppress the Telegram lane.
 Production runs this branch until `feat/web-push` is merged into `main`; the
 host checkout stays on `feat/web-push` for that reason.
 
+## Runtime hardening deployment (2026-10-16)
+
+Owner directive: close the remaining hardening findings autonomously, then
+commit, push and deploy. Release `668d82b` on `main` does that, so `main` now
+carries the web-push lane plus the hardening release and the host checkout is
+back on `main`.
+
+Findings closed: unbounded container logs, a superuser runtime database role, a
+backup older than the deployed schema, unbounded console telemetry growth,
+missing transport hardening, and a protection display that could show `ACTIVE`
+without evidence.
+
+### Verified before deploy (Linux/PostgreSQL, CI-equivalent)
+
+- Full suite on the final tree: **2514 passed, 0 failed, 1 skipped**, against a
+  disposable `fatty_test`/`testonly` PostgreSQL over a private unix socket
+  (matching `.github/workflows/ci.yml`). The skip is
+  `tests/e2e/test_postgres_backup_restore.py`, which needs local
+  `initdb`/`pg_ctl`; the real restore drills below cover that behaviour.
+- Focused hardening set on a second disposable instance: 284 passed, zero skips.
+- `ruff` clean on every changed file; frontend `tsc -b && vite build` green.
+- Restore drill of a hardened fresh dump (schema 29): `restore_verified` and
+  `restore_verification_cleanup_verified`; 19 fills, 63 dispatches, 21 320
+  transitions, 356 817 events, 520 notifications readable.
+- Migrations 30+31 on a restored production copy: applied in 4.3 s; schema 31;
+  five retention indexes; `fatty_worker` non-superuser without
+  createdb/createrole/inherit, no CREATE/TEMP on the database, `schema_migrations`
+  read-only; the retention delete plan uses `console_snapshot_retention`.
+- Retention on real data: the exact delete predicate predicted 44 715 snapshots
+  and 44 877 events for an aged slice, and the deployed batches deleted exactly
+  those (worst batch 159 ms, no statement-timeout cancels) while keeping the
+  newest and newest-good sample per kind/account/environment, the last event per
+  replay scope, and every trading-history table. A worst-case 356 k-row aged
+  backlog converged (309 517 + 311 939 rows; six bounded cancels, fail-safe).
+- New verifier gates covered by unit tests: unbounded logs and a wrong runtime
+  database identity both fail closed before any provider probe.
+
+### Deployed and verified
+
+| Check | Observed |
+|---|---|
+| Revision and schema | `668d82b`; schema **31** (migrations 30 and 31 applied 2026-10-16 02:37:54 UTC) |
+| Containers | all ten healthy after recreation, no restarts |
+| Container logs | `json-file:10m:5` on all ten services, postgres included |
+| Runtime database identities | eight services as `fatty_worker`, web as `fatty_console_web`; none superuser/createdb/createrole/inherit |
+| Runtime verifier | `runtime_check=PASS` (policy, source lineage, log bounds, role boundary, ledger readiness, read-only provider probes) |
+| Ledger readiness | `ready`, no issues |
+| Console telemetry retention | cycling every 60 s as sanitized UTC lines (`status=completed`, 0 deletions: nothing is older than the 7-day/48-hour windows yet) |
+| Privilege boundaries | `fatty_worker` 269 DML grants with `TRUNCATE=false` and no `schema_migrations` DELETE; web keeps its push grants while database CREATE/TEMPORARY are revoked |
+| Latches | both remain released/inactive; this deployment cleared no latch |
+| Account | fresh authenticated flat proof; no positions, no pending orders |
+| MAGIC dispatch | unchanged `REJECTED`, one attempt, zero intents/reservations — no replay |
+| Transport | public origin serves HSTS `max-age=31536000`, `nosniff`, `no-referrer`; `/health/telemetry` ready |
+| Post-deploy backup | `fatty_trader_20261016T024031Z_viHI0u.dump`, mode 0600 |
+| Post-deploy drill | `restore_verified` and `restore_verification_cleanup_verified`, schema 31; 369 276 snapshots / 369 354 events readable |
+| Host artifacts | backup unit reinstalled with `UMask=0077`; ops-worker venv package byte-identical to the deployed source |
+
+### Explicitly unproven
+
+- No new signal has arrived since the ARC signal of 2026-10-15 12:34 UTC (newest
+  intake message 2026-10-15 16:12 UTC; catch-up armed every 60 s), so the next
+  naturally arriving signal's end-to-end execution and audit trail remain
+  unverified.
+- Host CPU steal (hypervisor contention) is an external capacity risk that
+  application changes cannot remove.
+- The broad Windows suite still fails eight `test_auth_health_*` cases that need
+  a POSIX shell; they are platform-limited and were not claimed fixed.
+
