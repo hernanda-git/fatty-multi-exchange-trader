@@ -54,7 +54,7 @@ async def test_service_graph_recovers_real_postgres_without_entry_replay(
             BITGET_CANARY_SYMBOL="BTCUSDT",
             BITGET_APPROVAL_REFERENCE="offline",
             BITGET_MAX_CLOCK_SKEW_MS="5000",
-            BITGET_MAX_MARGIN_PER_TRADE_USDT="1",
+            BITGET_MAX_MARGIN_PER_TRADE_USDT="1.1",
         ),
         client_factory=lambda *args, **kwargs: Provider(),
         intent_store_factory=lambda: store,

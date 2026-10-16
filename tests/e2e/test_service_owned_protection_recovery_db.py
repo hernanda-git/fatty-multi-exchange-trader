@@ -119,7 +119,7 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
             TRADER_MODE="DEMO",
             BITGET_MODE="DEMO",
             BITGET_EXECUTION_ENABLED="1",
-            BITGET_MAX_MARGIN_PER_TRADE_USDT="1",
+            BITGET_MAX_MARGIN_PER_TRADE_USDT="1.1",
             BITGET_CANARY_MAX_ORDERS="20",
             BITGET_APPROVAL_REFERENCE="test-only",
             BITGET_MAX_CLOCK_SKEW_MS="5000",

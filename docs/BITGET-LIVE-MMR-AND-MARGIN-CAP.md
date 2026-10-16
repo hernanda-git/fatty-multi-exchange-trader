@@ -67,7 +67,7 @@ The fix is the leverage floor described below, not a looser guard.
   cap) and clears the liquidation guard. An ordinary signal therefore still trades at
   `20x`; a signal whose stop needs more room than `20x` leaves backs off only as far
   as its own stop geometry requires. Lower leverage is safer: the position simply
-  sizes smaller inside the same 1 USDT margin cap. Set
+  sizes smaller inside the same 1.1 USDT margin cap. Set
   `BITGET_MIN_LEVERAGE=20` to restore the old "20x or skip" behaviour.
 - Why the floor exists: the guard's headroom is `1/leverage − MMR − taker fee`, and
   per-symbol maintenance-margin rates differ a lot. At 20x, a symbol reporting
@@ -79,9 +79,9 @@ The fix is the leverage floor described below, not a looser guard.
   a lower leverage — which is why the search backs off instead of sizing up.
 - `BITGET_LIQUIDATION_BUFFER` (default `0.10`) is now actually read by the LIVE
   preflight; previously it was silently ignored and the model default always applied.
-- Per-trade isolated margin is capped at exactly `1 USDT`.
+- Per-trade isolated margin is capped at exactly `1.1 USDT`.
   `BITGET_MAX_MARGIN_PER_TRADE_USDT` is mandatory and fail-closed: missing, blank,
-  non-numeric, `NaN`, `Infinity`, zero, negative, or anything other than exactly `1`
+  non-numeric, `NaN`, `Infinity`, zero, negative, or anything other than exactly `1.1`
   is rejected at startup. The cap applies to the allocation request, to the
   all-in/fallback branch, and again to the exchange-step-rounded quantity, and the
   legacy no-reservation seam is capped too.
@@ -90,7 +90,13 @@ The fix is the leverage floor described below, not a looser guard.
   reservation, so a caller cannot silently reserve uncapped.
   Caveat: this bounds the *planned* margin. Entries are market orders, so fill
   slippage can leave exchange-side realized margin (`filled_notional / 20`)
-  marginally above 1 USDT. The risk clauses below are stated that precisely.
+  marginally above 1.1 USDT. The risk clauses below are stated that precisely.
+  History: the cap was `1 USDT` until 2026-10-16, when NEARUSDT was refused with
+  `split-sizing-refused` because the 25/75 split route needs a total quantity on a
+  four-step grid (4 NEAR = 20.88 USDT notional = 1.044 USDT margin at 20x) while
+  `1 USDT` afforded only 3.83 NEAR. `1.1 USDT` covers that grid for symbols whose
+  `size_step × price ≤ 5.5`; the split route is still refused for pricier symbols
+  rather than chased with an approximate or full-market entry.
 
 ## Kill switch
 

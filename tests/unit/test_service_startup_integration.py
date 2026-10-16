@@ -329,7 +329,7 @@ def test_runtime_injects_durable_dispatch_repository(monkeypatch):
             BITGET_CANARY_SYMBOL="BTCUSDT",
             BITGET_APPROVAL_REFERENCE="offline",
             BITGET_MAX_CLOCK_SKEW_MS="5000",
-            BITGET_MAX_MARGIN_PER_TRADE_USDT="1",
+            BITGET_MAX_MARGIN_PER_TRADE_USDT="1.1",
         ),
         client_factory=lambda *a, **k: object(),
         intent_store_factory=lambda: object(),

@@ -9,8 +9,8 @@ import type {Envelope, Capability, RecordData, Principal} from '../types';
 import {isObjectRecord} from '../types';
 
 const CONFIG_INPUTS = [
-  {key: 'BITGET_ALLOCATION_PCT', label: 'Equity allocation (%)', help: 'Percentage of total USDT equity used for a new signal trade. The 1 USDT safety cap still applies.', min: 1, max: 100, step: 'any'},
-  {key: 'BITGET_FIXED_MARGIN_USDT', label: 'Margin per trade (USDT)', help: 'Fixed margin for a new signal trade, limited to 1 USDT.', min: 0, max: 1, step: 'any'},
+  {key: 'BITGET_ALLOCATION_PCT', label: 'Equity allocation (%)', help: 'Percentage of total USDT equity used for a new signal trade. The 1.1 USDT safety cap still applies.', min: 1, max: 100, step: 'any'},
+  {key: 'BITGET_FIXED_MARGIN_USDT', label: 'Margin per trade (USDT)', help: 'Fixed margin for a new signal trade, limited to the pinned 1.1 USDT cap.', min: 0, max: 1.1, step: 'any'},
   {key: 'BITGET_DEFAULT_LEVERAGE', label: 'Default leverage (×)', help: 'Applies to new signal trades; stop-loss liquidation headroom can reduce leverage.', min: 5, max: 20, step: '1'},
   {key: 'BITGET_DISPATCH_POLL_SECONDS', label: 'Signal dispatch interval (seconds)', help: 'How often the dispatcher looks for a new trade signal.', min: 1, max: 300, step: '1'},
   {key: 'BITGET_MONITOR_POLL_SECONDS', label: 'Position monitoring interval (seconds)', help: 'How often the monitor checks positions and protection.', min: 1, max: 30, step: '1'},

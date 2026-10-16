@@ -98,7 +98,7 @@ async def test_production_preflight_reserves_the_exact_admission_before_dispatch
     )
     reservations = Reservations()
     preflight = _bitget_dispatch_preflight(
-        venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}, reservation_repository=reservations
+        venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"}, reservation_repository=reservations
     )
 
     admission = await preflight(_dispatch())
@@ -118,7 +118,7 @@ async def test_production_preflight_reserves_the_exact_admission_before_dispatch
 
 
 @pytest.mark.asyncio
-async def test_env_margin_cap_binds_allocation_down_to_one_usdt_at_fixed_20x() -> None:
+async def test_env_margin_cap_binds_allocation_down_to_the_pinned_cap_at_fixed_20x() -> None:
     venue = Venue()
     # 1000 USDT available: allocation (0.20) alone would request 200 USDT margin.
     venue.snapshot.account = venue.snapshot.account.__class__(
@@ -138,7 +138,7 @@ async def test_env_margin_cap_binds_allocation_down_to_one_usdt_at_fixed_20x() -
         {
             "BITGET_MIN_LEVERAGE": "20",
             "BITGET_MAX_LEVERAGE": "20",
-            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
         },
         reservation_repository=reservations,
     )
@@ -146,15 +146,15 @@ async def test_env_margin_cap_binds_allocation_down_to_one_usdt_at_fixed_20x() -
     admission = await preflight(_dispatch())
 
     assert reservations.kwargs is not None
-    # Ceiling, not a target: 1 USDT margin at 20x = 20 USDT notional, but size_step=1
-    # floors 20/2.32=8.62 contracts to 8, so realised margin lands just under the cap.
-    assert reservations.kwargs["max_margin_per_trade_usdt"] == Decimal("1")
-    assert Decimal("0") < reservations.kwargs["planned_margin_usdt"] <= Decimal("1")
-    assert reservations.kwargs["planned_margin_usdt"] == Decimal("0.928")
-    assert admission.submission.planned_margin_usdt == Decimal("0.928")
+    # Ceiling, not a target: 1.1 USDT margin at 20x = 22 USDT notional, but size_step=1
+    # floors 22/2.32=9.48 contracts to 9, so realised margin lands just under the cap.
+    assert reservations.kwargs["max_margin_per_trade_usdt"] == Decimal("1.1")
+    assert Decimal("0") < reservations.kwargs["planned_margin_usdt"] <= Decimal("1.1")
+    assert reservations.kwargs["planned_margin_usdt"] == Decimal("1.044")
+    assert admission.submission.planned_margin_usdt == Decimal("1.044")
     assert admission.submission.effective_leverage == 20
-    # 8 contracts * 2.32 = 18.56 USDT notional: ~7.2% below the 20 USDT ceiling.
-    assert admission.submission.planned_notional_usdt == Decimal("18.56")
+    # 9 contracts * 2.32 = 20.88 USDT notional: 5.1% below the 22 USDT ceiling.
+    assert admission.submission.planned_notional_usdt == Decimal("20.88")
 
 
 @pytest.mark.asyncio
@@ -178,7 +178,7 @@ async def test_production_preflight_uses_authoritative_active_position_count() -
     with pytest.raises(ValueError, match="sizing rejected"):
         await _bitget_dispatch_preflight(
             venue,
-            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
             reservation_repository=Reservations(),
         )(_dispatch())
 
@@ -203,7 +203,7 @@ async def test_stale_or_future_evidence_cannot_reserve(source, offset):
     reservations = Reservations()
     with pytest.raises(ValueError, match="stale|future"):
         await _bitget_dispatch_preflight(
-            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}, reservation_repository=reservations
+            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"}, reservation_repository=reservations
         )(_dispatch())
     assert reservations.kwargs is None
 
@@ -226,7 +226,7 @@ def test_invalid_admission_policy_refuses_before_venue_reads(key, value):
     with pytest.raises(ValueError):
         _bitget_dispatch_preflight(
             Venue(),
-            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1", key: value},
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1", key: value},
             reservation_repository=Reservations(),
         )
 
@@ -249,7 +249,7 @@ async def test_one_snapshot_supplies_duplicate_symbols_and_explicit_policy():
     await _bitget_dispatch_preflight(
         venue,
         {
-            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             "BITGET_MODE": "LIVE",
             "BITGET_MAX_NORMAL_POSITIONS": "3",
             "BITGET_BALANCE_MAX_AGE_SECONDS": "4",
@@ -288,7 +288,7 @@ async def test_preflight_validates_and_carries_tick_prices_without_rewriting_sou
     monkeypatch.setattr(live_policy, "plan_live_position", capture)
     admission = await _bitget_dispatch_preflight(
         Venue(),
-        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
         reservation_repository=Reservations(),
     )(dispatch)
 
@@ -320,7 +320,7 @@ async def test_rounded_invalid_geometry_is_rejected_before_reservation(stop, tar
     with pytest.raises(ValueError, match="rounded"):
         await _bitget_dispatch_preflight(
             Venue(),
-            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
             reservation_repository=reservations,
         )(dispatch)
     assert reservations.kwargs is None
@@ -358,7 +358,7 @@ async def test_stop_rounded_across_liquidation_buffer_is_rejected_before_reserva
     with pytest.raises(ValueError, match="sl-guard"):
         await _bitget_dispatch_preflight(
             venue,
-            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
             reservation_repository=reservations,
         )(dispatch)
     assert reservations.kwargs is None
@@ -381,18 +381,18 @@ async def test_recent_departed_entry_admits_exact_legal_split_with_actual_risk_v
     reservations = Reservations()
     admission = await _bitget_dispatch_preflight(
         venue,
-        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
         reservation_repository=reservations,
     )(dispatch)
 
     submission = admission.submission
-    assert submission.quantity == Decimal("8.4")
-    assert submission.entry_route.market_quantity == Decimal("2.1")
-    assert submission.entry_route.limit_quantity == Decimal("6.3")
-    assert submission.planned_notional_usdt == Decimal("19.656")
-    assert submission.planned_margin_usdt == Decimal("0.9828")
+    assert submission.quantity == Decimal("9.2")
+    assert submission.entry_route.market_quantity == Decimal("2.3")
+    assert submission.entry_route.limit_quantity == Decimal("6.9")
+    assert submission.planned_notional_usdt == Decimal("21.528")
+    assert submission.planned_margin_usdt == Decimal("1.0764")
     assert reservations.kwargs is not None
-    assert reservations.kwargs["planned_margin_usdt"] == Decimal("0.9828")
+    assert reservations.kwargs["planned_margin_usdt"] == Decimal("1.0764")
 
 
 @pytest.mark.asyncio
@@ -402,14 +402,19 @@ async def test_split_child_minimum_cannot_be_bypassed_by_total_notional_or_reser
     venue = Venue()
     venue.snapshot.current_price = Decimal("2.34")
     venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
-        update={"size_step": Decimal("0.1"), "min_order_qty": Decimal("0.1")}
+        update={
+            "size_step": Decimal("0.1"),
+            "min_order_qty": Decimal("0.1"),
+            # Above the 25% child (2.3 x 2.34 = 5.38) but below the total.
+            "min_notional": Decimal("6"),
+        }
     )
     dispatch = replace(_dispatch(), source_received_at=datetime.now(UTC))
     reservations = Reservations()
     with pytest.raises(ValueError, match="split|min-notional"):
         await _bitget_dispatch_preflight(
             venue,
-            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
             reservation_repository=reservations,
         )(dispatch)
     assert reservations.kwargs is None
@@ -455,7 +460,7 @@ async def test_position_read_crossing_route_window_cannot_expand_market_child(mo
     dispatch = replace(_dispatch(), source_received_at=clock[0] - timedelta(seconds=59))
     admission = await _bitget_dispatch_preflight(
         venue,
-        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
         reservation_repository=Reservations(),
     )(dispatch)
     assert admission.submission.entry_route.market_quantity == Decimal("2.1")
@@ -494,12 +499,12 @@ def _budget_venue_and_dispatch(available: str, equity: str):
     [
         ("PERCENTAGE", "0.8", "3", "0.20", "1", "20", "0.6"),
         ("PERCENTAGE", "0.8", "30", "0.20", "1", "20", "0.8"),
-        ("PERCENTAGE", "3", "30", "0.20", "1", "20", "1"),
+        ("PERCENTAGE", "3", "30", "0.20", "1", "20", "1.1"),
         ("FIXED_USDT", "1", "10", "0.01", "0.8", "20", "0.8"),
         ("FIXED_USDT", "0.5", "10", "0.01", "0.8", "20", "0.5"),
         ("PERCENTAGE", "1", "3", "0.20", "1", "10", "0.6"),
         (None, "2", "3", "0.20", "1", "20", "0.4"),
-        (None, "100", "200", "0.20", "1", "20", "1"),
+        (None, "100", "200", "0.20", "1", "20", "1.1"),
     ],
 )
 async def test_automated_budget_is_resolved_once_for_legacy_and_durable_admission(
@@ -508,7 +513,7 @@ async def test_automated_budget_is_resolved_once_for_legacy_and_durable_admissio
     venue, dispatch = _budget_venue_and_dispatch(available, equity)
     reservations = Reservations() if durable else None
     environ = {
-        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
         "BITGET_ALLOCATION_PCT": percentage,
         "BITGET_FIXED_MARGIN_USDT": fixed,
         "BITGET_DEFAULT_LEVERAGE": leverage,
@@ -528,7 +533,7 @@ async def test_automated_budget_is_resolved_once_for_legacy_and_durable_admissio
         assert reservations.kwargs["headroom"] == Decimal("1")
         assert reservations.kwargs["available_balance"] == Decimal(available)
         assert reservations.kwargs["equity"] == Decimal(equity)
-        assert reservations.kwargs["max_margin_per_trade_usdt"] == Decimal("1")
+        assert reservations.kwargs["max_margin_per_trade_usdt"] == Decimal("1.1")
     else:
         spec, risk = result
         assert risk.base_margin_usdt == Decimal(expected)
@@ -557,7 +562,7 @@ async def test_automated_defaults_do_not_change_manual_margin_or_leverage(mode, 
     admission = await _bitget_dispatch_preflight(
         venue,
         {
-            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             "BITGET_MARGIN_MODE_TYPE": mode,
             "BITGET_ALLOCATION_PCT": "0.20",
             "BITGET_FIXED_MARGIN_USDT": "0.1",
@@ -580,7 +585,7 @@ async def test_automated_defaults_do_not_change_manual_margin_or_leverage(mode, 
         ("BITGET_FIXED_MARGIN_USDT", "-1"),
         ("BITGET_FIXED_MARGIN_USDT", "NaN"),
         ("BITGET_FIXED_MARGIN_USDT", "Infinity"),
-        ("BITGET_FIXED_MARGIN_USDT", "1.01"),
+        ("BITGET_FIXED_MARGIN_USDT", "1.11"),
         ("BITGET_MAX_MARGIN_PER_TRADE_USDT", "2"),
     ],
 )
@@ -590,7 +595,7 @@ def test_configured_sizing_cannot_bypass_pinned_safety_policy(key, value, mode):
         _bitget_dispatch_preflight(
             Venue(),
             {
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
                 "BITGET_MARGIN_MODE_TYPE": mode,
                 key: value,
             },
@@ -602,7 +607,7 @@ def test_configured_sizing_cannot_bypass_pinned_safety_policy(key, value, mode):
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"manual_margin": Decimal("1.01")},
+        {"manual_margin": Decimal("1.11")},
         {"manual_leverage": 4},
         {"manual_leverage": 21},
     ],
@@ -617,7 +622,7 @@ async def test_automated_configuration_cannot_relax_manual_safety_bounds(overrid
         await _bitget_dispatch_preflight(
             venue,
             {
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
                 "BITGET_MARGIN_MODE_TYPE": "FIXED_USDT",
                 "BITGET_FIXED_MARGIN_USDT": "1",
                 "BITGET_DEFAULT_LEVERAGE": "5",

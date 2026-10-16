@@ -61,7 +61,7 @@ observed consumer settings; an unobserved value is left blank rather than guesse
 Only edited fields are submitted, and the current revision is supplied automatically.
 
 - **Percentage** uses total USDT equity, then limits margin to available funds and
-  the existing **1 USDT per-trade safety cap**. For example, 20% of 3 USDT equity
+  the existing **1.1 USDT per-trade safety cap**. For example, 20% of 3 USDT equity
   with 0.80 USDT available requests 0.60 USDT margin.
 - **Fixed USDT** requests the entered amount, subject to available funds and the
   same cap. It is not reduced by the percentage setting.

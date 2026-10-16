@@ -38,7 +38,7 @@ async def test_production_preflight_real_reserve_persists_ownership(postgres_sch
     repository = PostgresBitgetMarginReservationRepository(lambda: _connect(dsn, schema))
     admission = await _bitget_dispatch_preflight(
         venue,
-        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1", "BITGET_MODE": "DEMO"},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1", "BITGET_MODE": "DEMO"},
         reservation_repository=repository,
     )(dispatch)
     with _connect(dsn, schema) as c:
@@ -50,7 +50,7 @@ async def test_production_preflight_real_reserve_persists_ownership(postgres_sch
     repository.resolve(admission.submission.margin_reservation_id, "FILLED")
     with pytest.raises(ValueError, match="symbol-already-owned"):
         await _bitget_dispatch_preflight(
-            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}, reservation_repository=repository
+            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"}, reservation_repository=repository
         )(dispatch)
     with _connect(dsn, schema) as c:
         assert c.execute("SELECT state FROM bitget_margin_reservations").fetchone() == ("consumed",)
@@ -96,7 +96,7 @@ async def test_real_preflight_uses_normalized_provider_ownership_and_hedge_slots
     repository = PostgresBitgetMarginReservationRepository(lambda: _connect(dsn, schema))
     preflight = _bitget_dispatch_preflight(
         venue,
-        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1", "BITGET_MAX_NORMAL_POSITIONS": cap},
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1", "BITGET_MAX_NORMAL_POSITIONS": cap},
         reservation_repository=repository,
     )
     if reason:
@@ -136,7 +136,7 @@ async def test_real_repository_seam_refuses_stale_or_future_provider_evidence(
     repository = PostgresBitgetMarginReservationRepository(lambda: _connect(dsn, schema))
     with pytest.raises(ValueError, match="stale|future"):
         await _bitget_dispatch_preflight(
-            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}, reservation_repository=repository
+            venue, {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"}, reservation_repository=repository
         )(fixtures["_dispatch"]())
     with _connect(dsn, schema) as c:
         assert c.execute("SELECT count(*) FROM bitget_margin_reservations").fetchone() == (0,)

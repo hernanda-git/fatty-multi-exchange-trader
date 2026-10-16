@@ -50,22 +50,22 @@ def test_invalid_margin_cap_values_are_rejected(raw: str) -> None:
         _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw})
 
 
-@pytest.mark.parametrize("raw", ["1.0001", "2", "2.5", "50", "1e999999"])
+@pytest.mark.parametrize("raw", ["1", "1.0001", "2", "2.5", "50", "1e999999"])
 def test_margin_cap_other_than_the_exact_pin_is_rejected(raw: str) -> None:
     """LIVE margin is pinned exactly; any wider or narrower value is rejected."""
-    with pytest.raises(ValueError, match="fixed at 1 USDT"):
+    with pytest.raises(ValueError, match="fixed at 1.1 USDT"):
         _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw})
 
 
 def test_valid_margin_cap_builds_preflight() -> None:
-    assert _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}) is not None
+    assert _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"}) is not None
 
 
 def test_unsupported_floor_escape_configuration_fails_closed() -> None:
     with pytest.raises(ValueError, match="floor-escape margin is not supported"):
         _preflight(
             {
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
                 "BITGET_MAX_MARGIN_FLOOR_ESCAPE_USDT": "2.5",
             }
         )
@@ -83,7 +83,7 @@ def test_unsupported_floor_escape_configuration_fails_closed() -> None:
             {
                 "BITGET_MIN_LEVERAGE": "20",
                 "BITGET_MAX_LEVERAGE": "50",
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             },
             id="20-50-range",
         ),
@@ -91,7 +91,7 @@ def test_unsupported_floor_escape_configuration_fails_closed() -> None:
             {
                 "BITGET_MIN_LEVERAGE": "20",
                 "BITGET_MAX_LEVERAGE": "30",
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             },
             id="20-30-range",
         ),
@@ -99,7 +99,7 @@ def test_unsupported_floor_escape_configuration_fails_closed() -> None:
             {
                 "BITGET_MIN_LEVERAGE": "50",
                 "BITGET_MAX_LEVERAGE": "50",
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             },
             id="50x-only",
         ),
@@ -107,7 +107,7 @@ def test_unsupported_floor_escape_configuration_fails_closed() -> None:
             {
                 "BITGET_MIN_LEVERAGE": "21",
                 "BITGET_MAX_LEVERAGE": "20",
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             },
             id="floor-above-ceiling",
         ),
@@ -115,7 +115,7 @@ def test_unsupported_floor_escape_configuration_fails_closed() -> None:
             {
                 "BITGET_MIN_LEVERAGE": "4",
                 "BITGET_MAX_LEVERAGE": "20",
-                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+                "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
             },
             id="floor-below-absolute-minimum",
         ),
@@ -133,7 +133,7 @@ def test_a_leverage_floor_at_or_below_the_ceiling_is_accepted(floor: str) -> Non
         {
             "BITGET_MIN_LEVERAGE": floor,
             "BITGET_MAX_LEVERAGE": "20",
-            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
         }
     )
     assert preflight is not None
@@ -145,7 +145,7 @@ def test_unset_leverage_environment_resolves_to_20x_not_50x() -> None:
     50 is now a startup error, so building the preflight with the leverage env
     absent proves the default resolved to 20; the contrast case pins it.
     """
-    environ = {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1"}
+    environ = {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"}
     assert _preflight(environ) is not None
     with pytest.raises(ValueError, match="fixed at 20x"):
         _preflight({**environ, "BITGET_MAX_LEVERAGE": "50"})

@@ -19,7 +19,7 @@ CONFIG = {
     "BITGET_OPERATOR_MUTATIONS_ENABLED": "1",
     "BITGET_APPROVAL_REFERENCE": "approved",
     "BITGET_CANARY_MAX_ORDERS": "2",
-    "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+    "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
 }
 
 
@@ -107,7 +107,7 @@ async def test_preview_sizing_is_get_only_and_reserves_nothing():
     )
     result = await _bitget_dispatch_preflight(venue, CONFIG, preview_only=True)(dispatch)
     assert reads == ["PENDLEUSDT"]
-    assert Decimal(result["margin_usdt"]) <= 1
+    assert Decimal(result["margin_usdt"]) <= Decimal("1.1")
     assert Decimal(result["quantity"]) > 0
     assert result["entry_price"] == "2.32"
 

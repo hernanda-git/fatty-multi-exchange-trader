@@ -45,11 +45,13 @@ SUPPORTED_SERVICES = (
 )
 
 # Bitget LIVE policy, pinned in application code. These are invariants, not
-# tunables: a live trade plans at most 1 USDT of isolated margin at no more than 20x.
+# tunables: a live trade plans at most 1.1 USDT of isolated margin at no more than 20x.
 # The cap bounds the planned margin; a market fill can realize slightly more
 # through slippage (filled_notional / leverage), so it is a ceiling on planning, not on
-# the exchange's post-fill number.
-_LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1")
+# the exchange's post-fill number. 1.1 USDT (was 1) clears the venue quantity grid
+# for the 25/75 split route on symbols like NEARUSDT, where four size steps cost
+# 20.88 USDT of notional and 1.044 USDT of margin at 20x.
+_LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1.1")
 _LIVE_LEVERAGE = 20
 # Lowest leverage the LIVE sizing policy may back off to. It exists so a signal whose
 # stop needs more liquidation headroom than 20x allows can still trade at a lower
@@ -515,8 +517,8 @@ def _bitget_dispatch_preflight(
         raise ValueError("BITGET_MARGIN_MODE_TYPE must be PERCENTAGE or FIXED_USDT")
     if max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
         raise ValueError(
-            "Bitget LIVE margin cap is fixed at 1 USDT: "
-            "BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly 1 "
+            f"Bitget LIVE margin cap is fixed at {_LIVE_MAX_MARGIN_PER_TRADE_USDT} USDT: "
+            f"BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly {_LIVE_MAX_MARGIN_PER_TRADE_USDT} "
             f"(got {raw_margin_cap!r})"
         )
     if (
@@ -525,7 +527,8 @@ def _bitget_dispatch_preflight(
         or fixed_margin_usdt > max_margin_per_trade
     ):
         raise ValueError(
-            "BITGET_FIXED_MARGIN_USDT must be positive and within the pinned 1 USDT cap"
+            "BITGET_FIXED_MARGIN_USDT must be positive and within the pinned "
+            f"{_LIVE_MAX_MARGIN_PER_TRADE_USDT} USDT cap"
         )
 
     async def preflight(dispatch: Any) -> Any:

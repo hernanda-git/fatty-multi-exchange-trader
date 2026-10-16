@@ -179,7 +179,7 @@ For no-send inspection, use `scripts/health_report.py`'s `load_report_data()` wi
 
 ## Sizing, contract eligibility, and clock evidence
 
-The service selects a route once per preflight observation and carries the split prices into live sizing. Exact 25/75 sizing uses a total quantum of four venue quantity steps; full-market sizing retains one step. Each child must satisfy its own planned-price minimum notional/quantity and market or LIMIT maximum. Final admitted margin/notional are recomputed after quantization under the existing 1 USDT production cap. An infeasible split is rejected before reservation; no approximate split or full-market fallback is invented.
+The service selects a route once per preflight observation and carries the split prices into live sizing. Exact 25/75 sizing uses a total quantum of four venue quantity steps; full-market sizing retains one step. Each child must satisfy its own planned-price minimum notional/quantity and market or LIMIT maximum. Final admitted margin/notional are recomputed after quantization under the existing 1.1 USDT production cap. An infeasible split is rejected before reservation; no approximate split or full-market fallback is invented.
 
 Contract metadata is resolved before symbol account/position reads and margin preparation. A missing contract is unsupported; a failed/malformed contract lookup is provider-unavailable. `AsyncBitgetVenue.preflight()` can prepare margin mode for supported contracts and is not a GET-only diagnostic tool.
 

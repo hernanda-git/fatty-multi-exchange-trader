@@ -252,7 +252,7 @@ services:
       # this non-editable cap, regardless of account growth or selected mode.
       # PLANNED margin: entries are market orders, so fill slippage can push
       # exchange-side realized margin marginally above it.
-      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
+      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1.1"
       BITGET_MAX_NORMAL_POSITIONS: "5"
       BITGET_LIQUIDATION_BUFFER: "0.10"
     depends_on:
@@ -410,7 +410,7 @@ services:
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-1}
       # Owned-entry cancellation uses the same gated execution factory; no entry
       # admission is invoked by source management and the fixed cap stays intact.
-      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1"
+      BITGET_MAX_MARGIN_PER_TRADE_USDT: "1.1"
       BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
       BITGET_CANARY_MAX_ORDERS: ${BITGET_CANARY_MAX_ORDERS:-5}

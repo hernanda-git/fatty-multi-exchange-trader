@@ -583,7 +583,7 @@ def test_worker_effective_config_uses_canonical_risk_keys_not_web_defaults():
         "BITGET_MODE": "LIVE",
         "BITGET_APPROVAL_REFERENCE": "approved-ref",
         "BITGET_CANARY_MAX_ORDERS": "5",
-        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1",
+        "BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1",
         "BITGET_MIN_LEVERAGE": "5",
         "BITGET_MAX_LEVERAGE": "20",
         "BITGET_ALLOCATION_PCT": "0.20",

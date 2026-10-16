@@ -75,7 +75,7 @@ class PostgresBitgetMarginReservationRepository:
 
         ``max_margin_per_trade_usdt`` is deliberately a required argument: it is a
         hard LIVE ceiling, and a caller that forgets it would otherwise reserve
-        uncapped margin. The LIVE risk policy passes exactly 1 USDT.
+        uncapped margin. The LIVE risk policy passes its pinned 1.1 USDT cap.
         """
         if exchange != "bitget":
             return BalanceAdmission.rejected("unsupported-exchange")
