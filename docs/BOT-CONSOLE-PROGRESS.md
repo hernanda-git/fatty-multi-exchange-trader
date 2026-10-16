@@ -556,6 +556,40 @@ without evidence.
   unverified.
 - Host CPU steal (hypervisor contention) is an external capacity risk that
   application changes cannot remove.
-- The broad Windows suite still fails eight `test_auth_health_*` cases that need
-  a POSIX shell; they are platform-limited and were not claimed fixed.
+- The broad Windows suite fails only on platform-inherent contracts (process
+  identity via `/proc`, POSIX signals, ownership and modes); the eight
+  `test_auth_health_*` cases and the script-contract tests were fixed in the
+  follow-up below.
+
+### Follow-up: verification gates and Windows developer runs (2026-10-16)
+
+All three gates in `.github/workflows/ci.yml` were red on `main` at `018bb1e`:
+`ruff check` reported three over-long lines, `ruff format --check` fifteen files,
+and `mypy src` thirteen errors. `3171111` and `100379d` make them pass on Linux
+and on Windows:
+
+- formatting is mechanical. The type fixes are behaviour-preserving: narrow
+  catalog symbols to `str` before `.upper()`/`.isascii()`, annotate the
+  mixed-value sanitize/notification/evidence dictionaries, assert the
+  already-claimed dispatch inside its transition/reject closures, and use
+  `getattr(signal, "SIGKILL", signal.SIGTERM)` with platform guards on the
+  Unix-socket worker-health paths.
+- `tests/support.py` resolves a real POSIX bash (Git Bash on Windows, never the
+  WSL launcher), gives child processes the platform paths they need, maps
+  `python3` to the interpreter running the tests, and probes whether the host's
+  Compose CLI can render a project at all.
+- contracts that are POSIX-inherent skip elsewhere with a precise reason;
+  `pythonpath = ["."]` makes the `tests` package importable.
+
+| Gate | Linux | Windows |
+|---|---|---|
+| full suite | **2514 passed, 0 failed**, 1 skipped (needs local `initdb`) | **2082 passed, 0 failed**, 433 skipped (platform contracts) |
+| `ruff check` / `ruff format --check` | pass / 325 files formatted | pass / 325 files formatted |
+| `mypy src` | pass (123 files) | pass (123 files) |
+
+`3171111` and `100379d` were rebuilt and redeployed so the copied-source digest
+matches the host checkout again (`runtime_source_digest=d7a4e74e…`), the runtime
+verifier passes from the deployed revision, schema remains 31, the staged rollout
+repeated the authenticated flat-account gate, and no signal was replayed.
+
 
