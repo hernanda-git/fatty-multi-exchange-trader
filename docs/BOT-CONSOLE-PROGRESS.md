@@ -686,3 +686,45 @@ re-validated — digest `48f6beee...` applied, consumers resumed, and the full
 runtime verifier now reports `runtime_check=PASS`. `venue_kill_switches` reads
 `bitget: released:owner-unblock-live-20261017`; entries are admitted again, so the
 next listed signal dispatches with the intake fix and the 1.1 USDT cap live.
+
+## Split-leg binding, leftover reconciliation and single-character tickers (2026-10-17)
+
+**Split-leg reservation binding — `1f269f7`, schema 33.** A 25/75 entry submits two
+legs under one reservation, and the composite FK compared the child's
+`<root>-limit` client order id against the reservation's root id, so every split
+entry died with `ForeignKeyViolation`. The ENA signal (#16318) failed this way
+before any POST left the host. The binding now compares a generated column that
+strips the split suffix, while every other guard (wrong root, snapshot, symbol,
+margin) still refuses. 45 targeted, 2174 unit and 344 e2e tests pass on Linux.
+
+**Leftover cleared through the approved baseline.** The failed attempt left an
+expired reservation with no entry intent, which made the dispatcher report
+`recovery-blocked issues=reservation-without-entry-intent` — readiness false, so
+no entry could be admitted on restart. Cleared with the approved baseline script
+(`hernanda-approved-clean-baseline-20261017`; reviewed dry-run digest
+`6295a40d…`, exactly one reservation plus its dispatch, nothing newer). The
+dispatcher is healthy, the orphan count is 0, the venue inventory is flat, and
+retiring the row released its canary slot.
+
+**Single-character tickers — `34e23db`, schema 33.** The source posted
+`#Q $Q SHORT TRADE / ENTRY: 0.0707 / TARGET: 0.0494 / STOPLOSS: 0.0733`. Every
+pair-token gate required two or more characters, so no canonical signal was
+produced and the setup fell to `MANUAL_REVIEW` even though `QUSDT` is a listed
+contract. Widened to one character in the deterministic parser, the
+`CanonicalSignal` model and the trade-management symbol patterns; admission still
+validates the contract at the venue, so an unknown token cannot become an order.
+2176 unit and 51 analyzer/intake e2e tests pass, and the deployed container parses
+the message into `pair_token='Q'` with its levels.
+
+**Both revisions deployed:** `34e23db` on the host checkout with all ten
+containers rebuilt and healthy, schema 33, runtime verifier `runtime_check=PASS`,
+venue flat (0 positions, 0 open orders).
+
+**Open observations.** Image analysis is enabled and healthy — a probe against
+the stored #16319 chart returned a complete setup in 22 s against the 30 s cap —
+so the two `FAILED` image results were transient timeouts. The explicit-text
+fallback is the designed safety net and now covers single-character tickers. Two
+September source-management updates (PUMPUSDT, PENGUUSDT) stay
+`reconciliation-pending`; they gate only channel-driven TP/close actions, not
+signals, dispatch or the monitor. No console action can retire them yet —
+follow-up: `source.reconcile`.
