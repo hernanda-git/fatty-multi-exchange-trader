@@ -629,3 +629,50 @@ Bitget consumers report `BITGET_MAX_MARGIN_PER_TRADE_USDT=1.1`.
 UTC, and price then traded to 5.02-5.05 — below the original 5.095 stop, so a late
 entry would place the stop above the entry. No manual entry was placed and none is
 pending.
+
+## Source-edit veto scoped to real text changes (2026-10-17)
+
+Owner report: the STBL signal — and every signal before it — stopped triggering.
+
+**Three stacked blockers, in the order they were found.**
+
+1. *Edit veto (systemic, fixed here).* Every message since 2026-10-15 carried
+   `entry_rejection_reason='edited-source-message'` — 5 of 5 on Oct 16, pure
+   chatter such as `Goodmorning❤️` included — and the shared eligibility predicate
+   treats such a row as a permanent message-level veto, so no signal could reach
+   dispatch. The intake set that reason for any Telegram `edit_date`, and the
+   publisher edits every post (chart attachment/formatting). Across all ten
+   messages since Oct 15 the signal text never changed
+   (`count(DISTINCT md5(raw_text)) = 1` per message; only the media identity
+   differed), so the veto blocked 100 % of signals while protecting nothing.
+2. *Split sizing (fixed in `caa6377`).* NEARUSDT needed a 4-step split quantum
+   (1.044 USDT margin) against the pinned 1 USDT cap.
+3. *Venue admission latch (active, owner approval required).* `venue_kill_switches`
+   holds `bitget` latched with reason `clock-skew-unavailable` since
+   **2026-10-16 17:55:35 UTC**, so no entry can be admitted at all. The clock is
+   healthy now (offset −115…−127 ms, RTT 260–420 ms against the 5 000 ms limit)
+   and the account is flat, but the documented recovery is owner-approved and has
+   not been run.
+
+`#STBL` is additionally unlisted: 0 of 834 Bitget USDT-FUTURES contracts and 0 of
+3 496 spot symbols, so even without the veto it could only have been rejected as
+`contract-not-found`.
+
+**Change.** `edit_date` is provenance (`telegram_messages.source_edited_at`,
+migration 32), not a veto. Each revision is classified against the retained ones:
+the first revision observed stays eligible (the entry window still runs from
+publication), a same-text revision is stored as `superseded-source-revision`
+(audit-only, never a second ENTER revision) and leaves the retained revision's
+authority intact, and a revision whose text differs revokes every revision of that
+message, reverted content included. The console source and dispatch views expose
+the new column. Historical rows are untouched and no signal was replayed.
+
+**Verified before deploy:** Linux full suite `2517 passed, 0 failed, 1 skipped`
+(needs local `initdb`); `ruff check` and `ruff format --check` clean (325 files);
+`mypy src` clean (123 files). The intake contracts cover all three paths.
+
+**Deployed:** revision `1c8cc05`; schema **32**; ten containers healthy; runtime
+source digest `37cf20fd...` matches the host checkout in every container; ledger
+readiness `ready`; provider read-only probe PASS. The runtime verifier stops at
+`runtime_blocked=kill_switch_active action=preserve_latch` — that latch, preserved
+by design, not a deployment failure.
