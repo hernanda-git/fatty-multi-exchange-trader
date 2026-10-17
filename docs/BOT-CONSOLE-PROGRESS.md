@@ -749,3 +749,30 @@ dispatcher `idle`; verifier `runtime_check=PASS`; ten containers healthy. ENAUSD
 no position to manage, and the 19 messages still in `RECEIVED` all carry the
 documented `edited-source-message` veto (newest 2026-10-16) — inert history, not a
 backlog.
+
+**Operator grammar for one-character base assets — `b039b3b`.** Same >=2-character
+assumption as the source parser: `/trade … QUSDT …` was rejected by
+`operator/command_parser.py` before it could become a typed command. The live entry
+path was never affected — `bitget_dispatcher.py:165` normalizes tokens through
+`_bitget_symbol` (`Q` -> `QUSDT`) before `service.py:536` validates the symbol — and
+the catalog-evidence regex (`metadata.py:77-88`) only records `requested_symbol:null`
+for such tokens. Deployed and probed inside the running container: `pair= QUSDT`.
+2180 unit tests, ruff and mypy strict pass.
+
+**Deep-audit findings (2026-10-17), punch list.** One defect class across all three
+incidents: a durable fence with no terminal transition for the provably-moot case,
+no deadline/attempts, no alert, and (for two gates) no exit except an operator.
+Priority items: (1) deadline/attempts/evidence columns plus proof-based sweepers for
+`source_management_updates`, `console_jobs` and `dispatches` — copy the
+attempts/`next_attempt_at` pattern already proven by notifications/web-push; (2) a
+watchdog that alerts on non-terminal rows older than X, `recovery-blocked`, canary
+exhaustion, stale leases and health staleness (parked rows are log-only today);
+(3) runbooks for the two human-only gates (baseline account/environment mismatch;
+non-allowlisted latch, which the approved recovery refuses by design); (4) fix the
+`services["lifecycle_recovery"]` field that nothing writes, and expose the live lane
+in web health (`web/health.py:14` covers only postgres/intake/analyzer/notification);
+(5) CHECK constraints for `dispatches.state`: the DB currently holds `RECONCILED`,
+a state absent from `domain/enums.py`. Also recorded: no daily-loss/drawdown stop and
+zero-default slippage floors (`domain/models.py:94-99`), stop-the-world rollouts that
+silently age signals out of the 5-minute window, `MANUAL_REVIEW` has no requeue path,
+and container logs are lost on recreation.
