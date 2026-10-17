@@ -36,6 +36,7 @@ class SourceManagementStore(Protocol):
 
 class SourceManagementGateway(Protocol):
     def get_positions(self, symbol: str) -> list[dict[str, Any]]: ...
+    def get_orders(self, symbol: str) -> list[dict[str, Any]]: ...
     def cancel_pending_entries(
         self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
     ) -> bool: ...
@@ -137,7 +138,9 @@ class SourceManagementExecutor:
             if not self._store.management_is_eligible(update.id):
                 close_oid = f"source-management-{update.id.hex}-close"
                 if self._store.has_provider_intent(update.id, close_oid):
-                    self._gateway.get_positions(update.symbol)
+                    positions = self._gateway.get_positions(update.symbol)
+                    if self._retire_unreconcilable_close_claim(update, positions):
+                        return "reconciled"
                     raise SourceManagementReconciliationPending(
                         "stale close claim still requires authenticated execution reconciliation"
                     )
@@ -170,6 +173,8 @@ class SourceManagementExecutor:
                 if cancels_entries:
                     close_oid = f"source-management-{update.id.hex}-close"
                     if self._store.has_provider_intent(update.id, close_oid):
+                        if self._retire_unreconcilable_close_claim(update, positions):
+                            return "reconciled"
                         raise SourceManagementReconciliationPending(
                             "existing close intent requires execution reconciliation"
                         )
@@ -246,6 +251,31 @@ class SourceManagementExecutor:
             return "failed"
         self._store.update_state(update.id, "reconciled")
         return "reconciled"
+
+    def _retire_unreconcilable_close_claim(
+        self, update: SourceManagementUpdate, positions: list[dict[str, Any]]
+    ) -> bool:
+        """Retire a close claim only on GET-only proof the venue holds no work.
+
+        A claim that can never be posted again (closed source window, or a flat
+        position) must not pin the queue forever: when the symbol shows no
+        position, no pending provider order and no non-terminal owned entry
+        claim, nothing is left to reconcile and the update is retired as
+        reconciled. Any unproven or still-live readback keeps it pending.
+        """
+        if positions:
+            return False
+        try:
+            orders = self._gateway.get_orders(update.symbol)
+            owned_entries_terminal = self._gateway.cancel_pending_entries(
+                update.symbol, update.id, reconciliation_only=True
+            )
+        except Exception:  # noqa: BLE001 - an unproven readback never retires a claim
+            return False
+        if orders or not owned_entries_terminal:
+            return False
+        self._store.update_state(update.id, "reconciled")
+        return True
 
     def _require_eligible(self, update: SourceManagementUpdate) -> None:
         if not self._store.management_is_eligible(update.id):

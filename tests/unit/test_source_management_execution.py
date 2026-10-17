@@ -214,13 +214,23 @@ class RemainderGateway:
 
     def __init__(self) -> None:
         self.positions: list[dict[str, object]] = []
+        self.orders: list[dict[str, object]] = []
         self.calls: list[tuple[str, object]] = []
         self.cancel_result = True
+        self.reconciliation_result = True
         self.racing_fill = Decimal("0")
         self.remaining_entry = True
 
-    def cancel_pending_entries(self, symbol: str, management_id: UUID) -> bool:
+    def get_orders(self, symbol: str) -> list[dict[str, object]]:
+        self.calls.append(("get_orders", symbol))
+        return [dict(order) for order in self.orders]
+
+    def cancel_pending_entries(
+        self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
+    ) -> bool:
         self.calls.append(("cancel_pending_entries", (symbol, management_id)))
+        if reconciliation_only:
+            return self.reconciliation_result
         if not self.cancel_result:
             return False
         self.remaining_entry = False
@@ -327,18 +337,58 @@ def test_unknown_cancel_blocks_management_and_restart_reconciles_before_position
     ]
 
 
-def test_flat_restart_with_close_intent_does_not_claim_cancellation_only_outcome() -> None:
+def test_flat_close_intent_retires_once_the_venue_proves_nothing_pending() -> None:
     update = SourceManagementUpdate.new("a" * 64, "BTCUSDT", ManagementAction.CLOSE)
     store = InMemorySourceManagementStore([replace(update, state="reconciliation-pending")])
     store.persist_provider_intent(update.id, f"source-management-{update.id.hex}-close")
     gateway = RemainderGateway()
 
-    for worker in ("restart-a", "restart-b"):
-        assert (
-            SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once(worker)
-            == "reconciliation-pending"
-        )
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("restart-a")
+        == "reconciled"
+    )
+    assert store.get(update.id).state == "reconciled"
     assert not any(name == "close_reduce_only" for name, _ in gateway.calls)
+
+
+def test_stale_close_claim_retires_when_no_pending_order_survives() -> None:
+    update = SourceManagementUpdate.new("b" * 64, "PUMPUSDT", ManagementAction.TP1_BOOKED)
+    store = InMemorySourceManagementStore([replace(update, state="reconciliation-pending")])
+    store.eligible = False
+    store.persist_provider_intent(update.id, f"source-management-{update.id.hex}-close")
+    gateway = RemainderGateway()
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once(
+            "source-management"
+        )
+        == "reconciled"
+    )
+    assert store.get(update.id).state == "reconciled"
+    assert not any(name == "close_reduce_only" for name, _ in gateway.calls)
+
+
+@pytest.mark.parametrize(
+    ("pending_orders", "owned_entries_terminal"),
+    [([{"order_id": "1"}], True), ([], False)],
+    ids=["venue-still-holds-an-order", "owned-entry-claim-not-terminal"],
+)
+def test_unreconcilable_close_claim_stays_pending_without_empty_proof(
+    pending_orders: list[dict[str, object]], owned_entries_terminal: bool
+) -> None:
+    update = SourceManagementUpdate.new("c" * 64, "PENGUUSDT", ManagementAction.TP1_BOOKED)
+    store = InMemorySourceManagementStore([replace(update, state="reconciliation-pending")])
+    store.eligible = False
+    store.persist_provider_intent(update.id, f"source-management-{update.id.hex}-close")
+    gateway = RemainderGateway()
+    gateway.orders = pending_orders
+    gateway.reconciliation_result = owned_entries_terminal
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "reconciliation-pending"
+    )
+    assert store.get(update.id).state == "reconciliation-pending"
 
 
 def test_source_gate_prevents_cancellation_even_when_only_waiting_entry_exists() -> None:
