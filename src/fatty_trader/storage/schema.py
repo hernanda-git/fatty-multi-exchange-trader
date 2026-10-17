@@ -414,8 +414,14 @@ ALTER TABLE live_order_intents ADD CONSTRAINT admission_intent_binding_required
 CHECK (margin_reservation_id IS NULL OR
        (role = 'ENTRY' AND exchange = 'bitget' AND balance_snapshot_id IS NOT NULL
         AND planned_margin_usdt IS NOT NULL));
+-- A 25/75 split submits two legs under one reservation: the root keeps the
+-- admitted client order id and the LIMIT child is named `<root>-limit`. Both legs
+-- must bind to that same reservation, so the binding compares the derived root
+-- identity instead of the child's own suffixed id.
+ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS binding_client_order_id TEXT
+GENERATED ALWAYS AS (regexp_replace(client_order_id, '-(limit|market)$', '')) STORED;
 ALTER TABLE live_order_intents ADD CONSTRAINT admission_intent_reservation_binding
-FOREIGN KEY (margin_reservation_id, exchange, client_order_id,
+FOREIGN KEY (margin_reservation_id, exchange, binding_client_order_id,
              balance_snapshot_id, symbol, planned_margin_usdt)
 REFERENCES bitget_margin_reservations
     (id, exchange, client_order_id, balance_snapshot_id, binding_symbol, planned_margin_usdt);

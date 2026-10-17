@@ -304,3 +304,30 @@ def test_intent_reservation_binding(postgres_schema, mismatch):
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             insert_intent(c, amount, **fields)
         c.rollback()
+
+
+def test_split_legs_bind_to_their_shared_reservation(postgres_schema):
+    """The LIMIT leg is named `<root>-limit` and must still bind to the same reservation."""
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    args = request(dsn, schema)
+    first = repo(dsn, schema).reserve(**args)
+    assert first.accepted and first.reservation_id is not None and first.snapshot_id is not None
+    shared = dict(
+        margin_reservation_id=first.reservation_id,
+        balance_snapshot_id=first.snapshot_id,
+    )
+    amount = Decimal(1)
+    import psycopg
+
+    with _connect(dsn, schema) as c:
+        insert_intent(c, amount, client_order_id=args["client_order_id"], **shared)
+        insert_intent(c, amount, client_order_id=args["client_order_id"] + "-limit", **shared)
+        assert c.execute(
+            "SELECT count(*) FROM live_order_intents WHERE margin_reservation_id=%s",
+            (first.reservation_id,),
+        ).fetchone() == (2,)
+        # A child whose derived root is not this reservation still cannot bind.
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            insert_intent(c, amount, client_order_id=str(uuid4()) + "-limit", **shared)
+        c.rollback()

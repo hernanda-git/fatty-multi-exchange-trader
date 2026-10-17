@@ -433,6 +433,24 @@ MIGRATIONS: Final = [
             ADD COLUMN IF NOT EXISTS source_edited_at TIMESTAMPTZ;
         """,
     ),
+    (
+        33,
+        """
+        -- Both legs of a 25/75 split bind to one reservation: the LIMIT child is
+        -- named `<root>-limit`, so the admission binding must compare the derived
+        -- root identity instead of the child's own client order id.
+        ALTER TABLE live_order_intents ADD COLUMN IF NOT EXISTS binding_client_order_id TEXT
+        GENERATED ALWAYS AS (regexp_replace(client_order_id, '-(limit|market)$', '')) STORED;
+        ALTER TABLE live_order_intents
+            DROP CONSTRAINT IF EXISTS admission_intent_reservation_binding;
+        ALTER TABLE live_order_intents ADD CONSTRAINT admission_intent_reservation_binding
+        FOREIGN KEY (margin_reservation_id, exchange, binding_client_order_id,
+                     balance_snapshot_id, symbol, planned_margin_usdt)
+        REFERENCES bitget_margin_reservations
+            (id, exchange, client_order_id, balance_snapshot_id, binding_symbol,
+             planned_margin_usdt);
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
