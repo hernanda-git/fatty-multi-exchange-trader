@@ -17,7 +17,7 @@ class CanonicalSignal(BaseModel):
 
     source_message_id: int = Field(gt=0)
     source_revision: str = Field(min_length=64, max_length=64)
-    pair_token: str = Field(pattern=r"^[A-Z0-9]{2,20}$")
+    pair_token: str = Field(pattern=r"^[A-Z0-9]{1,20}$")
     direction: Direction
     entry_price: Decimal = Field(gt=0)
     stop_loss: Decimal = Field(gt=0)

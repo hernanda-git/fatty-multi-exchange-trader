@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-_EXPLICIT_SYMBOL = re.compile(r"[$#]([A-Z0-9]{2,15})\b", re.I)
-_FULL_SYMBOL = re.compile(r"\b([A-Z0-9]{2,15}USDT)\b", re.I)
+_EXPLICIT_SYMBOL = re.compile(r"[$#]([A-Z0-9]{1,15})\b", re.I)
+_FULL_SYMBOL = re.compile(r"\b([A-Z0-9]{1,15}USDT)\b", re.I)
 _RESERVED_SYMBOL_TOKENS = {
     "BE",
     "CLOSE",

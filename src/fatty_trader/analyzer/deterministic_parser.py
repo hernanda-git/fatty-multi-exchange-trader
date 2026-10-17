@@ -8,7 +8,7 @@ from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
 
 _CHANNEL = re.compile(
-    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{2,20})(?:\s+\$?(?P<pair2>[A-Z0-9]{2,20}))?\s+"
+    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+\$?(?P<pair2>[A-Z0-9]{1,20}))?\s+"
     r"(?P<direction>LONG|SHORT).*?(?:ENTRY\s*:\s*|MARKET\s+)(?P<entry>\d+(?:\.\d+)?).*?"
     r"(?:TARGETS?|TPS?)\s*:?\s*(?P<tps>\d+(?:\.\d+)?(?:\s*(?:-|,|/)\s*\d+(?:\.\d+)?){0,4}).*?"
     r"(?:STOPLOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
@@ -16,14 +16,14 @@ _CHANNEL = re.compile(
 )
 _NATURAL_STOP_ONLY = re.compile(
     r"^\s*(?P<direction>LONGING|SHORTING|LONG|SHORT)\s+"
-    r"(?:here\s+)?\$?(?P<pair>[A-Z0-9]{2,20})\s+"
+    r"(?:here\s+)?\$?(?P<pair>[A-Z0-9]{1,20})\s+"
     r"(?:here\s+)?(?:around|at|near)\s+"
     r"(?P<entry>\d+(?:\.\d+)?).*?"
     r"(?:STOPLOSS|STOP LOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE | re.DOTALL,
 )
 _RIGID = re.compile(
-    r"^\s*(?P<pair>[A-Z0-9]{2,20})\s+(?P<direction>LONG|SHORT)\s+MARKET\s+"
+    r"^\s*(?P<pair>[A-Z0-9]{1,20})\s+(?P<direction>LONG|SHORT)\s+MARKET\s+"
     r"SL\s+(?P<sl>\d+(?:\.\d+)?)\s+TP\s+(?P<tp>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
@@ -33,8 +33,8 @@ _RIGID = re.compile(
 # number last. Anything that merely mentions a stop mid-sentence stays unparsed, and an
 # entry price in the text always wins (that path is tried before this one).
 _SCALP_MARKET_STOP_ONLY = re.compile(
-    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{2,20})"
-    r"(?:\s+\$?(?P<pair2>[A-Z0-9]{2,20}))?\s+"
+    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})"
+    r"(?:\s+\$?(?P<pair2>[A-Z0-9]{1,20}))?\s+"
     r"(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\b.*?"
     r"(?:STOPLOSS|STOP\s*LOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\s*$"
 )

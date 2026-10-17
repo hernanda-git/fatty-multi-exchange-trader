@@ -36,6 +36,20 @@ def test_longing_sentence_with_stop_only_is_fallback_parseable() -> None:
     assert signal.take_profits == ()
 
 
+def test_single_character_ticker_explicit_setup_is_fallback_parseable() -> None:
+    signal = parse_explicit_signal(
+        "#Q $Q SHORT TRADE\n\nENTRY: 0.0707\n\nTARGET: 0.0494\n\nSTOPLOSS: 0.0733",
+        message_id=16319,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "Q"
+    assert signal.direction.value == "SHORT"
+    assert signal.entry_price == Decimal("0.0707")
+    assert signal.stop_loss == Decimal("0.0733")
+    assert signal.take_profits == (Decimal("0.0494"),)
+
+
 def test_codex_failure_falls_back_to_stop_only_short_setup() -> None:
     result = analyze_with_fallback(
         text="Shorting $WLD here around 0.385\\n\\nStoploss: 0.3938",
@@ -89,6 +103,14 @@ def test_management_symbol_prefers_explicit_ethfi_token() -> None:
     assert result is not None
     assert result.action is ManagementAction.SL_TO_ENTRY
     assert result.symbol == "ETHFIUSDT"
+
+
+def test_management_symbol_supports_single_character_ticker() -> None:
+    result = parse_source_management("$Q TP1 booked here")
+
+    assert result is not None
+    assert result.action is ManagementAction.TP1_BOOKED
+    assert result.symbol == "QUSDT"
 
 
 def test_management_symbol_supports_both_word_orders() -> None:
