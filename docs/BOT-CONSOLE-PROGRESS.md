@@ -728,3 +728,24 @@ September source-management updates (PUMPUSDT, PENGUUSDT) stay
 `reconciliation-pending`; they gate only channel-driven TP/close actions, not
 signals, dispatch or the monitor. No console action can retire them yet —
 follow-up: `source.reconcile`.
+
+**Source-management retire on a proven-empty venue — `671ddc2`.** The two rows
+above (PUMPUSDT from #16224, PENGUUSDT from #16228) carried durable close intents
+and had been re-claimed every 30 s for ~2.5 weeks: their source windows closed, so
+`management_is_eligible` is false, and the stale-close branch had no terminal path
+— it only re-raised `reconciliation-pending`, while `claim()`'s stale cleanup
+cannot touch rows that own a provider intent. GET-only readback now retires such a
+claim when the symbol shows no position, no pending provider order and no
+non-terminal owned entry claim; unproven readback or surviving work keeps it
+pending, and no POST is ever repeated. Both rows read `reconciled` within one poll
+of the rollout, non-terminal source updates are 0, and the worker prints
+`state=idle`. 2179 unit tests, mypy strict and ruff check/format pass.
+
+**Same-day pipeline audit.** Dispatches are terminal (REJECTED 36, FILLED 11,
+EXPIRED 10, RECONCILED 3); live intents terminal (filled 12, rejected 8,
+reconciled 4); reservations 0; canary in-flight 0 of 5; unresolved protection 0;
+dispatcher `idle`; verifier `runtime_check=PASS`; ten containers healthy. ENAUSDT
+`SL_TO_ENTRY` from #16322 ("move sl to entry on $ENA") is terminal `failed` with
+no position to manage, and the 19 messages still in `RECEIVED` all carry the
+documented `edited-source-message` veto (newest 2026-10-16) — inert history, not a
+backlog.
