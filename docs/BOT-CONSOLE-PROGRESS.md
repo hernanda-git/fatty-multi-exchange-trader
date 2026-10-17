@@ -676,3 +676,13 @@ source digest `37cf20fd...` matches the host checkout in every container; ledger
 readiness `ready`; provider read-only probe PASS. The runtime verifier stops at
 `runtime_blocked=kill_switch_active action=preserve_latch` — that latch, preserved
 by design, not a deployment failure.
+
+**Latch released (2026-10-17 06:04 UTC).** Under the approval reference
+`owner-unblock-live-20261017`, the documented recovery ran: mutation consumers
+stopped, dry-run proof reviewed — fresh clock offset **+2 ms** against the 5 000 ms
+limit, flat inventory across USDT/USDC/COIN futures, public and private V2 streams
+authenticated with fresh pongs, ledger readiness clean, resource latches locked and
+re-validated — digest `48f6beee...` applied, consumers resumed, and the full
+runtime verifier now reports `runtime_check=PASS`. `venue_kill_switches` reads
+`bitget: released:owner-unblock-live-20261017`; entries are admitted again, so the
+next listed signal dispatches with the intake fix and the 1.1 USDT cap live.
