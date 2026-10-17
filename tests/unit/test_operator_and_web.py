@@ -27,6 +27,15 @@ def test_operator_authorization_requires_exact_private_user_id() -> None:
     )
 
 
+def test_trade_grammar_accepts_single_character_base_assets() -> None:
+    command = parse_trade(
+        "/trade bitget SHORT QUSDT margin=1 leverage=20 entry=market sl=0.0733 tp=0.0494"
+    )
+
+    assert command.pair == "QUSDT"
+    assert str(command.stop_loss) == "0.0733"
+
+
 def test_trade_grammar_requires_explicit_side_and_stop() -> None:
     command = parse_trade(
         "/trade all LONG BTCUSDT margin=2 leverage=auto entry=market sl=64000 tp=64630"

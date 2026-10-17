@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
-_SYMBOL = re.compile(r"[A-Z0-9]{2,20}USDT\Z")
+_SYMBOL = re.compile(r"[A-Z0-9]{1,20}USDT\Z")
 _TRADE_ARGUMENTS = {"margin", "leverage", "entry", "sl", "tp"}
 
 
