@@ -1260,7 +1260,8 @@ class ReadService:
         if section == "signals":
             linked["revisions"] = self._query(
                 "SELECT id,revision_hash,received_at,intake_state,ingestion_origin,"
-                "entry_expires_at,entry_rejection_reason,ingested_at,edit_veto_recorded_at "
+                "entry_expires_at,entry_rejection_reason,ingested_at,edit_veto_recorded_at,"
+                "source_edited_at "
                 "FROM telegram_messages "
                 "WHERE channel_id=%s AND message_id=%s ORDER BY received_at,id",
                 (record["channel_id"], record["message_id"]),
@@ -1358,7 +1359,8 @@ class ReadService:
             linked["canonical_signal"] = self._query(
                 "SELECT cs.*,tm.channel_id,tm.message_id AS telegram_message_id,tm.received_at,"
                 "tm.revision_hash,tm.ingestion_origin,tm.entry_expires_at,"
-                "tm.entry_rejection_reason,tm.raw_text,tm.ingested_at,tm.edit_veto_recorded_at "
+                "tm.entry_rejection_reason,tm.raw_text,tm.ingested_at,tm.edit_veto_recorded_at,"
+                "tm.source_edited_at "
                 "FROM canonical_signals cs JOIN telegram_messages tm ON tm.id=cs.message_id "
                 "WHERE cs.id=%s::uuid",
                 (record["source_id"],),

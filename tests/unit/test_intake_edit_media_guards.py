@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -14,10 +14,15 @@ def source(**fields):
     )
 
 
-def test_edited_source_is_audit_only_without_refreshing_entry_age():
+def test_first_observed_edited_source_stays_eligible_with_edit_provenance():
+    """The publisher edits every post, so the first revision we see is the signal."""
     intake = TelegramIntake(InMemoryRawMessageRepository())
-    item = intake.ingest(channel_id=7, message=source(edit_date=datetime.now(UTC)))
-    assert item.entry_rejection_reason == "edited-source-message"
+    edited_at = datetime.now(UTC)
+    item = intake.ingest(channel_id=7, message=source(edit_date=edited_at))
+    assert item.entry_rejection_reason is None
+    assert item.source_edited_at == edited_at
+    # The entry window stays anchored to publication, never to the later edit.
+    assert item.entry_expires_at == item.received_at + timedelta(minutes=5)
 
 
 @pytest.mark.parametrize(

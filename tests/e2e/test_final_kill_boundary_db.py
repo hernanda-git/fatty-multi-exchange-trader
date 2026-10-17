@@ -61,9 +61,12 @@ async def test_service_final_kill_blocks_known_unsent_entry(
                 deadline = monotonic() + 10
                 while monotonic() < deadline:
                     row = observer.execute(
+                        # Match the head of the final eligibility statement: PostgreSQL
+                        # truncates pg_stat_activity.query at track_activity_query_size,
+                        # so the trailing FOR UPDATE OF d clause is not dependable.
                         "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
                         "WHERE %s = ANY(pg_blocking_pids(pid)) "
-                        "AND query LIKE '%%FOR UPDATE OF d%%')",
+                        "AND query LIKE 'SELECT d.state, COALESCE(%%')",
                         (locker_pid,),
                     ).fetchone()
                     assert row is not None

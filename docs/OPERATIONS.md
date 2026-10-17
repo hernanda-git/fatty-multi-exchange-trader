@@ -136,6 +136,24 @@ position identity remain visible as ineligible legacy registrations; do not
 rewrite their historical state to pretend cancellation or protection. The
 protection table's repair action is explicitly labeled **Review native repair**.
 
+## Source edits and entry eligibility
+
+Telegram reports an edit on a source post and the publishing channel edits every
+post (chart attachment, formatting), so an edit is provenance rather than an
+automatic veto. `telegram_messages.source_edited_at` records when Telegram
+reported it. A revision whose **signal text** matches an already retained
+revision is stored as `superseded-source-revision`: audit-only, never a second
+ENTER revision, while the retained revision keeps its entry authority.
+
+Only a revision whose text differs from a retained one revokes the message:
+every revision of that message then carries `edited-source-message` and
+`edit_veto_recorded_at`, admission retires known-unsent entries, and re-reading
+the old text never restores authority. A message that was already edited before
+the bot first saw it is the channel's published signal and stays eligible; the
+entry window still runs from publication, never from the edit. Analyzer
+selection, claim, reservation and the final ENTER fence share one eligibility
+predicate, so no consumer can bypass the veto.
+
 ## Deployment Boundary
 
 Local implementation and offline verification do not authorize production deployment, consumer shutdown, Telegram sends, safety-latch release, or account mutations. Obtain the applicable scoped approval before those operations. Preserve LIVE/LIVE/1 during maintenance; do not replace containment with DEMO or execution=0. Operator, source-management, fallback, and stream mutation gates are independent, so inspect effective per-service values rather than inferring them from execution being enabled. Protect existing exposure and preserve close recovery throughout approved maintenance.

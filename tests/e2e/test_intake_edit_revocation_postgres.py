@@ -30,7 +30,19 @@ def edit(factory, *, reverted=False, media=False, forward=False):
     raw = intake._build_message(channel_id=CHANNEL, message=item)
     repo = PostgresRawMessageRepository(factory)
     (repo.save_and_enqueue_forward if forward else repo.save_if_new)(raw)
-    assert raw.entry_rejection_reason == "edited-source-message"
+    # A text-changing re-publication vetoes every revision of that message.
+    with factory() as connection:
+        reasons = [
+            row[0]
+            for row in connection.execute(
+                "SELECT entry_rejection_reason FROM telegram_messages "
+                "WHERE channel_id=%s AND message_id=%s",
+                (CHANNEL, 101),
+            ).fetchall()
+        ]
+    # A text-changing re-publication vetoes every revision of that message,
+    # including a later re-publication of the original text.
+    assert reasons and set(reasons) == {"edited-source-message"}
 
 
 @pytest.mark.parametrize("boundary", ["analyzer", "claim", "reserve", "final"])
@@ -90,6 +102,34 @@ def test_same_revision_original_retrieval_stays_idempotent(postgres_schema):
     assert repo.claim("offline", 30) is not None
     with factory() as c:
         assert c.execute("SELECT count(*) FROM telegram_messages").fetchone() == (1,)
+
+
+def test_same_text_source_edit_keeps_the_retained_revision_eligible(postgres_schema):
+    """The publisher edits every post; a same-text re-publication is audit-only."""
+    factory = setup(postgres_schema)
+    dispatch_id = queued(factory)
+    repo = PostgresBitgetDispatchRepository(factory)
+    assert repo.entry_source_eligible(dispatch_id)
+    item = message(101, "#BTC LONG ENTRY: 100 TARGET: 110 STOPLOSS: 90")
+    item.edit_date = datetime.now(UTC)
+    raw = TelegramIntake(PostgresRawMessageRepository(factory))._build_message(
+        channel_id=CHANNEL, message=item
+    )
+    stored = PostgresRawMessageRepository(factory).save_if_new(raw)
+    assert stored.entry_rejection_reason == "superseded-source-revision"
+    with factory() as connection:
+        rows = connection.execute(
+            "SELECT entry_rejection_reason,source_edited_at FROM telegram_messages "
+            "WHERE channel_id=%s AND message_id=%s ORDER BY entry_rejection_reason NULLS FIRST",
+            (CHANNEL, 101),
+        ).fetchall()
+    assert rows == [
+        (None, None),
+        ("superseded-source-revision", raw.source_edited_at),
+    ]
+    # The retained revision keeps entry authority; no message-level veto exists.
+    assert repo.entry_source_eligible(dispatch_id)
+    assert repo.claim("offline", 30) is not None
 
 
 @pytest.mark.parametrize(

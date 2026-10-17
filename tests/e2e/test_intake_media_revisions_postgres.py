@@ -85,6 +85,6 @@ def test_original_and_same_caption_edits_remain_distinct_audit_rows(postgres_sch
             "SELECT revision_hash,intake_state,entry_rejection_reason FROM "
             "telegram_messages ORDER BY intake_state DESC"
         ).fetchall() == [
-            (first.revision_hash, "RECEIVED", "edited-source-message"),
-            (edited.revision_hash, "EXPIRED", "edited-source-message"),
+            (first.revision_hash, "RECEIVED", None),
+            (edited.revision_hash, "EXPIRED", "superseded-source-revision"),
         ]

@@ -426,6 +426,13 @@ MIGRATIONS: Final = [
         DROP INDEX IF EXISTS console_events_scope;
         """,
     ),
+    (
+        32,
+        """
+        ALTER TABLE telegram_messages
+            ADD COLUMN IF NOT EXISTS source_edited_at TIMESTAMPTZ;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

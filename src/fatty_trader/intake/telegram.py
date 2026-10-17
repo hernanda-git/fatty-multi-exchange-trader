@@ -113,9 +113,11 @@ class TelegramIntake:
             rejection = "future-source-time"
         elif expires_at <= now:
             rejection = "stale-source-message"
-        elif getattr(message, "edit_date", None) is not None:
-            # An edit is audit-only: it must never become a second ENTER revision.
-            rejection = "edited-source-message"
+        # `edit_date` is recorded as provenance, not as an automatic veto: the
+        # publisher edits every post, and only a revision whose signal text
+        # differs from an already-retained one revokes the message.
+        edit_date = getattr(message, "edit_date", None)
+        source_edited_at = edit_date if isinstance(edit_date, datetime) else None
         if rejection is None and getattr(message, "media", None) is not None:
             file = getattr(message, "file", None)
             mime = getattr(file, "mime_type", "image/jpeg")
@@ -145,6 +147,7 @@ class TelegramIntake:
             entry_rejection_reason=rejection,
             reply_to_message_id=reply_id,
             has_media=has_media,
+            source_edited_at=source_edited_at,
         )
 
 

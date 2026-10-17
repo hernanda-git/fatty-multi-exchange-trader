@@ -26,6 +26,14 @@ class RawTelegramMessage:
     ingestion_origin: str = "realtime"
     entry_expires_at: datetime | None = None
     entry_rejection_reason: str | None = None
+    source_edited_at: datetime | None = None
+
+
+def _row_values(row: Any, *names: str) -> tuple[Any, ...]:
+    """Read a cursor row by name (dict rows) or position (tuple rows)."""
+    if isinstance(row, dict):
+        return tuple(row[name] for name in names)
+    return tuple(row[: len(names)])
 
 
 class RawMessageRepository(Protocol):
@@ -45,7 +53,33 @@ class InMemoryRawMessageRepository:
 
     def save_if_new(self, message: RawTelegramMessage) -> RawTelegramMessage:
         key = (message.channel_id, message.message_id, message.revision_hash)
-        existing = self._messages.setdefault(key, message)
+        siblings = [
+            stored for stored_key, stored in self._messages.items() if stored_key[:2] == key[:2]
+        ]
+        existing = self._messages.get(key)
+        if existing is None:
+            reason = message.entry_rejection_reason
+            if reason is None and siblings:
+                vetoed = any(
+                    sibling.entry_rejection_reason == "edited-source-message"
+                    for sibling in siblings
+                )
+                same_text = any(sibling.raw_text == message.raw_text for sibling in siblings)
+                reason = (
+                    "edited-source-message"
+                    if vetoed or not same_text
+                    else "superseded-source-revision"
+                )
+            # A revision whose signal text differs revokes every revision of the
+            # message; same-text revisions stay audit-only.
+            if reason is not None:
+                for sibling_key, sibling in list(self._messages.items()):
+                    if sibling_key[:2] == key[:2] and sibling.raw_text != message.raw_text:
+                        self._messages[sibling_key] = replace(
+                            sibling, entry_rejection_reason="edited-source-message"
+                        )
+            existing = replace(message, entry_rejection_reason=reason)
+            self._messages[key] = existing
         if (
             existing.media_path is None
             and message.media_path is not None
@@ -73,11 +107,9 @@ class InMemoryRawMessageRepository:
     def save_and_enqueue_forward(self, message: RawTelegramMessage) -> bool:
         """Persist once; analysis emits the single operator-facing notification."""
         key = (message.channel_id, message.message_id, message.revision_hash)
-        if key in self._messages:
-            self.save_if_new(message)
-            return False
-        self._messages[key] = message
-        return True
+        first = key not in self._messages
+        self.save_if_new(message)
+        return first
 
 
 class PostgresRawMessageRepository:
@@ -88,10 +120,15 @@ class PostgresRawMessageRepository:
 
     @staticmethod
     def _revoke_edited_source(cursor: Any, message: RawTelegramMessage) -> None:
-        """Persist the message-level veto before old rows reach analyzer I/O.
+        """Revoke the message entry only when the signal text actually changed.
 
-        Do not alter dispatch/provider truth here. Admission gates retire only
-        known-unsent entries; the shared predicate also protects old revisions.
+        The publisher edits every post (chart attachment/formatting), so an
+        `edit_date` alone is provenance, not a veto. Same-text revisions are
+        audited as `superseded-source-revision` and can never become a second
+        ENTER revision, while a revision whose text differs from an already
+        retained one revokes every revision of that message. Do not alter
+        dispatch/provider truth here; admission gates retire only known-unsent
+        entries through the shared predicate.
         """
         cursor.execute(
             """UPDATE telegram_messages tm
@@ -100,22 +137,35 @@ class PostgresRawMessageRepository:
                     WHEN tm.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
                     THEN clock_timestamp() ELSE tm.edit_veto_recorded_at END
             WHERE tm.channel_id=%s AND tm.message_id=%s
-              AND (tm.entry_rejection_reason IS NULL
-                   OR (%s AND tm.revision_hash=%s))
-              AND (%s OR EXISTS (
-                  SELECT 1 FROM telegram_messages edited
-                  WHERE edited.channel_id=tm.channel_id
-                    AND edited.message_id=tm.message_id
-                    AND edited.entry_rejection_reason='edited-source-message'
-              ))""",
-            (
-                message.channel_id,
-                message.message_id,
-                message.entry_rejection_reason == "edited-source-message",
-                message.revision_hash,
-                message.entry_rejection_reason == "edited-source-message",
-            ),
+              AND tm.raw_text IS DISTINCT FROM %s""",
+            (message.channel_id, message.message_id, message.raw_text),
         )
+
+    @staticmethod
+    def _classify_revision(cursor: Any, message: RawTelegramMessage) -> str | None:
+        """Reason to store for this revision, by comparison with retained revisions.
+
+        ``None`` for the first revision ever observed (the channel's published
+        text is the signal, even if it was edited before we first saw it),
+        ``superseded-source-revision`` when the text matches an audited revision,
+        and ``edited-source-message`` when the text differs from a retained one.
+        """
+        if message.entry_rejection_reason is not None:
+            return message.entry_rejection_reason
+        cursor.execute(
+            """SELECT count(*) AS revisions, bool_or(raw_text = %s) AS same_text,
+                      bool_or(entry_rejection_reason = 'edited-source-message') AS vetoed
+               FROM telegram_messages WHERE channel_id=%s AND message_id=%s""",
+            (message.raw_text, message.channel_id, message.message_id),
+        )
+        revisions, same_text, vetoed = _row_values(
+            cursor.fetchone(), "revisions", "same_text", "vetoed"
+        )
+        if not revisions:
+            return None
+        if vetoed:
+            return "edited-source-message"
+        return "superseded-source-revision" if same_text else "edited-source-message"
 
     @staticmethod
     def _heal_media(cursor: Any, message: RawTelegramMessage) -> None:
@@ -157,14 +207,16 @@ class PostgresRawMessageRepository:
             INSERT INTO telegram_messages (
                 id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state,
                 has_media, media_path, media_sha256, media_mime_type, media_size_bytes,
-                ingestion_origin, entry_expires_at, entry_rejection_reason, edit_veto_recorded_at
+                ingestion_origin, entry_expires_at, entry_rejection_reason, edit_veto_recorded_at,
+                source_edited_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      CASE WHEN %s='edited-source-message' THEN clock_timestamp() END)
+                      CASE WHEN %s='edited-source-message' THEN clock_timestamp() END, %s)
             ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
         """
         with closing(self._connection_factory()) as connection:
             with connection.cursor() as cursor:
                 self._anchor_coverage(cursor, message)
+                reason = self._classify_revision(cursor, message)
                 cursor.execute(
                     statement,
                     (
@@ -174,7 +226,7 @@ class PostgresRawMessageRepository:
                         message.revision_hash,
                         message.received_at,
                         message.raw_text,
-                        "EXPIRED" if message.entry_rejection_reason else "RECEIVED",
+                        "EXPIRED" if reason else "RECEIVED",
                         message.has_media,
                         message.media_path,
                         message.media_sha256,
@@ -182,14 +234,15 @@ class PostgresRawMessageRepository:
                         message.media_size_bytes,
                         message.ingestion_origin,
                         message.entry_expires_at,
-                        message.entry_rejection_reason,
-                        message.entry_rejection_reason,
+                        reason,
+                        reason,
+                        message.source_edited_at,
                     ),
                 )
                 self._heal_media(cursor, message)
                 self._revoke_edited_source(cursor, message)
             connection.commit()
-        return message
+        return replace(message, entry_rejection_reason=reason)
 
     def save_and_enqueue_forward(self, message: RawTelegramMessage) -> bool:
         """Atomically retain a source update; analysis owns the operator notification."""
@@ -197,15 +250,17 @@ class PostgresRawMessageRepository:
             INSERT INTO telegram_messages (
                 id, channel_id, message_id, revision_hash, received_at, raw_text, intake_state,
                 has_media, media_path, media_sha256, media_mime_type, media_size_bytes,
-                ingestion_origin, entry_expires_at, entry_rejection_reason, edit_veto_recorded_at
+                ingestion_origin, entry_expires_at, entry_rejection_reason, edit_veto_recorded_at,
+                source_edited_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      CASE WHEN %s='edited-source-message' THEN clock_timestamp() END)
+                      CASE WHEN %s='edited-source-message' THEN clock_timestamp() END, %s)
             ON CONFLICT (channel_id, message_id, revision_hash) DO NOTHING
             RETURNING id
         """
         with closing(self._connection_factory()) as connection:
             with connection.cursor() as cursor:
                 self._anchor_coverage(cursor, message)
+                reason = self._classify_revision(cursor, message)
                 cursor.execute(
                     statement,
                     (
@@ -215,7 +270,7 @@ class PostgresRawMessageRepository:
                         message.revision_hash,
                         message.received_at,
                         message.raw_text,
-                        "EXPIRED" if message.entry_rejection_reason else "RECEIVED",
+                        "EXPIRED" if reason else "RECEIVED",
                         message.has_media,
                         message.media_path,
                         message.media_sha256,
@@ -223,8 +278,9 @@ class PostgresRawMessageRepository:
                         message.media_size_bytes,
                         message.ingestion_origin,
                         message.entry_expires_at,
-                        message.entry_rejection_reason,
-                        message.entry_rejection_reason,
+                        reason,
+                        reason,
+                        message.source_edited_at,
                     ),
                 )
                 row = cursor.fetchone()

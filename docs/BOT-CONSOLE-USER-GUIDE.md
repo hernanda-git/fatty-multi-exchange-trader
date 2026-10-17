@@ -123,9 +123,11 @@ retry it as a new operation.
 
 Related records expose original analysis-notification status separately from
 execution alerts, source revisions, intents, reservations and fills. A sent
-notification is not a trade fill. New `ingested_at` and
-`edit_veto_recorded_at` timestamps distinguish database ingestion and edit-veto
-recording from source time. Historical unknown timestamps remain null.
+notification is not a trade fill. New `ingested_at`, `edit_veto_recorded_at` and
+`source_edited_at` timestamps distinguish database ingestion, edit-veto recording
+and the edit Telegram itself reported from source time. Historical unknown
+timestamps remain null, and a same-text re-publication is labeled
+`superseded-source-revision` without revoking the retained entry.
 
 Structured JSON transition logs are emitted after the state/evidence/outbox
 transaction commits. Raw provider account bodies, credentials and model prompts

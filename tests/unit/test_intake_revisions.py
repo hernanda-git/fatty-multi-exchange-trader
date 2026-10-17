@@ -36,8 +36,26 @@ async def test_actual_edit_event_is_registered_and_retained(forwarder):
     await edited(SimpleNamespace(chat_id=-1007, message=source))
     assert repository.count == 2
     revisions = list(repository._messages.values())
-    assert revisions[1].entry_rejection_reason == "edited-source-message"
+    # Same caption: the later revision is audit-only and the entry stays eligible.
+    assert revisions[1].entry_rejection_reason == "superseded-source-revision"
+    assert revisions[0].entry_rejection_reason is None
     assert revisions[0].entry_expires_at == revisions[1].entry_expires_at
+
+
+def test_edited_caption_revokes_every_revision_of_the_message():
+    repository = InMemoryRawMessageRepository()
+    adapter = TelegramIntake(repository)
+    adapter.ingest(channel_id=7, message=message(media=None))
+    changed = SimpleNamespace(
+        id=42,
+        message="different caption",
+        date=datetime.now(UTC),
+        media=None,
+        edit_date=datetime.now(UTC),
+    )
+    adapter.ingest(channel_id=7, message=changed)
+    reasons = [item.entry_rejection_reason for item in repository._messages.values()]
+    assert reasons == ["edited-source-message", "edited-source-message"]
 
 
 def test_same_caption_media_replacement_has_distinct_revision_identity():

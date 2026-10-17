@@ -104,8 +104,10 @@ SOURCE_ELIGIBLE_SQL = """
 AND isfinite({alias}.received_at)
 AND isfinite({alias}.entry_expires_at)
 AND {alias}.entry_rejection_reason IS NULL
--- An audited edit is a permanent message-level veto, including reverted
--- content and subsequent retrieval of the old unchanged revision.
+-- A revision whose signal text differs from a retained revision is a
+-- message-level veto, including reverted content and later retrieval of the old
+-- revision. Same-text re-publications (the publisher edits every post to attach
+-- its chart) are audited as superseded-source-revision and never revoke the entry.
 AND NOT EXISTS (
     SELECT 1 FROM telegram_messages source_edit
     WHERE source_edit.channel_id = {alias}.channel_id
