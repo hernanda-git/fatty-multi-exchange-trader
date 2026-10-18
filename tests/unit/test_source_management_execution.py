@@ -337,6 +337,23 @@ def test_unknown_cancel_blocks_management_and_restart_reconciles_before_position
     ]
 
 
+def test_parked_update_dead_letters_after_the_attempt_budget() -> None:
+    update = SourceManagementUpdate.new("a" * 64, "PUMPUSDT", ManagementAction.TP1_BOOKED)
+    store = InMemorySourceManagementStore([replace(update, state="reconciliation-pending")])
+    store.eligible = False
+    store.persist_provider_intent(update.id, f"source-management-{update.id.hex}-close")
+    gateway = RemainderGateway()
+    gateway.reconciliation_result = False  # the readback cannot prove terminality
+
+    executor = SourceManagementExecutor(store, gateway, mutations_enabled=True, max_attempts=3)
+    states = [executor.run_once("worker") for _ in range(3)]
+
+    assert states == ["reconciliation-pending", "reconciliation-pending", "failed"]
+    assert store.get(update.id).state == "failed"
+    assert store.get(update.id).attempts == 3
+    assert executor.run_once("worker") == "idle"
+
+
 def test_flat_close_intent_retires_once_the_venue_proves_nothing_pending() -> None:
     update = SourceManagementUpdate.new("a" * 64, "BTCUSDT", ManagementAction.CLOSE)
     store = InMemorySourceManagementStore([replace(update, state="reconciliation-pending")])

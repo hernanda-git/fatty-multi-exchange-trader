@@ -480,6 +480,27 @@ MIGRATIONS: Final = [
             ON missed_signals (window_id, recorded_at DESC);
         """,
     ),
+    (
+        35,
+        """
+        -- Reconciliation kernel, slice 1: a parked update counts its attempts and
+        -- carries a deadline, so it dead-letters with an alert instead of retrying
+        -- forever. NOT VALID: existing parked rows keep working until they are parked
+        -- again (none are expected, but the migration must never fail on data).
+        ALTER TABLE source_management_updates
+            ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE source_management_updates
+            ADD COLUMN IF NOT EXISTS last_error TEXT;
+        ALTER TABLE source_management_updates
+            ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMPTZ;
+        ALTER TABLE source_management_updates
+            DROP CONSTRAINT IF EXISTS source_management_updates_parked_deadline;
+        ALTER TABLE source_management_updates
+            ADD CONSTRAINT source_management_updates_parked_deadline CHECK (
+                state IN ('reconciled','failed','cancelled-flat','entries-cancelled')
+                OR deadline_at IS NOT NULL) NOT VALID;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

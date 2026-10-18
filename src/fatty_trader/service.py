@@ -1455,6 +1455,8 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
         PostgresSourceManagementStore(psycopg.connect),
         gateway,
         mutations_enabled=mutations_raw == "1",
+        max_attempts=int(environ.get("SOURCE_MANAGEMENT_MAX_ATTEMPTS", "5")),
+        retry_seconds=int(environ.get("SOURCE_MANAGEMENT_RETRY_SECONDS", "60")),
     )
     interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "30"))
     try:

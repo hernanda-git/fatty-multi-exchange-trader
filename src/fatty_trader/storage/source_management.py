@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from contextlib import closing
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fatty_trader.analyzer.trade_management import ManagementAction
 from fatty_trader.execution.source_management import SourceManagementUpdate
 from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL
+
+
+def _dead_letter_payload(update_id: UUID, attempts: int, error: str) -> str:
+    """One alert when a parked update spends its reconciliation budget."""
+    return json.dumps(
+        {
+            "kind": "reconciliation-dead-letter",
+            "update_id": str(update_id),
+            "attempts": attempts,
+            "last_error": error[:200],
+            "summary": (
+                f"source-management update {update_id} spent its reconciliation budget "
+                f"after {attempts} attempts and was marked failed: {error[:120]}"
+            ),
+        },
+        sort_keys=True,
+    )
 
 
 class PostgresSourceManagementStore:
@@ -63,6 +81,52 @@ class PostgresSourceManagementStore:
         if row is None:
             raise LookupError(f"unknown management update: {update_id}")
         return self._row(row)
+
+    def park(self, update_id: UUID, *, error: str, retry_seconds: int, max_attempts: int) -> str:
+        """Count one attempt against the budget and dead-letter when it is spent.
+
+        Returns the resulting state: ``reconciliation-pending`` while the budget
+        remains (with a deadline), ``failed`` once it is exhausted — with one alert.
+        """
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE source_management_updates u SET
+                    attempts = u.attempts + 1,
+                    last_error = %s,
+                    updated_at = clock_timestamp(),
+                    deadline_at = CASE WHEN u.attempts + 1 >= %s THEN NULL
+                        ELSE clock_timestamp() + (%s * interval '1 second') END,
+                    state = CASE WHEN u.attempts + 1 >= %s THEN 'failed'
+                        ELSE 'reconciliation-pending' END
+                WHERE u.id = %s
+                RETURNING u.state, u.attempts
+                """,
+                (error[:400], max_attempts, max(0, retry_seconds), max_attempts, update_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                connection.commit()
+                raise LookupError(f"unknown management update: {update_id}")
+            values = list(row.values()) if isinstance(row, dict) else list(row)
+            state, attempts = str(values[0]), int(values[1])
+            if state == "failed":
+                cursor.execute(
+                    """
+                    INSERT INTO notifications_outbox (id, dedup_key, payload)
+                    VALUES (%s, %s, %s::jsonb)
+                    ON CONFLICT (dedup_key) DO NOTHING
+                    """,
+                    (
+                        uuid4(),
+                        f"source-update-dead-letter:{update_id}",
+                        _dead_letter_payload(update_id, attempts, error),
+                    ),
+                )
+            connection.commit()
+        return state
 
     def update_state(self, update_id: UUID, state: str) -> None:
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:

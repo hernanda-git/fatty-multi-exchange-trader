@@ -18,6 +18,7 @@ class SourceManagementUpdate:
     symbol: str
     action: ManagementAction
     state: str = "queued"
+    attempts: int = 0
 
     @classmethod
     def new(cls, revision: str, symbol: str, action: ManagementAction) -> SourceManagementUpdate:
@@ -28,6 +29,9 @@ class SourceManagementStore(Protocol):
     def claim(self, worker_id: str) -> SourceManagementUpdate | None: ...
     def get(self, update_id: UUID) -> SourceManagementUpdate: ...
     def update_state(self, update_id: UUID, state: str) -> None: ...
+    def park(
+        self, update_id: UUID, *, error: str, retry_seconds: int, max_attempts: int
+    ) -> str: ...
     def persist_provider_intent(self, update_id: UUID, client_oid: str) -> bool: ...
     def has_provider_intent(self, update_id: UUID, client_oid: str) -> bool: ...
     def management_is_eligible(self, update_id: UUID) -> bool: ...
@@ -86,6 +90,16 @@ class InMemorySourceManagementStore:
         update = self._updates.pop(update_id)
         self._updates[update_id] = replace(update, state=state)
 
+    def park(self, update_id: UUID, *, error: str, retry_seconds: int, max_attempts: int) -> str:
+        del error, retry_seconds
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        update = self._updates[update_id]
+        attempts = update.attempts + 1
+        state = "failed" if attempts >= max_attempts else "reconciliation-pending"
+        self._updates[update_id] = replace(update, state=state, attempts=attempts)
+        return state
+
     def persist_provider_intent(self, update_id: UUID, client_oid: str) -> bool:
         key = (update_id, client_oid)
         if key in self._provider_intents:
@@ -112,10 +126,14 @@ class SourceManagementExecutor:
         gateway: SourceManagementGateway,
         *,
         mutations_enabled: bool = False,
+        max_attempts: int = 5,
+        retry_seconds: int = 60,
     ) -> None:
         self._store = store
         self._gateway = gateway
         self._mutations_enabled = mutations_enabled
+        self._max_attempts = max(1, max_attempts)
+        self._retry_seconds = max(0, retry_seconds)
 
     def run_once(self, worker_id: str) -> str:
         update = self._store.claim(worker_id)
@@ -243,9 +261,15 @@ class SourceManagementExecutor:
                     stop_loss=position["entry"],
                     client_oid=sl_oid,
                 )
-        except SourceManagementReconciliationPending:
-            self._store.update_state(update.id, "reconciliation-pending")
-            return "reconciliation-pending"
+        except SourceManagementReconciliationPending as exc:
+            # Count the attempt: the row keeps a deadline while the budget lasts and
+            # dead-letters with one alert once it is spent, instead of retrying forever.
+            return self._store.park(
+                update.id,
+                error=str(exc) or type(exc).__name__,
+                retry_seconds=self._retry_seconds,
+                max_attempts=self._max_attempts,
+            )
         except (ValueError, KeyError, TypeError):
             self._store.update_state(update.id, "failed")
             return "failed"
