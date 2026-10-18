@@ -246,3 +246,127 @@ async def test_recovery_refuses_missing_waiting_order_and_duplicate_provider_row
     }
     client.pending = [row, dict(row)]
     assert "pending-entry-duplicate" in await reader.inventory()
+
+
+class ReservationCandidates:
+    """Records retirements; candidates are supplied by the test."""
+
+    def __init__(self, candidates):
+        self._candidates = candidates
+        self.resolved: list[tuple[str, str]] = []
+
+    def orphan_candidates(self, environment):
+        assert environment in {"LIVE", "DEMO"}
+        return list(self._candidates)
+
+    def resolve(self, reservation_id, outcome):
+        self.resolved.append((str(reservation_id), outcome))
+
+
+def orphan_candidate():
+    return {
+        "id": "res-1",
+        "symbol": "ENAUSDT",
+        "client_order_id": "root-oid",
+        "state": "reserved",
+    }
+
+
+class Unreadable(Reads):
+    async def get_single_position(self, symbol):
+        raise TimeoutError("provider offline")
+
+
+@pytest.mark.asyncio
+async def test_proved_empty_orphan_reservation_is_retired_and_alerted():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    client = Reads()
+    client.position = []
+    client.pending = []
+    client.plans = []
+    reservations = ReservationCandidates([orphan_candidate()])
+    alerts: list[dict[str, object]] = []
+    repository = SimpleNamespace(
+        inventory_issues=lambda env: [],
+        alert_orphan_retirement=lambda **kwargs: alerts.append(kwargs),
+    )
+    reader = GetOnlyProtectionRecovery(
+        client, repository, environment="LIVE", reservations=reservations
+    )
+
+    retired = await reader.retire_proved_empty_orphans()
+
+    assert reservations.resolved == [("res-1", "REJECTED")]
+    assert retired == [
+        {"reservation_id": "res-1", "symbol": "ENAUSDT", "previous_state": "reserved"}
+    ]
+    assert alerts == [
+        {"reservation_id": "res-1", "symbol": "ENAUSDT", "reason": "recovery-proved-empty"}
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("position", "pending", "plans"),
+    [
+        ([{"symbol": "ENAUSDT", "total": "5", "holdSide": "long"}], [], []),
+        ([], [{"symbol": "ENAUSDT", "clientOid": "root-oid"}], []),
+        ([], [{"total": "5"}], []),
+        ([], [], [{"symbol": "ENAUSDT", "planType": "pos_loss"}]),
+    ],
+    ids=["position-open", "pending-order", "pending-order-without-identity", "pending-plan"],
+)
+async def test_orphan_is_never_retired_while_the_venue_shows_work(position, pending, plans):
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    client = Reads()
+    client.position = position
+    client.pending = pending
+    client.plans = plans
+    reservations = ReservationCandidates([orphan_candidate()])
+    reader = GetOnlyProtectionRecovery(
+        client,
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        reservations=reservations,
+    )
+
+    assert await reader.retire_proved_empty_orphans() == []
+    assert reservations.resolved == []
+
+
+@pytest.mark.asyncio
+async def test_orphan_retirement_requires_readable_venue_and_symbol():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    unreadable = ReservationCandidates([orphan_candidate()])
+    reader = GetOnlyProtectionRecovery(
+        Unreadable(),
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        reservations=unreadable,
+    )
+    assert await reader.retire_proved_empty_orphans() == []
+    assert unreadable.resolved == []
+
+    anonymous = ReservationCandidates([dict(orphan_candidate(), symbol="")])
+    reader = GetOnlyProtectionRecovery(
+        Reads(),
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        reservations=anonymous,
+    )
+    assert await reader.retire_proved_empty_orphans() == []
+    assert anonymous.resolved == []
+
+
+@pytest.mark.asyncio
+async def test_orphan_retirement_is_a_noop_without_a_reservation_repository():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    reader = GetOnlyProtectionRecovery(
+        Reads(), SimpleNamespace(inventory_issues=lambda env: []), environment="LIVE"
+    )
+
+    assert await reader.retire_proved_empty_orphans() == []

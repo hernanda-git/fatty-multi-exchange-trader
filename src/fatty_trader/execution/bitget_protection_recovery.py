@@ -6,8 +6,9 @@ Flat historical fills are escalated: absence of a position is not a close fill.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fatty_trader.exchanges.bitget.async_execution import AsyncProtectionResult
@@ -19,15 +20,62 @@ from fatty_trader.exchanges.bitget.reconciliation_live import (
 from fatty_trader.execution.protection import ProtectionPlan, ProtectionState
 
 
+def _position_quantity(payload: Any) -> Decimal | None:
+    """Sum open quantity across a position payload; None when unreadable."""
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        return None
+    total = Decimal(0)
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        raw = row.get("total", row.get("size"))
+        if raw is None:
+            return None
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not value.is_finite() or value < 0:
+            return None
+        total += value
+    return total
+
+
+def _is_empty(payload: Any) -> bool:
+    """True only for a payload that proves the venue returned no rows."""
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    return isinstance(rows, list) and not rows
+
+
+def _rows_for_symbol(payload: Any, symbol: str) -> list[dict[str, Any]] | None:
+    """Rows matching ``symbol``; None when the payload cannot prove anything."""
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return None
+    if any(not isinstance(row.get("symbol"), str) or not row.get("symbol") for row in rows):
+        # A row without an identity cannot be scoped, so nothing is proven.
+        return None
+    wanted = symbol.upper()
+    return [row for row in rows if str(row.get("symbol")).upper() == wanted]
+
+
 class GetOnlyProtectionRecovery:
     def __init__(
-        self, client: Any, repository: Any, *, environment: str, intent_store: Any = None
+        self,
+        client: Any,
+        repository: Any,
+        *,
+        environment: str,
+        intent_store: Any = None,
+        reservations: Any = None,
     ) -> None:
         self._client = client
         self._repository = repository
         self._environment = environment
         self._verified: dict[str, tuple[str, str, Decimal]] = {}
         self._intent_store = intent_store
+        self._reservations = reservations
 
     def begin(self) -> None:
         self._verified.clear()
@@ -136,6 +184,63 @@ class GetOnlyProtectionRecovery:
         if any(intent.client_oid not in matched for intent in owned):
             issues.append("owned-pending-entry-inventory-mismatch")
         return tuple(sorted(set(issues)))
+
+    async def retire_proved_empty_orphans(self) -> list[dict[str, Any]]:
+        """GET-only: retire reservations the venue proves have no effect.
+
+        A reservation that holds ownership with no entry intent used to block
+        dispatch readiness until an operator ran the approved baseline script. When
+        the symbol shows no position, no pending order and no pending plan, that
+        commitment is provably moot, so it is resolved as released and announced.
+        Anything unproven leaves the reservation exactly as it was.
+        """
+        if self._reservations is None:
+            return []
+        candidates = getattr(self._reservations, "orphan_candidates", None)
+        if not callable(candidates):
+            return []
+        retired: list[dict[str, Any]] = []
+        for row in candidates(self._environment):
+            symbol = str(row.get("symbol") or "")
+            if not symbol:
+                # Without a symbol the venue cannot be asked; never guess one.
+                continue
+            try:
+                positions = await self._client.get_single_position(symbol)
+                quantity = _position_quantity(positions)
+                pending = _rows_for_symbol(await self._client.get_pending_orders(), symbol)
+                plans = await self._client.get_pending_plan_orders(symbol)
+            except Exception:
+                continue
+            if quantity != 0 or pending is None or pending or not _is_empty(plans):
+                continue
+            self._reservations.resolve(row["id"], "REJECTED")
+            alert = getattr(self._repository, "alert_orphan_retirement", None)
+            if callable(alert):
+                alert(
+                    reservation_id=str(row["id"]),
+                    symbol=symbol,
+                    reason="recovery-proved-empty",
+                )
+            print(
+                json.dumps(
+                    {
+                        "event": "orphan-reservation-retired",
+                        "reservation_id": str(row["id"]),
+                        "symbol": symbol,
+                        "reason": "recovery-proved-empty",
+                    }
+                ),
+                flush=True,
+            )
+            retired.append(
+                {
+                    "reservation_id": str(row["id"]),
+                    "symbol": symbol,
+                    "previous_state": str(row.get("state")),
+                }
+            )
+        return retired
 
     @staticmethod
     def _matches_pending_entry(intent: LiveIntentRecord, row: dict[str, Any]) -> bool:

@@ -173,6 +173,11 @@ class BitgetDispatchExecution:
             )
             self._resolve_reservation(intent, status)
             count += 1
+        retire = getattr(reader, "retire_proved_empty_orphans", None)
+        if callable(retire):
+            # A provably-empty orphan stops blocking readiness here instead of
+            # waiting for an operator baseline; anything unproven is untouched.
+            await retire()
         inventory = getattr(reader, "inventory", None)
         if callable(inventory):
             issues.extend(await inventory())

@@ -393,7 +393,11 @@ def build_bitget_execution_runtime(
     intent_store = cast(LiveIntentStoreProtocol, intent_store_factory())
 
     recovery_reader = GetOnlyProtectionRecovery(
-        client, dispatch_repository, environment=config.venue_mode, intent_store=intent_store
+        client,
+        dispatch_repository,
+        environment=config.venue_mode,
+        intent_store=intent_store,
+        reservations=reservation_repository,
     )
     execution = BitgetDispatchExecution(
         AsyncBitgetExecution(

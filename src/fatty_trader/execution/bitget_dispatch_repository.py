@@ -518,6 +518,38 @@ class PostgresBitgetDispatchRepository:
             flush=True,
         )
 
+    def alert_orphan_retirement(
+        self, *, reservation_id: str, symbol: str, reason: str
+    ) -> None:
+        """Announce a GET-only retirement of a provably-empty orphan reservation."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO notifications_outbox (id, dedup_key, payload)
+                VALUES (%s, %s, %s::jsonb)
+                ON CONFLICT (dedup_key) DO NOTHING
+                """,
+                (
+                    uuid4(),
+                    f"bitget-orphan-retirement:{reservation_id}",
+                    json.dumps(
+                        {
+                            "kind": "execution-alert",
+                            "reservation_id": reservation_id,
+                            "symbol": symbol,
+                            "reason": reason,
+                            "evidence": "no position, no pending orders, no entry intent",
+                        }
+                    ),
+                ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
     def alert(self, dispatch_id: UUID, reason: str) -> None:
         reason = safe_transition_reason(reason) or "invalid-alert-reason"
         connection = self._connection_factory()

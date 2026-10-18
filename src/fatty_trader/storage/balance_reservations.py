@@ -540,6 +540,49 @@ class PostgresBitgetMarginReservationRepository:
             connection.rollback()
             raise
 
+    def orphan_candidates(self, environment: str) -> list[dict[str, Any]]:
+        """Reservations that still hold ownership but have no entry intent.
+
+        Read-only. The caller must prove the venue holds nothing for the symbol
+        before retiring one; this query only lists the candidates.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT m.id, coalesce(m.binding_symbol, ''), m.client_order_id, m.state
+                FROM bitget_margin_reservations m
+                LEFT JOIN live_order_intents i ON i.exchange = m.exchange
+                    AND i.client_order_id = m.client_order_id AND i.role = 'ENTRY'
+                WHERE m.exchange = 'bitget'
+                  AND m.state IN ('reserved','unknown','consumed')
+                  AND (m.environment = %s OR m.environment IS NULL)
+                  AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+                      WHERE b.record_kind='reservation' AND b.record_id=m.id)
+                  AND i.client_order_id IS NULL
+                ORDER BY m.created_at
+                """,
+                (environment,),
+            )
+            rows = cursor.fetchall()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        candidates: list[dict[str, Any]] = []
+        for row in rows:
+            values = list(row.values()) if isinstance(row, dict) else list(row)
+            candidates.append(
+                {
+                    "id": values[0],
+                    "symbol": str(values[1] or ""),
+                    "client_order_id": str(values[2]),
+                    "state": str(values[3]),
+                }
+            )
+        return candidates
+
     def active_client_order_ids(self) -> list[tuple[UUID, str, bool]]:
         """Return commitments requiring GET-only startup reconciliation."""
         connection = self._connection_factory()

@@ -307,6 +307,17 @@ def main() -> None:
     run(["docker", "compose", "run", "--rm", "--no-deps", "migrate"], timeout=600)
     log({"post_migration": psql(POST_SQL)})
 
+    # ── 11b. The step-7 window needs the accounting tables; on the release that
+    #          first creates them, record it now instead of losing coverage.
+    if window_id is None:
+        try:
+            window_id = open_maintenance_window(
+                execute, revision=revision, reason="staged-rollout", opened_by="rollout"
+            )
+            log({"maintenance_window": window_id, "opened_after_migration": True})
+        except Exception as exc:  # noqa: BLE001 - accounting never fails a rollout
+            log({"maintenance_accounting": "unavailable", "reason": type(exc).__name__})
+
     # ── 12. Protection/monitor lane first (no entry capability).
     run(
         [
