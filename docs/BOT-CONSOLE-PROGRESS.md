@@ -776,3 +776,23 @@ a state absent from `domain/enums.py`. Also recorded: no daily-loss/drawdown sto
 zero-default slippage floors (`domain/models.py:94-99`), stop-the-world rollouts that
 silently age signals out of the 5-minute window, `MANUAL_REVIEW` has no requeue path,
 and container logs are lost on recreation.
+
+**Health card truthfulness — `a0f87f0`.** The six-hourly Telegram card could never be
+ONLINE: `scripts/health_report.py::get_service_status` produced `Lifecycle UNKNOWN`
+unconditionally and only upgraded it to `BLOCKED` when a *restarting* dispatcher
+logged a phrase the service no longer emits, so the verdict stayed DEGRADED while
+every other line was green. Lifecycle now reads the dispatcher's own durable issue
+predicates (orphan entry intent, reservation without entry intent, unresolved
+protection, baseline account/environment binding) plus the latest dispatcher cycle
+line from a bounded five-minute window: READY requires that evidence, a block reports
+the dispatcher's exact issue list, a non-running dispatcher blocks explicitly, and an
+unreadable cycle reads UNKNOWN rather than an inference. The safety-evidence block
+also stopped claiming UNKNOWN where durable evidence exists: stored stream rows render
+as `STORED · <symbol> <state> · <age>` (never as a live probe, never as latch-release
+proof), an allowlisted active latch renders `RELEASABLE`, no latch renders `CLEAR`,
+the fallback gate renders the effective flag, and the monitor line reflects container
+health. The operator-container `/health` card shares the same loader, so it now
+carries a truthful `Lifecycle` too (its service counts stay unprobed by design).
+2187 unit tests, ruff check/format and mypy strict pass; verification rendered the
+card from the deployed tree: `🟢 ONLINE` with `Lifecycle READY`, `Recovery CLEAR`,
+`Fallback gate DISABLED`, `Stream now STORED · PUMPUSDT HEALTHY · 0s`.
