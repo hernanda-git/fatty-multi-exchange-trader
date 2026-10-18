@@ -242,6 +242,63 @@ class GetOnlyProtectionRecovery:
             )
         return retired
 
+    async def settle_absent_protection(self) -> list[dict[str, Any]]:
+        """Settle unknown non-entry intents whose order the venue provably no longer holds.
+
+        A stopped-out trade leaves protection intents that no readback can resolve (no
+        plan, no position) and that block both recovery and an approved baseline. When the
+        symbol is flat, the venue lists no plan and no pending order, and the intent filled
+        nothing, its absence is proof enough to cancel it — with one alert.
+        """
+        if self._intent_store is None:
+            return []
+        candidates = getattr(self._intent_store, "unknown_non_entry", None)
+        settle = getattr(self._intent_store, "settle_absent", None)
+        if not callable(candidates) or not callable(settle):
+            return []
+        settled: list[dict[str, Any]] = []
+        for intent in candidates():
+            if intent.filled_qty != 0:
+                continue
+            symbol = str(intent.symbol)
+            try:
+                positions = await self._client.get_single_position(symbol)
+                quantity = _position_quantity(positions)
+                plans = await self._client.get_pending_plan_orders(symbol)
+                pending = _rows_for_symbol(await self._client.get_pending_orders(), symbol)
+            except Exception:
+                continue
+            if quantity != 0 or pending is None or pending or not _is_empty(plans):
+                continue
+            if not settle(intent.client_oid):
+                continue
+            alert = getattr(self._repository, "alert_protection_settled", None)
+            if callable(alert):
+                alert(
+                    client_oid=intent.client_oid,
+                    symbol=symbol,
+                    reason="protection-plan-absent-settled",
+                )
+            print(
+                json.dumps(
+                    {
+                        "event": "protection-plan-absent-settled",
+                        "intent": intent.client_oid,
+                        "symbol": symbol,
+                        "dispatch_id": str(intent.dispatch_id or ""),
+                    }
+                ),
+                flush=True,
+            )
+            settled.append(
+                {
+                    "intent": intent.client_oid,
+                    "symbol": symbol,
+                    "dispatch_id": str(intent.dispatch_id or ""),
+                }
+            )
+        return settled
+
     @staticmethod
     def _matches_pending_entry(intent: LiveIntentRecord, row: dict[str, Any]) -> bool:
         """Only an exact durable non-reduce-only LIMIT leg may remain working."""

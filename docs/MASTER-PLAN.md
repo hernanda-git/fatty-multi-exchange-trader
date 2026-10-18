@@ -95,6 +95,40 @@ table exists there yet.
 
 Nothing else in the plan is implemented yet; no trading path reads any of it.
 
+## Incident 2026-10-18 09:16 UTC — WLD wedge, and the four fixes it forced
+
+A WLD entry filled 11 at 09:16:17, SL/TP registration was never *verified*, the
+protection watchdog emergency-closed the position at 09:16:19 (correct: it never held
+an unprotected position), and recovery then refused readiness with
+`recovery-missing-protection:owned-flat-close-fill-unproven` — every later signal was
+blocked until 11:52 UTC, including NEAR #16326, whose 5-minute window closed while the
+lane was down. No exposure was ever open; the cost was availability and one lost signal.
+
+Three defects met, all fixed here with tests:
+
+1. **Close-binding race** (the wedge): `bind_requested_close` required the reservation
+   to be `consumed`, so a protective close that raced the fill produced no binding, the
+   close's fills were never provable, and recovery blocked forever. The bind (and the
+   reconcile candidate query, which reads the same reservations) now accept
+   `consumed|reserved`; the entry intent's `filled_qty>0` already proves the fill.
+2. **Stranded protection intents** (what made even the approved baseline refuse): an
+   `unknown` SL/TP intent whose plan the venue no longer holds can never reconcile, and
+   an unresolved non-entry intent blocks both recovery and the baseline. The GET-only
+   recovery reader now settles such intents as `cancelled` — only when the symbol is
+   flat, the venue lists no plan and no pending order, and the intent filled nothing —
+   with one alert. `scripts/reconcile_unknown_intents.py` exposes the same evidence gate
+   to an operator.
+3. **Silence** (why nobody knew for 2.5 hours): a blocked lane produced only a log line.
+   The dispatcher now emits one `execution-alert` per distinct recovery issue set
+   (dedup-keyed, so 30-second cycles cannot spam), and execution alerts render the
+   identities they actually have instead of `Dispatch: (empty)` placeholders.
+
+Open follow-up found in the same incident: protection verification was given ~2 s before
+the watchdog escalated to an emergency close, which is likely too tight for provider
+readback. Add a bounded verification grace (readback with retry) before escalating, and
+alert on protection-registration failures themselves.
+
+
 ## Explicit non-goals
 
 * No Redis as a state store (Postgres owns anything that can move money); Redis only

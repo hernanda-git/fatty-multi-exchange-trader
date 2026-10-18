@@ -518,9 +518,49 @@ class PostgresBitgetDispatchRepository:
             flush=True,
         )
 
-    def alert_orphan_retirement(
-        self, *, reservation_id: str, symbol: str, reason: str
-    ) -> None:
+    def alert_protection_settled(self, *, client_oid: str, symbol: str, reason: str) -> None:
+        """Announce a settled protection plan the venue provably no longer held."""
+        self._alert(
+            dedup_key=f"protection-absent-settled:{client_oid}",
+            payload={
+                "kind": "execution-alert",
+                "intent": client_oid,
+                "symbol": symbol,
+                "reason": reason,
+                "evidence": "flat position, no pending plan, no pending order, filled_qty=0",
+            },
+        )
+
+    def alert_recovery_blocked(self, issues: tuple[str, ...]) -> None:
+        """One owner alert per distinct recovery issue set (cycles repeat every 30 s)."""
+        signature = ",".join(sorted(issues)) or "unconfirmed"
+        self._alert(
+            dedup_key=f"dispatcher-recovery-blocked:{signature}",
+            payload={
+                "kind": "execution-alert",
+                "reason": "dispatcher-recovery-blocked",
+                "evidence": signature,
+            },
+        )
+
+    def _alert(self, *, dedup_key: str, payload: dict[str, Any]) -> None:
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO notifications_outbox (id, dedup_key, payload)
+                VALUES (%s, %s, %s::jsonb)
+                ON CONFLICT (dedup_key) DO NOTHING
+                """,
+                (uuid4(), dedup_key, json.dumps(payload, sort_keys=True)),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def alert_orphan_retirement(self, *, reservation_id: str, symbol: str, reason: str) -> None:
         """Announce a GET-only retirement of a provably-empty orphan reservation."""
         connection = self._connection_factory()
         try:

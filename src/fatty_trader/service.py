@@ -853,6 +853,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                         f"issues={','.join(issues) or 'unconfirmed'}",
                         flush=True,
                     )
+                    alert_blocked = getattr(runtime.execution, "alert_recovery_blocked", None)
+                    if callable(alert_blocked):
+                        # One owner alert per distinct issue set; a blocked lane used to
+                        # be visible only in container logs.
+                        alert_blocked()
                     await asyncio.sleep(interval)
                     continue
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)

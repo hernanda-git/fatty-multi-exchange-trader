@@ -461,16 +461,28 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
 
 def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
     reason = _safe_text(_safe_value(payload.get("reason", "")), limit=512)
-    dispatch_id = escape(_safe_text(_safe_value(payload.get("dispatch_id", "")), limit=96))
     if reason == "cutover-gated":
         return _format_execution_event_html(payload)
-    return (
-        "⚠️ <b>Perhatian Eksekusi</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"Alasan: <code>{escape(reason)}</code>\n"
-        f"Dispatch: <code>{dispatch_id}</code>\n"
-        "Perlu pemeriksaan operator."
+    lines = [
+        "⚠️ <b>Perhatian Eksekusi</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"Alasan: <code>{escape(reason)}</code>",
+    ]
+    identifiers = (
+        ("Dispatch", "dispatch_id", 96),
+        ("Intent", "intent", 96),
+        ("Symbol", "symbol", 32),
     )
+    for label, key, limit in identifiers:
+        raw = payload.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        lines.append(f"{label}: <code>{escape(_safe_text(_safe_value(raw), limit=limit))}</code>")
+    evidence_raw = payload.get("evidence")
+    if isinstance(evidence_raw, str) and evidence_raw.strip():
+        lines.append(f"Bukti: {escape(_safe_text(_safe_value(evidence_raw), limit=200))}")
+    lines.append("Perlu pemeriksaan operator.")
+    return "\n".join(lines)
 
 
 def _format_system_event_html(payload: Mapping[str, Any]) -> str:

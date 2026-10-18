@@ -5,6 +5,26 @@ import pytest
 from fatty_trader.notifications import format_notification_html
 
 
+def test_execution_alert_renders_only_identities_it_has():
+    with_intent = format_notification_html(
+        {
+            "kind": "execution-alert",
+            "reason": "protection-plan-absent-settled",
+            "intent": "live-WLDUSDT-test-sl",
+            "symbol": "WLDUSDT",
+        }
+    )
+    assert "Intent: <code>live-WLDUSDT-test-sl</code>" in with_intent
+    assert "Symbol: <code>WLDUSDT</code>" in with_intent
+    assert "Dispatch:" not in with_intent
+
+    with_dispatch = format_notification_html(
+        {"kind": "execution-alert", "reason": "dispatcher-recovery-blocked", "dispatch_id": "d-9"}
+    )
+    assert "Dispatch: <code>d-9</code>" in with_dispatch
+    assert "Intent:" not in with_dispatch
+
+
 @pytest.mark.parametrize("kind", ["execution-event", "execution-alert"])
 @pytest.mark.parametrize(
     "prefix",

@@ -578,6 +578,52 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             connection.rollback()
             raise
 
+    def unknown_non_entry(self) -> tuple[LiveIntentRecord, ...]:
+        """Unknown non-entry intents, oldest first (read-only)."""
+        connection = self._connection_factory()
+        try:
+            cursor: Any = connection.cursor()
+            cursor.execute(
+                "SELECT client_order_id FROM live_order_intents WHERE exchange='bitget' "
+                "AND role <> 'ENTRY' AND state = 'unknown' ORDER BY created_at"
+            )
+            rows = cursor.fetchall()
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+        oids = [str(list(row.values())[0] if isinstance(row, dict) else row[0]) for row in rows]
+        records = []
+        for oid in oids:
+            record = self.get(oid)
+            if record is not None:
+                records.append(record)
+        return tuple(records)
+
+    def settle_absent(self, client_oid: str) -> int:
+        """Cancel one unfilled unknown non-entry intent; returns rows changed.
+
+        Callers must already have proven the venue no longer holds the order or plan.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor: Any = connection.cursor()
+            cursor.execute(
+                "UPDATE live_order_intents SET state = 'cancelled' WHERE client_order_id = %s "
+                "AND state = 'unknown' AND role <> 'ENTRY' AND filled_qty = 0",
+                (client_oid,),
+            )
+            changed = cursor.rowcount
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+        return int(changed)
+
     def save(self, record: LiveIntentRecord) -> None:
         self.claim(record)
 

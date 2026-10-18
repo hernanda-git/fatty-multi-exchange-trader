@@ -178,6 +178,11 @@ class BitgetDispatchExecution:
             # A provably-empty orphan stops blocking readiness here instead of
             # waiting for an operator baseline; anything unproven is untouched.
             await retire()
+        settle = getattr(reader, "settle_absent_protection", None)
+        if callable(settle):
+            # Stranded protection plans of a closed trade would otherwise block both
+            # recovery and an approved baseline forever.
+            await settle()
         inventory = getattr(reader, "inventory", None)
         if callable(inventory):
             issues.extend(await inventory())
@@ -192,6 +197,12 @@ class BitgetDispatchExecution:
         self.recovery_issues = tuple(sorted(set(issues)))
         self.recovery_ready = not self.recovery_issues
         return count
+
+    def alert_recovery_blocked(self) -> None:
+        """Announce the current recovery issue set once; a blocked lane is never silent."""
+        alert = getattr(self._dispatch_repository, "alert_recovery_blocked", None)
+        if callable(alert):
+            alert(self.recovery_issues)
 
     async def _read_recovery_protection(
         self, intent: LiveIntentRecord, dispatch: BitgetDispatch

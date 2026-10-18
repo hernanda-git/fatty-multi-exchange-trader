@@ -72,7 +72,10 @@ class PostgresVerifiedCloseLifecycle:
                 + """
                 JOIN live_order_intents x ON x.exchange=r.exchange
                     AND x.client_order_id=%s AND x.symbol=r.symbol
-                WHERE r.environment=%s AND r.state='consumed'
+                -- A protective close can race the fill, so the reservation may still be
+                -- 'reserved' here; the entry intent below already proves filled_qty>0, so
+                -- ownership evidence is complete without waiting for 'consumed'.
+                WHERE r.environment=%s AND r.state IN ('consumed','reserved')
                     AND (s.id IS NOT NULL OR d.source_type='console_manual')
                     AND e.role='ENTRY' AND e.state IN ('filled','reconciled')
                     AND e.symbol=r.symbol AND e.filled_qty>0
@@ -279,7 +282,9 @@ class PostgresVerifiedCloseLifecycle:
                 """SELECT r.dispatch_id,r.client_order_id,r.symbol,b.close_client_order_id
                 FROM bitget_verified_close_bindings b
                 JOIN bitget_margin_reservations r ON r.id=b.reservation_id
-                WHERE r.environment=%s AND r.state='consumed'""",
+                -- Bound closes whose fill raced the reservation transition must still
+                -- reconcile; the binding itself proves ownership was established.
+                WHERE r.environment=%s AND r.state IN ('consumed','reserved')""",
                 (environment,),
             )
             return list(cur.fetchall())

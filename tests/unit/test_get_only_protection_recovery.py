@@ -370,3 +370,120 @@ async def test_orphan_retirement_is_a_noop_without_a_reservation_repository():
     )
 
     assert await reader.retire_proved_empty_orphans() == []
+    assert await reader.settle_absent_protection() == []
+
+
+class ProtectionIntents:
+    """Unknown non-entry intents supplied by the test; records settlements."""
+
+    def __init__(self, intents):
+        self._intents = intents
+        self.settled: list[str] = []
+
+    def unknown_non_entry(self):
+        return tuple(self._intents)
+
+    def settle_absent(self, client_oid):
+        self.settled.append(client_oid)
+        return 1
+
+
+def protection_intent(filled: str = "0"):
+    return SimpleNamespace(
+        client_oid="live-WLDUSDT-test-sl",
+        symbol="WLDUSDT",
+        filled_qty=Decimal(filled),
+        dispatch_id="dispatch-1",
+    )
+
+
+def flat_reads():
+    client = Reads()
+    client.position = []
+    client.pending = []
+    client.plans = []
+    return client
+
+
+@pytest.mark.asyncio
+async def test_absent_protection_plan_on_a_flat_symbol_is_settled_once():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    intents = ProtectionIntents([protection_intent()])
+    alerts: list[dict[str, object]] = []
+    repository = SimpleNamespace(
+        inventory_issues=lambda env: [],
+        alert_protection_settled=lambda **kwargs: alerts.append(kwargs),
+    )
+    reader = GetOnlyProtectionRecovery(
+        flat_reads(), repository, environment="LIVE", intent_store=intents
+    )
+
+    settled = await reader.settle_absent_protection()
+
+    assert settled == [
+        {"intent": "live-WLDUSDT-test-sl", "symbol": "WLDUSDT", "dispatch_id": "dispatch-1"}
+    ]
+    assert intents.settled == ["live-WLDUSDT-test-sl"]
+    assert alerts == [
+        {
+            "client_oid": "live-WLDUSDT-test-sl",
+            "symbol": "WLDUSDT",
+            "reason": "protection-plan-absent-settled",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("position", "pending", "plans"),
+    [
+        ([{"symbol": "WLDUSDT", "total": "11", "holdSide": "long"}], [], []),
+        ([], [{"symbol": "WLDUSDT", "clientOid": "x"}], []),
+        ([], [{"total": "11"}], []),
+        ([], [], [{"symbol": "WLDUSDT", "planType": "pos_loss"}]),
+    ],
+    ids=["position-open", "pending-order", "pending-order-without-identity", "pending-plan"],
+)
+async def test_absent_protection_is_not_settled_without_full_proof(position, pending, plans):
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    client = Reads()
+    client.position = position
+    client.pending = pending
+    client.plans = plans
+    intents = ProtectionIntents([protection_intent()])
+    reader = GetOnlyProtectionRecovery(
+        client,
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        intent_store=intents,
+    )
+
+    assert await reader.settle_absent_protection() == []
+    assert intents.settled == []
+
+
+@pytest.mark.asyncio
+async def test_filled_or_unreadable_protection_intent_is_never_settled():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    filled = ProtectionIntents([protection_intent(filled="11")])
+    reader = GetOnlyProtectionRecovery(
+        flat_reads(),
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        intent_store=filled,
+    )
+    assert await reader.settle_absent_protection() == []
+    assert filled.settled == []
+
+    unreadable = ProtectionIntents([protection_intent()])
+    reader = GetOnlyProtectionRecovery(
+        Unreadable(),
+        SimpleNamespace(inventory_issues=lambda env: []),
+        environment="LIVE",
+        intent_store=unreadable,
+    )
+    assert await reader.settle_absent_protection() == []
+    assert unreadable.settled == []
