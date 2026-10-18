@@ -141,6 +141,11 @@ alert `protection-registration-failed` with the attempt trail. The close intent 
 before POST so the lifecycle stays provable.
 *Done when:* replay of the WLD and NEAR sequences holds the position, and a synthetic
 never-confirms case still contains and alerts.
+**Landed 2026-10-18** (`_await_native_protection`, `BITGET_PROTECTION_GRACE_SECONDS=15`,
+3 s jittered readbacks, zero default for library/test callers): reads only, stops early
+on a flat position, records `native-protection-verified-late` / `-grace-flat`, and appends
+the attempt count to the capability error trail. Coverage: confirmed-late never closes,
+never-confirmed still contains once, zero-budget callers unchanged.
 
 **P0-3 · Soft stop primary, hard stop backstop** (policy above). Wire the local stop in
 the existing fallback lane, place the wide venue backstop, and ship both in one release;
@@ -148,6 +153,12 @@ prove both paths in replay against the corpus, then run the rehearsals in the ev
 list. No observe-only stage: the lane's off switch remains, but the design is committed.
 *Done when:* the corpus gap study is recorded, the rehearsals end protected, and live
 entries are being closed by the local stop with the venue backstop verified in place.
+**Sequencing correction 2026-10-18:** the only local trigger today is a **30 s REST
+poll**. Widening the venue stop before a *fast* local trigger exists would be a risk
+downgrade: a fast move would overshoot to the ~4.5 % backstop instead of the 2.4 % signal
+stop. Order is therefore: grace (done) → stream-driven close callback → then widen the
+venue stop in the same release. The stream is observe-only (`BITGET_PROTECTION_STREAM_
+MODE=observe`, `…MUTATIONS_ENABLED=0`), so the trigger does not exist yet.
 
 **P0-4 · Pre-entry protection feasibility gate.** *(assumption: anything we can trade we
 can protect)* Before an entry POST, require a fresh backstop capability (or a successful
@@ -164,6 +175,15 @@ rejection-driven containment has not occurred in a week.
 **P0-6 · Closed-lifecycle terminality.** A filled entry whose position is flat with close
 fills proven on the venue settles itself: reconciled, released, recorded, alerted.
 *Done when:* WLD and NEAR fixtures settle without an approved baseline.
+**Landed 2026-10-18** (`_closed_lifecycle_reason`, `GetOnlyProtectionRecovery.
+position_is_flat`): a flat venue read plus a close-side fill for the whole position
+settles as `recovery-closed-close-fill-verified` (reconciled, released, two audited
+transitions). Flat alone never settles — an unaccounted close stays visible and keeps the
+missing-protection verdict — and a failed read settles nothing. Settled dispatches leave
+the candidate set (`d.state NOT IN ('CLOSED','RECONCILED')`). Live impact: the six
+`owned-flat-close-fill-unproven` dispatches whose close fills *are* recorded (NEAR, WLD,
+PENGU, HBAR, STONK) settle on the next recovery pass instead of needing another baseline;
+PUMP entries without a recorded close remain an operator decision by design.
 
 ## Phase 1 — visibility (cheap, unblocks everything)
 

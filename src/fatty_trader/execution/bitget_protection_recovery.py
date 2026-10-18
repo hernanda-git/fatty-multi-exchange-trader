@@ -185,6 +185,11 @@ class GetOnlyProtectionRecovery:
             issues.append("owned-pending-entry-inventory-mismatch")
         return tuple(sorted(set(issues)))
 
+    async def position_is_flat(self, symbol: str) -> bool:
+        """Read-only: True only when the venue proves no open position for the symbol."""
+        positions = await self._client.get_single_position(symbol)
+        return _position_quantity(positions) == 0
+
     async def retire_proved_empty_orphans(self) -> list[dict[str, Any]]:
         """GET-only: retire reservations the venue proves have no effect.
 

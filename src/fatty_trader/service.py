@@ -407,6 +407,10 @@ def build_bitget_execution_runtime(
             reconciliation_repository=reservation_repository,
             fallback_protection_enabled=_bitget_fallback_mutations_enabled(environ),
             environment=config.venue_mode,
+            protection_grace_seconds=float(environ.get("BITGET_PROTECTION_GRACE_SECONDS", "15")),
+            protection_grace_interval_seconds=float(
+                environ.get("BITGET_PROTECTION_GRACE_INTERVAL_SECONDS", "3")
+            ),
         ),
         intent_store,
         reservation_repository=reservation_repository,

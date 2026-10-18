@@ -157,3 +157,99 @@ async def test_historical_missing_validated_plan_stays_unresolved_without_reader
     )
     assert store.get(intent.client_oid).state == "filled"
     assert execution.submit_calls == execution.protect_calls == []
+
+
+class FlatReader:
+    """Proves the venue has no open position; counts protection reads."""
+
+    def __init__(self, *, flat: bool) -> None:
+        self.flat = flat
+        self.protection_reads = 0
+
+    async def position_is_flat(self, symbol: str) -> bool:
+        return self.flat
+
+    async def __call__(self, entry, plan):
+        self.protection_reads += 1
+        return AsyncProtectionResult(
+            ProtectionState.DEGRADED, Decimal("0"), "owned-flat-close-fill-unproven"
+        )
+
+
+def _flat_settlement_case(*, flat: bool, record_close_fill: bool):
+    dispatch = replace(_dispatch(), state="FILLED")
+    intent = BitgetDispatchExecution._intent(dispatch, _submission())
+    store = InMemoryLiveIntentStore()
+    store.save(intent)
+    if record_close_fill:
+        close = replace(
+            intent,
+            client_oid=f"{intent.client_oid}-emergency",
+            role="EMERGENCY_CLOSE",
+            side="SELL",
+            state="filled",
+            filled_qty=Decimal("0.002"),
+        )
+        store.save(close)
+        store.update(close)
+    reader = FlatReader(flat=flat)
+    adapter = BitgetDispatchExecution(
+        Execution(result=_result()),
+        store,
+        dispatch_repository=Repository(dispatch, intent.client_oid),
+        recovery_protection=reader,
+    )
+    return adapter, reader, store, intent
+
+
+@pytest.mark.asyncio
+async def test_flat_position_with_recorded_close_fill_settles_the_lifecycle():
+    adapter, reader, store, intent = _flat_settlement_case(flat=True, record_close_fill=True)
+
+    assert await adapter.recover_entry_lifecycles() == 1
+
+    # A closed, proven trade stops asking for protection: no baseline, no issue.
+    assert reader.protection_reads == 0
+    assert adapter.recovery_ready is True
+    assert adapter.recovery_issues == ()
+    assert store.get(intent.client_oid).state == "reconciled"
+    assert [event["target_state"] for event in adapter._dispatch_repository.events] == [
+        "CLOSING",
+        "CLOSED",
+    ]
+    assert (
+        adapter._dispatch_repository.events[-1]["reason"] == "recovery-closed-close-fill-verified"
+    )
+
+
+@pytest.mark.asyncio
+async def test_flat_position_without_recorded_close_fill_stays_blocked():
+    adapter, reader, store, intent = _flat_settlement_case(flat=True, record_close_fill=False)
+
+    assert await adapter.recover_entry_lifecycles() == 1
+
+    # Flat is not proof: without a recorded close fill the lifecycle stays unresolved
+    # (an unaccounted close must be visible, never inferred), so protection is read and
+    # the dispatch keeps its missing-protection verdict.
+    assert reader.protection_reads == 1
+    assert adapter.recovery_ready is False
+    assert store.get(intent.client_oid).state == "filled"
+    assert adapter._dispatch_repository.events[-1]["target_state"] == "FILLED"
+    assert (
+        adapter._dispatch_repository.events[-1]["reason"]
+        == "recovery-missing-protection:owned-flat-close-fill-unproven"
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_fill_without_flat_venue_never_settles():
+    adapter, reader, store, intent = _flat_settlement_case(flat=False, record_close_fill=True)
+
+    assert await adapter.recover_entry_lifecycles() == 1
+
+    # A close-side fill record alone never settles a lifecycle: the venue must prove
+    # the position is gone, otherwise the trade keeps its protection obligation.
+    assert reader.protection_reads == 1
+    assert adapter.recovery_ready is False
+    assert store.get(intent.client_oid).state == "filled"
+    assert adapter._dispatch_repository.events[-1]["target_state"] == "FILLED"

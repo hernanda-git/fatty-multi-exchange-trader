@@ -541,3 +541,72 @@ async def test_native_parameter_error_degrades_open_position_without_emergency_c
     # Protection failure cannot rewrite the separately proven entry fill.
     assert intent.state == "filled"
     assert intent.filled_qty == Decimal("0.008")
+
+
+class DelayedPlanClient(NativeProtectionClient):
+    """Plans become readable only after N readbacks: the race that closed two trades."""
+
+    def __init__(self, *, visible_after: int, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._visible_after = visible_after
+        self._plan_reads = 0
+        self._hidden_plans = list(self.plans)
+        self.plans = []
+
+    async def get_pending_plan_orders(self, symbol: str) -> list[dict[str, str]]:
+        self._plan_reads += 1
+        if self._plan_reads >= self._visible_after:
+            self.plans = list(self._hidden_plans)
+        return await super().get_pending_plan_orders(symbol)
+
+
+@pytest.mark.asyncio
+async def test_protection_confirmed_within_the_grace_never_closes_the_position() -> None:
+    client = DelayedPlanClient(visible_after=3, position_qty="0.008")
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        protection_grace_seconds=1.0,
+        protection_grace_interval_seconds=0.05,
+    )
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), InMemoryLiveIntentStore())
+
+    assert result.state is ProtectionState.VENUE_PROTECTED
+    assert "after-grace" in (result.reason or "")
+    assert client.close_calls == []
+    assert len(client.protection_calls) == 1
+    assert adapter.degraded is False
+
+
+@pytest.mark.asyncio
+async def test_protection_never_confirmed_still_contains_after_the_grace() -> None:
+    client = NativeProtectionClient(position_qty="0.008", plans=[])
+    store = InMemoryLiveIntentStore()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        protection_grace_seconds=0.2,
+        protection_grace_interval_seconds=0.05,
+    )
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), store)
+
+    assert len(client.close_calls) == 1
+    assert result.emergency_close_oid is not None
+    assert adapter.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_grace_is_read_only_and_skipped_without_a_budget() -> None:
+    client = NativeProtectionClient(position_qty="0.008", plans=[])
+    store = InMemoryLiveIntentStore()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+
+    await adapter.protect_filled_position(_intent(), _plan(), store)
+
+    # Default budget is zero: existing behaviour (and tests) stay unchanged, and only
+    # placement ever POSTs — the grace never re-places protection.
+    assert adapter._protection_grace_seconds == 0
+    assert len(client.protection_calls) == 1
+    assert len(client.close_calls) == 1

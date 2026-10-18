@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import json
+import random
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -190,6 +194,8 @@ class AsyncBitgetExecution:
         entry_admission_latch: Any | None = None,
         fallback_protection_enabled: bool = False,
         environment: str = "DEMO",
+        protection_grace_seconds: float = 0.0,
+        protection_grace_interval_seconds: float = 3.0,
     ) -> None:
         self._client = client
         self._venue = venue
@@ -202,6 +208,12 @@ class AsyncBitgetExecution:
         # a symbol that rejects native SL/TP while that monitor is gated off leaves
         # the position naked, so the fallback path must fail closed instead.
         self._fallback_protection_enabled = fallback_protection_enabled
+        # Bounded, read-only grace before containment. Zero keeps library/test
+        # behaviour unchanged; production wires a real budget from the environment so
+        # a trade is never closed before the venue has had time to confirm the plans
+        # it accepted (two live trades were washed out by that race in October 2026).
+        self._protection_grace_seconds = max(0.0, protection_grace_seconds)
+        self._protection_grace_interval_seconds = max(0.1, protection_grace_interval_seconds)
         self._environment = environment.strip().upper()
         if self._environment not in {"DEMO", "LIVE"}:
             raise ValueError("Bitget execution environment must be DEMO or LIVE")
@@ -710,10 +722,22 @@ class AsyncBitgetExecution:
                 last_error=None,
             )
             return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
+        report, grace_attempts = await self._await_native_protection(intent, plan, store, report)
+        if report.state is ProtectionState.VENUE_PROTECTED:
+            self._persist_capability(
+                plan.symbol,
+                native_state=NativeProtectionState.VERIFIED,
+                last_error=None,
+            )
+            return AsyncProtectionResult(
+                report.state,
+                report.observed_quantity,
+                f"{report.reason}-after-grace:{grace_attempts}",
+            )
         self._persist_capability(
             plan.symbol,
             native_state=NativeProtectionState.FAILED,
-            last_error=report.reason or "native-protection-unconfirmed",
+            last_error=f"{report.reason or 'native-protection-unconfirmed'}|grace:{grace_attempts}",
         )
         self._degraded = True
         return await self._contain(intent, store, report)
@@ -833,6 +857,96 @@ class AsyncBitgetExecution:
                 last_stream_at=current.last_stream_at if current is not None else None,
             )
         )
+
+    async def _await_native_protection(
+        self,
+        intent: LiveIntentRecord,
+        plan: ProtectionPlan,
+        store: LiveIntentStoreProtocol,
+        first: ProtectionReport,
+    ) -> tuple[ProtectionReport, int]:
+        """Re-read (never re-place) until the venue confirms, within a bounded budget.
+
+        The venue accepts plan orders and makes them readable a moment later; containing
+        on the first readback closed two live trades (WLD and NEAR) seconds after their
+        entries filled. This loop is read-only, stops early when the position is flat,
+        and returns the last report plus the number of re-reads so any escalation carries
+        its evidence instead of a race.
+        """
+        budget = self._protection_grace_seconds
+        if budget <= 0 or intent.filled_qty <= 0:
+            return first, 0
+        records: dict[str, Any] = {}
+        protection_intents = getattr(store, "protection_intents", None)
+        if callable(protection_intents):
+            records = {record.role: record for record in protection_intents(intent.client_oid)}
+        expectation = NativeProtectionExpectation(
+            symbol=plan.symbol,
+            hold_side="buy" if plan.direction.value == "LONG" else "sell",
+            quantity=intent.filled_qty,
+            stop_loss=plan.stop_loss,
+            take_profit=plan.take_profits[0] if plan.take_profits else None,
+            stop_loss_client_oid=f"{intent.client_oid}-sl",
+            take_profit_client_oid=f"{intent.client_oid}-tp" if plan.take_profits else None,
+            stop_loss_provider_order_id=getattr(records.get("SL"), "provider_order_id", None),
+            take_profit_provider_order_id=getattr(records.get("TP"), "provider_order_id", None),
+        )
+        deadline = time.monotonic() + budget
+        attempts = 0
+        report = first
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self._protection_grace_interval_seconds + random.uniform(0, 0.3))
+            attempts += 1
+            try:
+                positions = await self._client.get_single_position(plan.symbol)
+            except Exception as exc:
+                report = ProtectionReport(
+                    ProtectionState.FAILED,
+                    first.observed_quantity,
+                    f"grace-read-error:{type(exc).__name__}",
+                )
+                continue
+            if _open_position_quantity(positions) == 0:
+                # Nothing left to protect: containment would only report the flat position.
+                print(
+                    json.dumps(
+                        {
+                            "event": "native-protection-grace-flat",
+                            "symbol": plan.symbol,
+                            "attempts": attempts,
+                        }
+                    ),
+                    flush=True,
+                )
+                break
+            try:
+                report = await confirm_native_protection(
+                    lambda: self._client.get_single_position(plan.symbol),
+                    lambda: self._client.get_pending_plan_orders(plan.symbol),
+                    expectation=expectation,
+                )
+            except Exception as exc:
+                report = ProtectionReport(
+                    ProtectionState.FAILED,
+                    first.observed_quantity,
+                    f"grace-read-error:{type(exc).__name__}",
+                )
+                continue
+            if report.state is ProtectionState.VENUE_PROTECTED:
+                print(
+                    json.dumps(
+                        {
+                            "event": "native-protection-verified-late",
+                            "symbol": plan.symbol,
+                            "attempts": attempts,
+                            "grace_seconds": budget,
+                            "reason": report.reason,
+                        }
+                    ),
+                    flush=True,
+                )
+                break
+        return report, attempts
 
     async def _contain(
         self,

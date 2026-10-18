@@ -123,6 +123,7 @@ async def test_real_service_inventory_verdict(postgres_schema, monkeypatch, case
             BITGET_CANARY_MAX_ORDERS="20",
             BITGET_APPROVAL_REFERENCE="test-only",
             BITGET_MAX_CLOCK_SKEW_MS="5000",
+            BITGET_PROTECTION_GRACE_SECONDS="0",
             BITGET_API_KEY="fake",
             BITGET_API_SECRET="fake",
             BITGET_API_PASSPHRASE="fake",

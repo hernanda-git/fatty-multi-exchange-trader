@@ -132,6 +132,7 @@ async def test_service_final_kill_blocks_known_unsent_entry(
             BITGET_APPROVAL_REFERENCE="offline",
             BITGET_MAX_CLOCK_SKEW_MS="5000",
             BITGET_MAX_MARGIN_PER_TRADE_USDT="1.1",
+            BITGET_PROTECTION_GRACE_SECONDS="0",
         ),
         client_factory=lambda *args: provider,
     )

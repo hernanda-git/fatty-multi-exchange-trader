@@ -127,6 +127,31 @@ class BitgetDispatchExecution:
                 intent = self._aggregate_split(intent, limit)
                 result = self._aggregate_result(intent)
                 await self._reconcile_post_fill(intent, result)
+            settlement = (
+                await self._closed_lifecycle_reason(intent, dispatch, reader)
+                if result.filled_qty > 0
+                else None
+            )
+            if settlement is not None:
+                for expected, target in ((dispatch.state, "CLOSING"), ("CLOSING", "CLOSED")):
+                    repository.transition(
+                        dispatch.id,
+                        expected_state=expected,
+                        target_state=target,
+                        reason=settlement,
+                        evidence={
+                            **dispatch_evidence(dispatch),
+                            "stage": "recovery_close_settled",
+                            "outcome": "closed",
+                            "reason_code": settlement,
+                            "observed_at": datetime.now(UTC).isoformat(),
+                            "filled_quantity": str(result.filled_qty),
+                            "client_order_id": client_oid,
+                        },
+                    )
+                self._resolve_reservation(intent, "FILLED")
+                count += 1
+                continue
             status = _dispatcher_status(result.status)
             reason = "recovery-entry-" + status.lower()
             if result.filled_qty > 0:
@@ -197,6 +222,42 @@ class BitgetDispatchExecution:
         self.recovery_issues = tuple(sorted(set(issues)))
         self.recovery_ready = not self.recovery_issues
         return count
+
+    async def _closed_lifecycle_reason(
+        self, intent: LiveIntentRecord, dispatch: BitgetDispatch, reader: Any
+    ) -> str | None:
+        """Classify a filled entry whose position the venue proves is gone.
+
+        Recovery used to refuse readiness forever for a trade that filled and then
+        closed: the entry stayed a candidate and the protection readback returned
+        `owned-flat-close-fill-unproven`, leaving an operator-approved baseline as the
+        only exit — six dispatches and 33 baseline rows by 2026-10-18. A lifecycle
+        settles only on proof: the venue is flat *and* a close-side intent under the
+        same root records a fill for the whole position. Flat alone is never enough —
+        an unaccounted close must stay visible instead of being inferred away. A failed
+        venue read settles nothing either.
+        """
+        flat = getattr(reader, "position_is_flat", None)
+        if not callable(flat):
+            return None
+        records = [
+            self._store.get(f"{intent.client_oid}-emergency"),
+            self._store.get(f"{intent.client_oid}-close"),
+        ]
+        protection = getattr(self._store, "protection_intents", None)
+        if callable(protection):
+            records.extend(protection(intent.client_oid))
+        moved = sum((record.filled_qty for record in records if record is not None), Decimal("0"))
+        if moved < intent.filled_qty:
+            return None
+        try:
+            if not await flat(intent.symbol):
+                return None
+        except Exception:
+            return None
+        intent.state = "reconciled"
+        self._store.update(intent)
+        return "recovery-closed-close-fill-verified"
 
     def alert_recovery_blocked(self) -> None:
         """Announce the current recovery issue set once; a blocked lane is never silent."""

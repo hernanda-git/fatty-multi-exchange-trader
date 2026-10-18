@@ -245,6 +245,9 @@ class PostgresBitgetDispatchRepository:
                             OR (b.record_kind='dispatch' AND b.record_id=d.id))
                      AND (i.filled_qty > 0 OR i.state NOT IN
                           ('rejected', 'cancelled', 'reconciled'))
+                     -- A settled dispatch cannot be a candidate: its lifecycle is closed
+                     -- and the entry fill is history, not work.
+                     AND d.state NOT IN ('CLOSED', 'RECONCILED')
                    ORDER BY d.created_at, d.id"""
             )
             rows = []
