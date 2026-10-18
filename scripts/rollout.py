@@ -23,13 +23,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path("/home/valarion/apps/fatty-multi-exchange-trader")
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+# The script imports from its own tree (so the plan workspace can run it), while the
+# deploy target stays the live checkout, overridable for a rehearsal.
+CODE_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(os.environ.get("FATTY_ROOT", "/home/valarion/apps/fatty-multi-exchange-trader"))
+sys.path.insert(0, str(CODE_ROOT / "src"))
 from fatty_trader.ops.deploy_safety import (  # noqa: E402
     close_maintenance_window,
     evaluate_deploy_gate,
@@ -172,7 +176,12 @@ def gate(quiet_minutes: int, force_reason: str | None) -> dict[str, object]:
 
 def settle_previous_windows() -> None:
     """Close windows left open by a crashed rollout and account for them."""
-    for window_id, started_at, revision, reason in query_all(open_windows_sql()):
+    try:
+        windows = query_all(open_windows_sql())
+    except Exception as exc:  # noqa: BLE001 - accounting needs migration 34; the rollout does not
+        log({"maintenance_accounting": "unavailable", "reason": type(exc).__name__})
+        return
+    for window_id, started_at, revision, reason in windows:
         log({"stale_window": {"id": window_id, "started_at": started_at, "revision": revision}})
         close_maintenance_window(execute, window_id)
         log({"stale_window_closed": window_id, "reason": reason})
@@ -254,10 +263,15 @@ def main() -> None:
     )
 
     # ── 7. Open the maintenance window before anything stops.
-    window_id = open_maintenance_window(
-        execute, revision=revision, reason="staged-rollout", opened_by="rollout"
-    )
-    log({"maintenance_window": window_id})
+    window_id: str | None
+    try:
+        window_id = open_maintenance_window(
+            execute, revision=revision, reason="staged-rollout", opened_by="rollout"
+        )
+        log({"maintenance_window": window_id})
+    except Exception as exc:  # noqa: BLE001 - accounting needs migration 34; the rollout does not
+        window_id = None
+        log({"maintenance_accounting": "unavailable", "reason": type(exc).__name__})
 
     # ── 8. Pre-maintenance durable snapshot (read-only).
     log({"pre_maintenance": psql(PRE_SQL)})
@@ -381,9 +395,21 @@ def main() -> None:
     log({"post_rollout": psql(POST_SQL)})
 
     # ── 18. Close the window and account for every signal that lapsed inside it.
-    close_maintenance_window(execute, window_id)
-    missed = sweep_missed_signals(query_all, execute, window_id=window_id)
-    log({"maintenance_window_closed": window_id, "missed_signals": missed})
+    if window_id is None:
+        log({"maintenance_accounting": "skipped", "reason": "no-window-recorded"})
+    else:
+        try:
+            close_maintenance_window(execute, window_id)
+            missed = sweep_missed_signals(query_all, execute, window_id=window_id)
+            log({"maintenance_window_closed": window_id, "missed_signals": missed})
+        except Exception as exc:  # noqa: BLE001 - never fail a rollout on accounting
+            log(
+                {
+                    "maintenance_accounting": "failed",
+                    "window_id": window_id,
+                    "reason": type(exc).__name__,
+                }
+            )
 
     log({"rollout": "complete", "revision": revision, "signal_replay": False})
 
