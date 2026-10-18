@@ -53,8 +53,11 @@ that can be promoted without the replay harness.
 ## Switch runbook
 
 ```bash
+# the tool lives on the plan line; refresh it first so you run the current one
+cd ~/apps/fatty-plan && git pull --ff-only
+
 # ask the gate before anything else (read-only; runs under the host's python3)
-cd ~/apps/fatty-plan && python3 scripts/deploy_gate_check.py
+python3 scripts/deploy_gate_check.py
 
 # promote the plan line (gate + window + staged rollout + verifier + accounting)
 python3 scripts/rollout.py --branch master-plan
@@ -72,6 +75,12 @@ python3 scripts/rollout.py --branch master-plan --force-reason "owner-approved m
 `scripts/rollout.py` runs under the host's system interpreter (verified on 3.9), so
 keep the ops module free of 3.10-only runtime calls (no `zip(strict=)` — the library
 targets 3.11, the rollout interpreter is older).
+
+Every rollout is announced: `rollout starting`, `rollout blocked` (with the exact gate
+reason), `rollout complete` and `rollout failed` land in `notifications_outbox` and reach
+Telegram, so a detached deploy can never look like silence again. The wrapper's ssh
+session may still hang after the script exits — that is cosmetic; the notification and
+the rollout log at `/tmp/deploy-*.log` are the source of truth.
 
 Rollback rules: switching back is safe **as long as the newer release's migrations
 were additive (rule 2)**; the old code ignores the new columns. If a release ever
