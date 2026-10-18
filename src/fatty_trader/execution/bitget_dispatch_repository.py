@@ -84,7 +84,10 @@ WITH next_dispatch AS (
           WHERE b.record_kind='dispatch' AND b.record_id=d.id)
       AND (claimed_by IS NULL OR lease_until <= now())
     ORDER BY d.created_at, d.id
-    FOR UPDATE SKIP LOCKED
+    -- Lock only the dispatch row: an unqualified FOR UPDATE also locks the joined
+    -- signal and message rows, so another worker's row locks (the analyzer claims
+    -- messages every few seconds) starved this claim completely.
+    FOR UPDATE OF d SKIP LOCKED
     LIMIT 1
 )
 UPDATE dispatches d

@@ -68,7 +68,9 @@ def test_claim_uses_skip_locked_and_two_workers_receive_distinct_queued_rows() -
 
     assert first is not None and first.id == first_id
     assert second is not None and second.id == second_id
-    assert "FOR UPDATE SKIP LOCKED" in first_cursor.statements[-1][0]
+    # The lock must name the dispatch table only: an unqualified FOR UPDATE also locks
+    # the joined signal and message rows, which starved the claim in production.
+    assert "FOR UPDATE OF d SKIP LOCKED" in first_cursor.statements[-1][0]
     assert "exchange = 'bitget'" in first_cursor.statements[-1][0]
     assert "state = 'QUEUED'" in first_cursor.statements[-1][0]
     assert first_connection.commits == second_connection.commits == 1
