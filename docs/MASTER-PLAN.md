@@ -157,8 +157,20 @@ entries are being closed by the local stop with the venue backstop verified in p
 poll**. Widening the venue stop before a *fast* local trigger exists would be a risk
 downgrade: a fast move would overshoot to the ~4.5 % backstop instead of the 2.4 % signal
 stop. Order is therefore: grace (done) → stream-driven close callback → then widen the
-venue stop in the same release. The stream is observe-only (`BITGET_PROTECTION_STREAM_
-MODE=observe`, `…MUTATIONS_ENABLED=0`), so the trigger does not exist yet.
+venue stop in the same release.
+**Stream trigger landed (2026-10-19, `116e542`):** `build_bitget_protection_stream` now
+wires `BitgetFallbackStreamEngine` when `BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=1`,
+with its callback bound to `submit_fallback_close_async` (the audited seam: ownership
+check, atomic claim, one POST, no retry). The engine existed and was tested but was never
+constructed; the builder used to raise when mutations were requested, so the local stop
+was structurally unreachable. Default remains `0` — arming is one value and the owner's
+call, because it changes how live positions exit. The registry is read through a 2 s
+snapshot cache so the engine does not query the database per mark. Known bound:
+evaluation is serial with the stream loop, so a close in flight (~1–3 s) delays other
+marks; the REST lane stays a second trigger.
+**Deliberate deviation:** the wide venue backstop is *not* in this release. Stop distance
+feeds sizing/liquidation headroom, so widening it needs the corpus numbers (P2-1).
+Sequence is now: arm → observe real exits → widen. Recorded rather than silently dropped.
 
 **P0-4 · Pre-entry protection feasibility gate.** *(assumption: anything we can trade we
 can protect)* Before an entry POST, require a fresh backstop capability (or a successful

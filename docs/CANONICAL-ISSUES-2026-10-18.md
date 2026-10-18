@@ -171,3 +171,18 @@ The complete plan is `docs/MASTER-PLAN.md`; its order is binding:
 
 Struck: local-only stops, Redis as state, ML prediction, a second exchange, sizing before
 n ≥ 100.
+
+---
+
+## New findings — 2026-10-19 (measurement pass)
+
+| id | finding | evidence | status |
+| --- | --- | --- | --- |
+| F-1 | Recovery re-transitions unresolved lifecycles on every tick with an unchanged `(to_state, reason)`: four dispatches carry **5 285** rows each (21 410 total). Pure audit noise and unbounded growth; it also buries real transitions in any timeline query. | `dispatch_transitions` counts per dispatch; collapsed timelines in `docs/PROTECTION-LATENCY-2026-10-18.md` | **open** — P0-1b: skip a no-op transition and store a repeat counter |
+| F-2 | The rollout aborted at its own runtime verifier because `migrate` runs under `docker compose run --rm` and leaves no container record, while the verifier demanded one. | first rollout of `4d59465`; `service.py:1746` shows `init` is a no-op | **fixed** `35667c9` (verifier accepts a missing one-shot when the effect is proven by `schema_migrations`) |
+| F-3 | A rollout that aborts after step 1 leaves `fatty-console-ops-worker` stopped, silently removing every allowlisted host operation from the console. | worker `inactive`/`ExecMainStatus=15` after the aborted rollout | **fixed** `35667c9` (`restore_ops_worker()` on every exit path; step 16 fails loudly if it is not active) |
+| F-4 | Per-attempt protection readbacks are not durable: the grace writes attempts only to the capability error trail (`\|grace:N`) and a log line, so the 15 s budget cannot be tuned from data. | `async_execution.py:865-956`; `last_verified_at` is per-symbol local time | **open** — instrumentation slice: a per-attempt row (symbol, root, attempt, observed_at, outcome) |
+| F-5 | `build_bitget_protection_stream` passed `stale_after` to the socket but not to the runtime, so runtime freshness silently used its 5 s default. | `service.py:299-304` before `116e542` | **fixed** `116e542` (one parse reaches socket, runtime and engine) |
+| F-6 | Flat closes without a recorded close fill (PUMP class) remain operator decisions by design: an unaccounted close must stay visible rather than be inferred away. | `tests/e2e/test_service_owned_protection_recovery_db.py::test_real_service_inventory_verdict[flat]` | **by design** — still requires a baseline until the close fill is found |
+| F-7 | The stream close engine existed and was tested but no service code constructed it; the builder raised when mutations were requested. The local stop was structurally unreachable. | `bitget_protection_stream.py:44-127` with no caller; `service.py:250-255` | **fixed** `116e542` (flag-gated wiring + integration test through `submit_fallback_close_async`) |
+| F-8 | `scripts/rollout.py` step 16 called `out(..., check=False)`; the repository helper takes no such parameter (the legacy host copy does), so a *successful* release announced `rollout failed · TypeError`. The deployment itself completed and was verified after the fact. | outbox row `rollout:failed:…error=TypeError:out() got an unexpected keyword argument 'check'` | **fixed** 2026-10-19 (handler quotes `systemctl is-active` stdout; rollout still fails loudly if the worker is not active) |

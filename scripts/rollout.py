@@ -2,9 +2,15 @@
 # ruff: noqa: E501
 """Gated, staged rollout of a verified revision onto fspmi-hostinger.
 
-Run as the trusted host operator (valarion). Fail-fast, evidence at every gate.
-Does not replay any historical signal, does not clear latches, and refuses to
-start entry-capable consumers unless a fresh authenticated flat proof succeeds.
+Run as the trusted host operator (valarion) **with the project environment**, from the
+repository root — this module imports `fatty_trader`, so a bare `python3` fails:
+
+    runtime/console-ops/uv run --frozen python scripts/rollout.py --revision <sha>
+    runtime/console-ops/uv run --frozen python scripts/rollout.py --branch main
+
+Fail-fast, evidence at every gate. Does not replay any historical signal, does not clear
+latches, and refuses to start entry-capable consumers unless a fresh authenticated flat
+proof succeeds.
 
 Safety properties added for the master-plan workstream:
 
@@ -447,9 +453,13 @@ def _rollout(args: argparse.Namespace) -> None:
 
     # ── 16. Resume the host operations worker under the new credential model.
     restore_ops_worker()
-    worker_state = out(
-        ["systemctl", "--user", "is-active", "fatty-console-ops-worker"], check=False
-    )
+    try:
+        worker_state = out(
+            ["systemctl", "--user", "is-active", "fatty-console-ops-worker"], timeout=15
+        )
+    except subprocess.CalledProcessError as exc:
+        # `systemctl is-active` exits non-zero for any state but active.
+        worker_state = (exc.stdout or "").strip() or f"exit-{exc.returncode}"
     if worker_state != "active":
         # A rollout that leaves the operator surface dead is not a successful rollout.
         raise SystemExit(f"ops worker is not active after rollout: {worker_state}")
