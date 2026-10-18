@@ -38,8 +38,10 @@ _ID_PATTERN = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 _GATE_SQL = """
 SELECT
-  (SELECT count(*) FROM dispatches
-    WHERE state NOT IN ({terminal}) OR lease_until > clock_timestamp())
+  (SELECT count(*) FROM dispatches d
+    WHERE (d.state NOT IN ({terminal}) OR d.lease_until > clock_timestamp())
+      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+          WHERE b.record_kind='dispatch' AND b.record_id=d.id))
     AS in_flight_dispatches,
   (SELECT count(*) FROM live_order_intents i
     WHERE i.exchange='bitget' AND i.role='ENTRY'
@@ -89,7 +91,9 @@ def evaluate_deploy_gate(
         row = query_one(_GATE_SQL.format(terminal=terminal, quiet=max(0, quiet_minutes)))
         if row is None or len(row) != len(_GATE_FIELDS):
             raise ValueError("deploy gate read is incomplete")
-        evidence = dict(zip(_GATE_FIELDS, (int(value) for value in row), strict=True))
+        # Indexed build, not zip(strict=): the rollout runs under the host's
+        # system interpreter (3.9), while the library targets 3.11.
+        evidence = {field: int(row[index]) for index, field in enumerate(_GATE_FIELDS)}
     except Exception as exc:  # noqa: BLE001 - unreadable evidence is not permission
         return {
             "allowed": False,

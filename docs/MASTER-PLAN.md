@@ -53,20 +53,8 @@ that can be promoted without the replay harness.
 ## Switch runbook
 
 ```bash
-# status: which revision is the live tree on, and is the lane quiet?
-cd ~/apps/fatty-multi-exchange-trader
-git log --oneline -1
-sudo -u valarion python3 - <<'PY'
-# gate only; prints allowed/blocked_by
-import subprocess, sys; sys.path.insert(0, "src")
-from fatty_trader.ops.deploy_safety import evaluate_deploy_gate
-def q(sql):
-    out = subprocess.run(["docker","compose","exec","-T","postgres","psql","-U","fatty_app",
-                          "-d","fatty_trader","-At","-F","\t","-c",sql],
-                         capture_output=True, text=True, check=True).stdout.strip()
-    return tuple(out.split("\t")) if out else None
-print(evaluate_deploy_gate(q))
-PY
+# ask the gate before anything else (read-only; runs under the host's python3)
+cd ~/apps/fatty-plan && python3 scripts/deploy_gate_check.py
 
 # promote the plan line (gate + window + staged rollout + verifier + accounting)
 python3 scripts/rollout.py --branch master-plan
@@ -81,6 +69,10 @@ python3 scripts/rollout.py --revision <sha>
 python3 scripts/rollout.py --branch master-plan --force-reason "owner-approved mid-session switch"
 ```
 
+`scripts/rollout.py` runs under the host's system interpreter (verified on 3.9), so
+keep the ops module free of 3.10-only runtime calls (no `zip(strict=)` — the library
+targets 3.11, the rollout interpreter is older).
+
 Rollback rules: switching back is safe **as long as the newer release's migrations
 were additive (rule 2)**; the old code ignores the new columns. If a release ever
 contracts the schema, restore the pre-promote snapshot first
@@ -93,7 +85,13 @@ contracts the schema, restore the pre-promote snapshot first
 * `scripts/rollout.py`: the previously ad-hoc rollout script, versioned, gated,
   window-accounting, and revision-addressable (this is what makes switching safe
   and reversible).
+* `scripts/deploy_gate_check.py`: read-only "may I deploy right now?" helper.
 * Unit tests for the gate and the sweep (`tests/unit/test_deploy_safety.py`).
+
+Verified on the live lane without touching it: the gate reads the live database
+read-only from the plan workspace and reports `allowed: true` with all five counts
+zero; the live tree stays on `main` at `a0f87f0`, the schema stays 33 and neither new
+table exists there yet.
 
 Nothing else in the plan is implemented yet; no trading path reads any of it.
 
