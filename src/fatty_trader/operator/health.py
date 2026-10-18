@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -206,6 +208,134 @@ def _json(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
 
+_STREAM_FRESH_SECONDS = 120.0
+
+_LIFECYCLE_ENVIRONMENTS = ("LIVE", "DEMO")
+_ACCOUNT_ID_PATTERN = re.compile(r"^[0-9]{1,20}$")
+
+# Exactly the predicates the dispatcher refuses entries on, minus baselined history:
+# an open ownership/protection issue is what makes lifecycle recovery not ready.
+_LIFECYCLE_ISSUES_SQL = """
+SELECT coalesce(json_agg(issue ORDER BY issue), '[]'::json)::text FROM (
+    SELECT 'orphan-entry-intent'::text AS issue WHERE EXISTS (
+        SELECT 1 FROM live_order_intents i
+        LEFT JOIN bitget_margin_reservations m ON m.exchange=i.exchange
+            AND (m.client_order_id=i.client_order_id OR m.id=i.margin_reservation_id)
+        LEFT JOIN dispatches d ON d.id=m.dispatch_id AND d.exchange=i.exchange
+        WHERE i.exchange='bitget' AND i.role='ENTRY'
+          AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+              WHERE b.record_kind='intent' AND b.record_id=i.id)
+          AND (i.filled_qty>0 OR i.state NOT IN ('rejected','cancelled','reconciled'))
+          AND (d.id IS NULL OR m.environment IS DISTINCT FROM '{environment}'
+               OR (i.dispatch_id IS NOT NULL AND i.dispatch_id <> d.id))
+    )
+    UNION ALL
+    SELECT 'reservation-without-entry-intent'::text WHERE EXISTS (
+        SELECT 1 FROM bitget_margin_reservations m
+        LEFT JOIN live_order_intents i ON i.exchange=m.exchange
+            AND i.client_order_id=m.client_order_id AND i.role='ENTRY'
+        WHERE m.exchange='bitget' AND m.state IN ('reserved','unknown','consumed')
+          AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+              WHERE b.record_kind='reservation' AND b.record_id=m.id)
+          AND (m.environment='{environment}' OR m.environment IS NULL)
+          AND i.client_order_id IS NULL
+    )
+    UNION ALL
+    SELECT 'unresolved-protection'::text WHERE EXISTS (
+        SELECT 1 FROM dispatches d
+        WHERE lower(d.exchange)='bitget'
+          AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
+              WHERE b.record_kind='dispatch' AND b.record_id=d.id)
+          AND (d.state='UNPROTECTED'
+               OR d.terminal_reason='missing-protection-escalated'
+               OR d.terminal_reason LIKE 'recovery-missing-protection:%'
+               OR d.terminal_reason LIKE 'recovery-filled-protection-unverified%')
+    )
+    UNION ALL
+    SELECT 'baseline-account-environment-mismatch'::text WHERE EXISTS (
+        SELECT 1 FROM bitget_audited_baselines
+        WHERE account_id IS DISTINCT FROM '{account_id}'
+           OR environment IS DISTINCT FROM '{environment}'
+    )
+) issues
+"""
+
+
+def load_lifecycle_recovery(
+    query_one: Callable[[str], Any], *, venue_mode: str, account_id: str | None
+) -> str:
+    """Report durable dispatch-recovery readiness from the dispatcher's own predicates.
+
+    A container state cannot prove that entries are admitted again, and the dispatcher
+    refuses them while any ownership/protection issue is open, so the card reads the
+    same durable evidence. Unreadable or unbindable inputs report UNKNOWN, never READY.
+    """
+    environment = str(venue_mode or "").upper()
+    if environment not in _LIFECYCLE_ENVIRONMENTS:
+        return "UNKNOWN · venue mode unavailable"
+    if not isinstance(account_id, str) or not _ACCOUNT_ID_PATTERN.fullmatch(account_id):
+        return "UNKNOWN · account binding unevaluated"
+    sql = _LIFECYCLE_ISSUES_SQL.format(environment=environment, account_id=account_id)
+    try:
+        row = query_one(sql)
+        issues = _json(row[0]) if row is not None else None
+        if not isinstance(issues, list):
+            raise ValueError("lifecycle issue read is incomplete")
+    except Exception as exc:  # noqa: BLE001 - unreadable evidence is never READY
+        return f"UNKNOWN · {type(exc).__name__}"
+    if not issues:
+        return "READY"
+    return "BLOCKED · " + ", ".join(str(issue) for issue in issues)
+
+
+def _observation_age_seconds(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - observed).total_seconds())
+
+
+def stream_condition(evidence: Any) -> str:
+    """Stored capability observations are durable evidence, not a live worker probe.
+
+    The value is always labelled as stored: a persisted HEALTHY row says nothing about
+    the stream right now, and it never releases a latch.
+    """
+    if not isinstance(evidence, list) or not evidence or not isinstance(evidence[0], dict):
+        return "UNKNOWN · no stored observation"
+    newest = evidence[0]
+    symbol = str(newest.get("symbol") or "UNKNOWN")
+    state = str(newest.get("state") or "UNKNOWN").upper()
+    age = _observation_age_seconds(newest.get("last_stream_at") or newest.get("updated_at"))
+    suffix = f" · {int(age)}s" if age is not None else ""
+    if state == "HEALTHY" and age is not None and age > _STREAM_FRESH_SECONDS:
+        return f"STORED-STALE · {symbol} HEALTHY{suffix}"
+    return f"STORED · {symbol} {state}{suffix}"
+
+
+def _latch_recovery_readiness(latch_evidence: Any) -> str:
+    """Approved latch recovery is only meaningful while a durable latch is active."""
+    if not isinstance(latch_evidence, list):
+        return "UNKNOWN · latch ledger read unavailable"
+    if not latch_evidence:
+        return "CLEAR · no active latch"
+    try:
+        from fatty_trader.storage.bitget_baseline import BaselineRefused
+        from fatty_trader.storage.bitget_live_latch_recovery import validate_latches
+
+        validate_latches([{**row, "active": True} for row in latch_evidence])
+    except BaselineRefused:
+        return "REFUSED · scope/reason/timestamp outside approved policy"
+    except Exception as exc:  # noqa: BLE001 - an unreadable verdict stays UNKNOWN
+        return f"UNKNOWN · {type(exc).__name__}"
+    return "RELEASABLE · approved recovery permitted"
+
+
 def load_health_ledger(
     query_one: Callable[[str], Any],
     query_all: Callable[[str], Any],
@@ -352,18 +482,8 @@ def load_health_ledger(
         metrics["stream_evidence"] = None
         metrics["errors"]["stream_evidence"] = type(exc).__name__
     metrics["monitor_condition"] = "UNKNOWN · not probed"
-    metrics["stream_condition"] = "UNKNOWN · not probed"
-    metrics["recovery_readiness"] = "UNKNOWN · fresh approved proof not loaded"
-    if isinstance(metrics["active_kill_switches"], list) and metrics["active_kill_switches"]:
-        from fatty_trader.storage.bitget_baseline import BaselineRefused
-        from fatty_trader.storage.bitget_live_latch_recovery import validate_latches
-
-        try:
-            validate_latches([{**row, "active": True} for row in metrics["active_kill_switches"]])
-        except BaselineRefused:
-            metrics["recovery_readiness"] = (
-                "REFUSED · scope/reason/timestamp outside approved policy"
-            )
+    metrics["stream_condition"] = stream_condition(metrics.get("stream_evidence"))
+    metrics["recovery_readiness"] = _latch_recovery_readiness(metrics.get("active_kill_switches"))
     return {"metrics": metrics, "pnl": pnl, "messages": messages, "fallback_rows": fallback_rows}
 
 
@@ -479,6 +599,11 @@ def load_operator_health_snapshot(
         venue_mode=venue_mode,
     )
     ledger["metrics"]["fallback_mutations_enabled"] = fallback_mutations_enabled
+    lifecycle_recovery = load_lifecycle_recovery(
+        lambda sql: _query_one(connection_factory, sql),
+        venue_mode=venue_mode,
+        account_id=os.environ.get("CONSOLE_ACCOUNT_ID"),
+    )
     return {
         "positions": positions,
         "pending_orders": orders,
@@ -497,5 +622,9 @@ def load_operator_health_snapshot(
             else "0",
         },
         "codex": {"status": "UNKNOWN", "error": "Not probed in operator container"},
-        "services": {"status": "UNKNOWN", "error": "Not probed in operator container"},
+        "services": {
+            "status": "UNKNOWN",
+            "error": "Not probed in operator container",
+            "lifecycle_recovery": lifecycle_recovery,
+        },
     }

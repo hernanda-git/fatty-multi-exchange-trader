@@ -1,10 +1,17 @@
 """Offline consumer regressions for failed and independently observed evidence."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 
-from fatty_trader.operator.health import build_operator_diagnostic, load_operator_health_snapshot
+from fatty_trader.operator.health import (
+    _latch_recovery_readiness,
+    build_operator_diagnostic,
+    load_lifecycle_recovery,
+    load_operator_health_snapshot,
+    stream_condition,
+)
 from fatty_trader.operator.health_report_format import format_report
 
 
@@ -181,3 +188,69 @@ def test_partially_missing_open_pnl_is_not_a_partial_total():
     text = report(Positions())
     assert "Open uPnL    UNKNOWN" in text
     assert "Open uPnL    🟢 +3" not in text
+
+
+def test_lifecycle_recovery_reports_durable_issues_only():
+    assert (
+        load_lifecycle_recovery(lambda _sql: ("[]",), venue_mode="LIVE", account_id="123")
+        == "READY"
+    )
+    blocked = load_lifecycle_recovery(
+        lambda _sql: ('["reservation-without-entry-intent"]',),
+        venue_mode="LIVE",
+        account_id="123",
+    )
+    assert blocked == "BLOCKED · reservation-without-entry-intent"
+
+
+@pytest.mark.parametrize(
+    ("venue_mode", "account_id", "row"),
+    [
+        ("UNKNOWN", "123", ("[]",)),
+        ("LIVE", None, ("[]",)),
+        ("LIVE", "123", None),
+    ],
+    ids=["unbound-venue-mode", "unbound-account", "unreadable-issue-set"],
+)
+def test_lifecycle_recovery_never_reports_ready_without_evidence(venue_mode, account_id, row):
+    value = load_lifecycle_recovery(lambda _sql: row, venue_mode=venue_mode, account_id=account_id)
+
+    assert value.startswith("UNKNOWN")
+
+    def failing(_sql):
+        raise TimeoutError("offline")
+
+    assert load_lifecycle_recovery(failing, venue_mode="LIVE", account_id="123").startswith(
+        "UNKNOWN"
+    )
+
+
+def test_stream_condition_reports_stored_evidence_with_age():
+    fresh = datetime.now(UTC).isoformat()
+    live_row = stream_condition(
+        [{"symbol": "PUMPUSDT", "state": "HEALTHY", "last_stream_at": fresh}]
+    )
+    assert live_row.startswith("STORED · PUMPUSDT HEALTHY")
+    assert stream_condition(
+        [{"symbol": "PUMPUSDT", "state": "HEALTHY", "last_stream_at": "2026-01-01T00:00:00+00:00"}]
+    ).startswith("STORED-STALE · PUMPUSDT HEALTHY")
+    assert stream_condition(
+        [{"symbol": "BTCUSDT", "state": "FAILED", "last_stream_at": fresh}]
+    ).startswith("STORED · BTCUSDT FAILED")
+    assert stream_condition([]).startswith("UNKNOWN")
+    assert stream_condition(None).startswith("UNKNOWN")
+
+
+def test_latch_readiness_distinguishes_clear_and_refused():
+    assert _latch_recovery_readiness([]) == "CLEAR · no active latch"
+    refused = _latch_recovery_readiness(
+        [
+            {
+                "scope": "global",
+                "reason": "operator-contain",
+                "latched_at": "2026-01-01T00:00:00+00:00",
+            }
+        ]
+    )
+    assert refused.startswith("REFUSED")
+    assert _latch_recovery_readiness("UNKNOWN").startswith("UNKNOWN")

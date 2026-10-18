@@ -109,7 +109,7 @@ def test_cron_classifies_running_service_without_health_as_unhealthy(monkeypatch
     assert services["unhealthy"] == 1
 
 
-def test_cron_reports_dispatcher_restart_and_exact_recovery_failure(monkeypatch):
+def test_cron_reports_dispatcher_block_with_exact_issue(monkeypatch):
     from types import SimpleNamespace
 
     from test_health_report_provider_source import health_report as script
@@ -118,22 +118,52 @@ def test_cron_reports_dispatcher_restart_and_exact_recovery_failure(monkeypatch)
         if "config" in cmd:
             output = '{"services": {"dispatcher-bitget": {}}}'
         elif "logs" in cmd:
-            output = "RuntimeError: Bitget lifecycle recovery is not ready"
+            output = (
+                "dispatcher-bitget-1  | service=dispatcher-bitget state=recovery-blocked "
+                "issues=reservation-without-entry-intent"
+            )
         else:
-            output = "dispatcher-bitget|restarting|healthy\n"
+            output = "dispatcher-bitget|running|healthy\n"
         return SimpleNamespace(returncode=0, stdout=output)
 
     monkeypatch.setattr(script.subprocess, "run", run)
-    services = script.get_service_status()
-    assert services["dispatcher_state"] == "RESTARTING"
-    assert services["lifecycle_recovery"] == "BLOCKED"
-    assert services["unhealthy"] == 1
-    assert services["healthy"] == 0
+    monkeypatch.setattr(script, "query_one", lambda _sql: ("[]",))
+    monkeypatch.setenv("CONSOLE_ACCOUNT_ID", "5536885345")
+    services = script.get_service_status("LIVE")
+    assert services["dispatcher_state"] == "RUNNING"
+    assert services["lifecycle_recovery"] == "BLOCKED · reservation-without-entry-intent"
     assert "DEGRADED" in render(services=services)
 
 
-@pytest.mark.parametrize("state,log_error", [("running", False), ("restarting", True)])
-def test_recovery_is_not_inferred_from_old_or_unavailable_logs(monkeypatch, state, log_error):
+def test_latest_cycle_line_clears_a_historical_block(monkeypatch):
+    from types import SimpleNamespace
+
+    from test_health_report_provider_source import health_report as script
+
+    def run(cmd, **kwargs):
+        if "config" in cmd:
+            output = '{"services": {"dispatcher-bitget": {}}}'
+        elif "logs" in cmd:
+            output = (
+                "dispatcher-bitget-1  | service=dispatcher-bitget state=recovery-blocked "
+                "issues=reservation-without-entry-intent\n"
+                "dispatcher-bitget-1  | service=dispatcher-bitget mode=LIVE venue_mode=LIVE "
+                "state=idle"
+            )
+        else:
+            output = "dispatcher-bitget|running|healthy\n"
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr(script.subprocess, "run", run)
+    monkeypatch.setattr(script, "query_one", lambda _sql: ("[]",))
+    monkeypatch.setenv("CONSOLE_ACCOUNT_ID", "5536885345")
+    services = script.get_service_status("LIVE")
+    assert services["lifecycle_recovery"] == "READY"
+    assert "Lifecycle  READY" in render(services=services)
+
+
+@pytest.mark.parametrize("state", ["running", "restarting"])
+def test_recovery_never_comes_from_an_unreadable_or_unbounded_log(monkeypatch, state):
     import subprocess
     from types import SimpleNamespace
 
@@ -143,17 +173,19 @@ def test_recovery_is_not_inferred_from_old_or_unavailable_logs(monkeypatch, stat
         if "config" in cmd:
             output = '{"services": {"dispatcher-bitget": {}}}'
         elif "logs" in cmd:
-            assert log_error, "Running workers must not be diagnosed from historical logs"
+            assert "--since" in cmd and "5m" in cmd, "only a bounded window may be read"
             raise subprocess.TimeoutExpired(cmd, 10)
         else:
             output = f"dispatcher-bitget|{state}|healthy\n"
         return SimpleNamespace(returncode=0, stdout=output)
 
     monkeypatch.setattr(script.subprocess, "run", run)
-    services = script.get_service_status()
-    assert services["lifecycle_recovery"] == "UNKNOWN"
-    if state == "restarting":
-        assert "DEGRADED" in render(services=services)
+    monkeypatch.setattr(script, "query_one", lambda _sql: ("[]",))
+    monkeypatch.setenv("CONSOLE_ACCOUNT_ID", "5536885345")
+    services = script.get_service_status("LIVE")
+    # An unreadable cycle is unknown evidence, never an inferred READY or BLOCKED.
+    assert services["lifecycle_recovery"] == "UNKNOWN · dispatcher log read failed"
+    assert "DEGRADED" in render(services=services)
 
 
 def test_cron_keeps_db_failure_unknown_without_erasing_successful_provider(monkeypatch):

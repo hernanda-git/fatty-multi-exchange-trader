@@ -32,6 +32,7 @@ from fatty_trader.operator.health import (  # noqa: E402
     ACCOUNT_SOURCE,
     load_health_ledger,
     load_health_protection,
+    load_lifecycle_recovery,
 )
 from fatty_trader.operator.health_report_format import (  # noqa: E402
     fmt_price,
@@ -272,8 +273,42 @@ def load_sltp_status(
     return load_health_protection(positions, fallback_rows)
 
 
-def get_service_status() -> dict[str, int | str]:
-    """Read Compose service state without changing containers."""
+def _dispatcher_cycle_state() -> tuple[str | None, str]:
+    """Latest dispatcher cycle line inside a bounded window.
+
+    ``None`` means the read failed (unknown), ``""`` means the window held no cycle
+    line, otherwise the dispatcher's own state token from its most recent line.
+    """
+    try:
+        logs = subprocess.run(
+            ["docker", "compose", "logs", "--no-color", "--since", "5m", "dispatcher-bitget"],
+            capture_output=True,
+            text=True,
+            cwd=str(PROJECT_ROOT),
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+    if logs.returncode != 0:
+        return None, ""
+    latest = ""
+    for raw in logs.stdout.splitlines():
+        if "service=dispatcher-bitget" in raw and "state=" in raw:
+            latest = raw
+    if not latest:
+        return "", ""
+    state = ""
+    issues = ""
+    for token in latest.split():
+        if token.startswith("state="):
+            state = token[len("state=") :]
+        elif token.startswith("issues="):
+            issues = token[len("issues=") :]
+    return state, issues
+
+
+def get_service_status(venue_mode: str = "UNKNOWN") -> dict[str, int | str]:
+    """Read Compose service state and durable recovery readiness without mutation."""
     result = subprocess.run(
         [
             "docker",
@@ -343,26 +378,31 @@ def get_service_status() -> dict[str, int | str]:
     )
     dispatcher_states = [row[1].upper() for row in rows if row[0] == "dispatcher-bitget"]
     dispatcher_state = ", ".join(dispatcher_states) or "UNKNOWN"
-    lifecycle = "UNKNOWN"
-    if "RESTARTING" in dispatcher_states:
-        # Only retain a fixed startup-failure marker, never arbitrary log payloads.
-        # Bound the read to this incident window: historical failures do not prove
-        # that an otherwise running worker is currently blocked.
-        try:
-            logs = subprocess.run(
-                ["docker", "compose", "logs", "--no-color", "--tail", "50", "dispatcher-bitget"],
-                capture_output=True,
-                text=True,
-                cwd=str(PROJECT_ROOT),
-                timeout=10,
-            )
-            if logs.returncode == 0 and "Bitget lifecycle recovery is not ready" in logs.stdout:
-                lifecycle = "BLOCKED"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+    monitor_rows = [row for row in rows if row[0] == "monitor-bitget"]
+    monitor_state = monitor_rows[0][1].upper() if monitor_rows else "MISSING"
+    monitor_health = monitor_rows[0][2].lower() if monitor_rows and len(monitor_rows[0]) > 2 else ""
+    lifecycle = load_lifecycle_recovery(
+        query_one,
+        venue_mode=venue_mode,
+        account_id=os.environ.get("CONSOLE_ACCOUNT_ID"),
+    )
+    log_state, log_issues = _dispatcher_cycle_state()
+    if log_state is None:
+        # A failed read is unknown, never an inferred verdict.
+        lifecycle = "UNKNOWN · dispatcher log read failed"
+    elif log_state == "recovery-blocked":
+        # The dispatcher's own latest cycle carries the exact issue list; the
+        # bounded window keeps a historical block from pinning the card forever.
+        lifecycle = f"BLOCKED · {log_issues or 'unconfirmed'}"
+    elif "RUNNING" not in dispatcher_states:
+        lifecycle = f"BLOCKED · dispatcher {dispatcher_state.lower()}"
+    elif lifecycle == "READY" and "RESTARTING" in dispatcher_states:
+        lifecycle = "BLOCKED · dispatcher restarting"
     return {
         "status": "OK",
         "dispatcher_state": dispatcher_state,
+        "monitor_state": monitor_state,
+        "monitor_health": monitor_health,
         "lifecycle_recovery": lifecycle,
         "total": len(rows),
         "running": running,
@@ -528,9 +568,20 @@ def load_report_data() -> dict[str, Any]:
     except Exception as exc:
         codex = {"status": "UNKNOWN", "error": type(exc).__name__}
     try:
-        services = get_service_status()
+        services = get_service_status(modes["venue_mode"])
     except Exception as exc:
         services = {"status": "UNKNOWN", "error": type(exc).__name__}
+    monitor_state = str(services.get("monitor_state", "UNKNOWN")).upper()
+    monitor_health = str(services.get("monitor_health", "")).lower()
+    if monitor_state == "RUNNING" and monitor_health == "healthy":
+        ledger["metrics"]["monitor_condition"] = "OK · running healthy"
+    elif monitor_state in {"RUNNING", "RESTARTING", "EXITED", "MISSING"}:
+        ledger["metrics"]["monitor_condition"] = f"⚠️ monitor-bitget {monitor_state.lower()}"
+    else:
+        ledger["metrics"]["monitor_condition"] = "UNKNOWN · not probed"
+    ledger["metrics"]["fallback_mutations_enabled"] = (
+        "ENABLED" if os.environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED") == "1" else "DISABLED"
+    )
     return {
         "positions": positions,
         "pending_orders": pending,

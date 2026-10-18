@@ -107,7 +107,9 @@ def test_stored_healthy_stream_is_not_current_monitor_or_latch_release_evidence(
     text = report(Gateway(), LoadedConnection)
     assert "HEALTHY" in text
     assert "Monitor    UNKNOWN" in text
-    assert "Recovery   UNKNOWN" in text
+    # The latch itself is allowlisted, so recovery policy permits it; a stored
+    # HEALTHY stream row is still not the proof that releases it.
+    assert "Recovery   RELEASABLE · approved recovery permitted" in text
     assert "DEGRADED" in text
     assert "socket-not-connected" in text
     assert LATCH["latched_at"] in text
