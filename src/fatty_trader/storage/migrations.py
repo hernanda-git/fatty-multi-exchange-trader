@@ -451,6 +451,35 @@ MIGRATIONS: Final = [
              planned_margin_usdt);
         """,
     ),
+    (
+        34,
+        """
+        -- Deploy/maintenance windows are recorded so any source message that
+        -- lapsed while the pipeline was down is accounted for instead of
+        -- silently expiring. Observability only: no trading path reads them.
+        CREATE TABLE IF NOT EXISTS maintenance_windows (
+            id TEXT PRIMARY KEY,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+            ended_at TIMESTAMPTZ,
+            revision TEXT,
+            reason TEXT NOT NULL,
+            opened_by TEXT NOT NULL DEFAULT 'rollout'
+        );
+        CREATE INDEX IF NOT EXISTS maintenance_windows_open
+            ON maintenance_windows (started_at DESC) WHERE ended_at IS NULL;
+        CREATE TABLE IF NOT EXISTS missed_signals (
+            message_id UUID PRIMARY KEY REFERENCES telegram_messages(id),
+            window_id TEXT REFERENCES maintenance_windows(id),
+            message_ref INTEGER,
+            received_at TIMESTAMPTZ,
+            entry_expires_at TIMESTAMPTZ,
+            reason TEXT NOT NULL,
+            recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+        );
+        CREATE INDEX IF NOT EXISTS missed_signals_window
+            ON missed_signals (window_id, recorded_at DESC);
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.
