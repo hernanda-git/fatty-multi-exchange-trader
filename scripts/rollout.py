@@ -89,6 +89,35 @@ def log(payload: object) -> None:
     print(json.dumps(payload), flush=True)
 
 
+def announce(event: str, **fields: object) -> None:
+    """Put a rollout event in the notification outbox: a rollout is never silent.
+
+    Failures here must never break the rollout, so this swallows its own errors and
+    only logs them.
+    """
+    try:
+        payload = json.dumps(
+            {"kind": "system-event", "message": _message(event, fields)}, sort_keys=True
+        )
+        dedup = f"rollout:{event}:{time.time_ns()}"
+        psql(
+            "INSERT INTO notifications_outbox (id, dedup_key, payload) VALUES ("
+            f"gen_random_uuid(), '{dedup}', $json${payload}$json$::jsonb) "
+            "ON CONFLICT (dedup_key) DO NOTHING"
+        )
+    except Exception as exc:  # noqa: BLE001 - reporting must not fail a rollout
+        log({"announce_failed": type(exc).__name__, "event": event})
+
+
+def _message(event: str, fields: dict[str, object]) -> str:
+    parts = [f"rollout {event}"]
+    for key in ("revision", "branch", "reason", "blocked_by", "schema", "missed", "error"):
+        value = fields.get(key)
+        if value not in (None, "", []):
+            parts.append(f"{key}={value}")
+    return " · ".join(str(part) for part in parts)
+
+
 def run(args: list[str], timeout: float | None = None) -> None:
     log(
         {
@@ -165,6 +194,11 @@ def gate(quiet_minutes: int, force_reason: str | None) -> dict[str, object]:
         return verdict
     if not force_reason:
         log({"deploy_gate": "blocked", **verdict})
+        announce(
+            "blocked",
+            blocked_by=",".join(str(item) for item in verdict["blocked_by"]),
+            reason=f"quiet_minutes={quiet_minutes}",
+        )
         raise SystemExit(
             "deploy gate blocked: "
             + ", ".join(str(reason) for reason in verdict["blocked_by"])
@@ -198,7 +232,19 @@ def main() -> None:
 
     settle_previous_windows()
     gate(args.quiet_minutes, args.force_reason)
+    announce("starting", branch=args.branch or args.revision)
+    try:
+        _rollout(args)
+    except BaseException as exc:  # noqa: BLE001 - a failed rollout must be announced
+        announce(
+            "failed",
+            branch=args.branch or args.revision,
+            error=f"{type(exc).__name__}:{str(exc)[:120]}",
+        )
+        raise
 
+
+def _rollout(args: argparse.Namespace) -> None:
     # ── 1. Stop the host operations worker; no console mutations during rollout.
     run(["systemctl", "--user", "stop", "fatty-console-ops-worker"])
 
@@ -422,6 +468,7 @@ def main() -> None:
                 }
             )
 
+    announce("complete", revision=revision)
     log({"rollout": "complete", "revision": revision, "signal_replay": False})
 
 
