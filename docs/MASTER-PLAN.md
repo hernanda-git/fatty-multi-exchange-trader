@@ -27,15 +27,24 @@ rollouts, has been recovery-blocked for hours, and has lost its websocket before
 local-only stop turns *our* outage into an uncovered position at 20x, and a gap into a
 liquidation. The backstop exists precisely for the case we cannot handle.
 
-**Evidence bar before the local stop becomes primary** (all five, or it stays
-observe-only):
+**Evidence comes from replay and rehearsals, not from a waiting period** (owner
+decision: no observe-only rollout). The corpus is built from the source channel's own
+history plus venue candles, so thousands of signals can be judged offline in hours
+instead of waiting weeks for live samples. The five items are sourced as follows:
 
-1. stream freshness and disconnect-duration distribution (percentiles, not anecdotes);
-2. tick → close-order → fill latency, p50/p99, measured on real attempts;
-3. gap behaviour: how much worse a local close fills than a venue trigger on a fast candle;
-4. partial-fill correctness: the close is sized against the actual position, every time;
+1. stream freshness and disconnect handling — historical capability rows and monitor
+   evidence for the shape of the failure, plus an explicit socket-drop rehearsal;
+2. tick → close → fill latency — replay for the expected distribution, a live probe in
+   the first week as confirmation (recorded, not gating);
+3. gap behaviour — replay across the whole corpus: local close versus venue trigger on
+   the same candles, reported in basis points;
+4. partial-fill correctness — unit and e2e tests plus corpus cases with partial fills;
 5. rehearsals — kill the process, drop the socket, replay a fast candle with a live
-   position; each rehearsal must end with the position protected by the backstop.
+   position; each must end protected by the backstop.
+
+**Both stops ship in the same release.** The local stop becomes primary only together
+with the wide venue backstop, the bound close intent, the containment ladder and the
+alerts — never alone, never in two stages.
 
 **Reversal conditions.** If rehearsals show disconnects longer than the agreed budget,
 or gap slippage worse than the agreed bound, the hard stop returns to the signal level
@@ -43,6 +52,28 @@ and the local stop returns to observe-only. This is a policy with a spine, not a
 
 Every policy change from here on carries the same shape: a decision record, an evidence
 bar, and published reversal conditions.
+
+## Why two months of fixes did not fix it
+
+The harness on this machine holds **101 agent sessions spanning exactly two months**
+(2026-08-18 → today) and the database holds **489 channel messages, 67 signals, 24
+fills** since 2026-09-04. Both are evidence that the work happened; neither was ever
+turned into a proof that a *class* of defect was gone. Each round ended when the lane
+looked idle, on the day's incident, with a local patch — and the same classes came back
+under new names:
+
+| Class | First seen | Recurrence |
+|---|---|---|
+| Venue-side record that cannot prove itself terminal | September (source updates) | reservation orphan, WLD, NEAR |
+| Timing between "posted" and "proven" | September (close intents) | WLD and NEAR protection verification |
+| Silent failure (log-only, no alert) | throughout | 2.5 h block, hanging deploys, `(empty)` alerts |
+| Shared-table contention | October | claim starvation (NEAR sat 28 min) |
+
+**The correction in this plan** is that "fixed" becomes falsifiable: a defect class is
+closed only when (a) the invariant test that would have caught it exists, (b) the replay
+corpus shows the class behaving, and (c) the nightly forensic report can prove it stayed
+closed. The corpus and the two-month ledger are built first (P0-0), because they are the
+instrument that makes every later claim checkable.
 
 ## The objective, stated honestly
 
@@ -83,12 +114,25 @@ alerted reason — and the operator must see which, and why, without a shell.
 
 ## Phase 0 — execution integrity
 
-**P0-1 · Measure before tuning.** *(assumption: protection confirmation is slow, and
-nobody knows by how much)* Record per attempt: protection POST → first visible readback,
-attempt count, outcome, symbol; per market: stream freshness, disconnect durations, tick
-→ close → fill latency. Surface p50/p99 on the card.
-*Done when:* ≥20 protection attempts and ≥7 days of stream/latency data exist, and the
-stop-policy evidence bar can be judged from numbers.
+**P0-0 · Corpus and the two-month ledger (do this first).** *(assumption: there is not
+enough live data to decide anything)* Build the evidence engine:
+(a) backfill the source channel's own history through the existing intake (years of
+messages, not just the 489 in the database), so signals and price candles exist for
+every historical entry;
+(b) fetch venue candles around each signal and store the corpus;
+(c) mine the 101 harness sessions (hermes, omp, opencode history) into
+`docs/FORENSICS-2-MONTHS.md`: every attempted fix, what regressed, what was reverted,
+what silently never landed — so no round repeats a previous one;
+(d) write `docs/REPLAY-CORPUS.md`: coverage, sample size, known gaps.
+*Done when:* the corpus is queryable, the ledger exists, and a single command replays the
+whole corpus through the pipeline offline.
+
+**P0-1 · Measure before tuning.** *(protection confirmation is slow; nobody knows by how
+much)* Record per attempt: protection POST → first visible readback, attempts, outcome,
+symbol; per market: stream freshness, disconnects, tick → close → fill latency. Replay
+supplies the distribution; the live probe confirms it in the first week.
+*Done when:* the corpus report answers the stop-policy questions with numbers, and the
+first week of live probes matches the replay within a stated tolerance.
 
 **P0-2 · Escalation ladder with an evidence-based grace.** *(containment currently fires
 before the venue can confirm)* Read → bounded jittered retries while the position is
@@ -99,10 +143,11 @@ before POST so the lifecycle stays provable.
 never-confirms case still contains and alerts.
 
 **P0-3 · Soft stop primary, hard stop backstop** (policy above). Wire the local stop in
-the existing fallback lane (behind its gate), place the wide venue backstop, prove both
-paths in replay, then run the rehearsals in the evidence bar.
-*Done when:* all five evidence-bar items are recorded and the rehearsals end protected;
-until then the lane stays observe-only.
+the existing fallback lane, place the wide venue backstop, and ship both in one release;
+prove both paths in replay against the corpus, then run the rehearsals in the evidence
+list. No observe-only stage: the lane's off switch remains, but the design is committed.
+*Done when:* the corpus gap study is recorded, the rehearsals end protected, and live
+entries are being closed by the local stop with the venue backstop verified in place.
 
 **P0-4 · Pre-entry protection feasibility gate.** *(assumption: anything we can trade we
 can protect)* Before an entry POST, require a fresh backstop capability (or a successful
@@ -142,10 +187,12 @@ equivalents and the drills pass without a terminal.
 
 ## Phase 2 — a change process that survives contact
 
-**P2-1 · Replay harness** with today's incidents as fixtures (WLD, NEAR, ENA, #Q, the
-claim-contention sequence) driving the full pipeline against a fake venue, asserting: no
-double order, no lost signal, no unproven terminal state, and the specific behaviour each
-fix added. *Done when:* it runs in CI and any trading-behaviour change must extend it.
+**P2-1 · Replay harness** on the P0-0 corpus, with today's incidents as named fixtures
+(WLD, NEAR, ENA, #Q, the claim-contention sequence) driving the full pipeline against a
+fake venue, asserting: no double order, no lost signal, no unproven terminal state, and
+the specific behaviour each fix added. Every future corpus entry becomes a regression
+case for free.
+*Done when:* it runs in CI and any trading-behaviour change must extend it.
 
 **P2-2 · Release cadence and a rehearsed rollback.** One rollout per batch; every release
 states what behaviour changes, which invariant could break, its rollback command and its
@@ -176,8 +223,9 @@ lane with timings. *Done when:* the rehearsal is logged and a rollback takes <5 
 
 | Assumption | Probe | If falsified |
 |---|---|---|
-| Protection confirmation lags seconds | P0-1 instrumentation | Attached backstops (P0-5) jump ahead of P0-2 |
-| The local stop degrades acceptably | P0-3 rehearsal: gap + disconnect | Hard stop returns to the signal level (reversal condition) |
+| The corpus is representative of live | Replay outcomes vs the first 7 days of live probes | Extend the backfill; treat replay conclusions as provisional for that market |
+| Protection confirmation lags seconds | P0-0/P0-1 corpus report | Attached backstops (P0-5) jump ahead of P0-2 |
+| The local stop degrades acceptably | Corpus gap study + P0-3 rehearsal | Hard stop returns to the signal level (reversal condition) |
 | Containment rarely needed | Escalation count over 30 days | The grace budget is too long; tighten it |
 | Signals are lost mostly to lane blocks | P1-2 report | Signal intelligence moves up |
 | Console actions remove operator risk | P1-3 drill timings | Shell paths stay first-class and get hardened |
