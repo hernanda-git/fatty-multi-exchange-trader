@@ -796,3 +796,23 @@ carries a truthful `Lifecycle` too (its service counts stay unprobed by design).
 2187 unit tests, ruff check/format and mypy strict pass; verification rendered the
 card from the deployed tree: `🟢 ONLINE` with `Lifecycle READY`, `Recovery CLEAR`,
 `Fallback gate DISABLED`, `Stream now STORED · PUMPUSDT HEALTHY · 0s`.
+
+**Stale fallback registrations retired (2026-10-18).** The card's stored-stream line
+raised a fair question — why stream PUMPUSDT with no position? Because the protection
+stream subscribes exactly the pairs that still have `fallback_protection` rows in
+`active`/`closing` (`execution/bitget_protection_stream.py:190`, `sync_active_symbols`;
+`BITGET_PROTECTION_STREAM_SYMBOLS` is empty, so those rows are the only symbol source).
+PUMPUSDT (LONG 4001, 2026-09-29) and PENGUUSDT (SHORT 5082, 2026-09-30) never left
+`active`: their positions were closed by native protection, so the fallback path that
+calls `mark_position_flat` never ran, and the fallback lane itself is gated off by
+policy (`BITGET_FALLBACK_MUTATIONS_ENABLED=0`; splitting that gate was rejected by
+`test_explicit_fallback_mutation_gate_stays_closed` and reverted — the whole lane is the
+operator's off switch, deliberately). Operator action, after GET-only proof that the
+venue holds nothing for either symbol (0 positions, 0 orders, 0 plans across the three
+products): both rows retired with the module's own semantics
+(`state='cancelled', close_reason='position-already-flat'`), leaving zero active
+registrations. The stream then dropped both symbols — capability ages froze at 146s and
+grew — so the card renders `STORED-STALE · PUMPUSDT HEALTHY` instead of a healthy live
+row. Punch list: alert on active fallback registrations whose symbol shows no position
+and no orders (no automatic exit exists while mutations are disabled), and add a
+documented `protection.retire` action.
