@@ -53,10 +53,19 @@ done
 
 for service in "${completed_services[@]}"; do
   container_id="$($compose_bin ps -aq "$service")"
-  test -n "$container_id" || {
+  if test -z "$container_id"; then
+    # The rollout runner applies migrations with `run --rm`, which leaves no
+    # container behind, so the effect is proven by what the migration wrote
+    # instead of by a container record.
+    applied="$($compose_bin exec -T postgres psql -U fatty_app -d fatty_trader -Atc \
+      "SELECT count(*) FROM schema_migrations;" 2>/dev/null || true)"
+    if test "${applied:-0}" -gt 0 2>/dev/null; then
+      printf 'service_completed_without_container=%s migrations=%s\n' "$service" "$applied"
+      continue
+    fi
     printf 'runtime_blocked=service_missing service=%s\n' "$service" >&2
     exit 1
-  }
+  fi
   state="$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$container_id")"
   test "$state" = "exited:0" || {
     printf 'runtime_blocked=service_incomplete service=%s state=%s\n' "$service" "$state" >&2

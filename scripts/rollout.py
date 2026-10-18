@@ -221,6 +221,27 @@ def settle_previous_windows() -> None:
         log({"stale_window_closed": window_id, "reason": reason})
 
 
+def restore_ops_worker() -> None:
+    """The console's host operations worker must never be left dead by a rollout.
+
+    Step 1 stops it so no console mutation races the rollout; every exit path (success,
+    gate refusal, failed verifier, kill) must bring it back, otherwise the operator
+    surface silently loses every allowlisted host operation.
+    """
+    try:
+        run(["systemctl", "--user", "start", "fatty-console-ops-worker"])
+        time.sleep(5)
+        log(
+            {
+                "ops_worker_active": out(
+                    ["systemctl", "--user", "is-active", "fatty-console-ops-worker"]
+                )
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - restoration must never mask the real failure
+        log({"ops_worker_restore_error": f"{type(exc).__name__}:{str(exc)[:120]}"})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     target = parser.add_mutually_exclusive_group(required=True)
@@ -242,6 +263,8 @@ def main() -> None:
             error=f"{type(exc).__name__}:{str(exc)[:120]}",
         )
         raise
+    finally:
+        restore_ops_worker()
 
 
 def _rollout(args: argparse.Namespace) -> None:
@@ -423,15 +446,13 @@ def _rollout(args: argparse.Namespace) -> None:
     run(["bash", "scripts/verify_bitget_runtime.sh"], timeout=300)
 
     # ── 16. Resume the host operations worker under the new credential model.
-    run(["systemctl", "--user", "start", "fatty-console-ops-worker"])
-    time.sleep(5)
-    log(
-        {
-            "ops_worker_active": out(
-                ["systemctl", "--user", "is-active", "fatty-console-ops-worker"]
-            ),
-        }
+    restore_ops_worker()
+    worker_state = out(
+        ["systemctl", "--user", "is-active", "fatty-console-ops-worker"], check=False
     )
+    if worker_state != "active":
+        # A rollout that leaves the operator surface dead is not a successful rollout.
+        raise SystemExit("ops worker is not active after rollout: %s" % worker_state)
 
     # ── 17. Post-deployment evidence: log settings and queue state.
     services = READ_ONLY + ENTRY_CAPABLE + ["monitor-bitget", "postgres"]
