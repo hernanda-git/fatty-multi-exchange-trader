@@ -501,6 +501,19 @@ MIGRATIONS: Final = [
                 OR deadline_at IS NOT NULL) NOT VALID;
         """,
     ),
+    (
+        36,
+        """
+        -- Operator re-admission of a late signal. A signal whose five-minute window
+        -- lapsed while the lane was down can be re-opened by an explicit operator
+        -- reference; nothing else may set this, and the dispatcher's own gates
+        -- (cap, canary, protection, price-vs-stop) still apply to the entry.
+        ALTER TABLE telegram_messages
+            ADD COLUMN IF NOT EXISTS re_admission_reference TEXT;
+        ALTER TABLE telegram_messages
+            ADD COLUMN IF NOT EXISTS re_admitted_at TIMESTAMPTZ;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

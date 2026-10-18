@@ -117,4 +117,16 @@ AND NOT EXISTS (
 AND {alias}.entry_expires_at > clock_timestamp()
 AND {alias}.received_at > clock_timestamp() - interval '5 minutes'
 AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
+-- A signal whose window lapsed while the lane was down may be re-admitted by an
+-- explicit operator reference (scripts/requeue_late_signal.py). Only the lapse
+-- rejection is overridable; a superseded revision is never re-admitted.
+OR (
+    {alias}.re_admission_reference IS NOT NULL
+    AND {alias}.ingestion_origin IN ('realtime', 'catchup', 'backfill')
+    AND isfinite({alias}.received_at)
+    AND (
+        {alias}.entry_rejection_reason IS NULL
+        OR {alias}.entry_rejection_reason = 'stale-source-message'
+    )
+)
 """

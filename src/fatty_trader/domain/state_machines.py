@@ -39,6 +39,9 @@ _ALLOWED: dict[DispatchState, set[DispatchState]] = {
     DispatchState.ACTIVE: {DispatchState.CLOSING, DispatchState.MANUAL_REVIEW},
     DispatchState.CLOSING: {DispatchState.CLOSED, DispatchState.UNKNOWN, DispatchState.FAILED},
     DispatchState.RETRY_WAIT: {DispatchState.PREFLIGHT, DispatchState.FAILED},
+    # An expired signal may only return to the queue through an explicit operator
+    # re-admission (reason `operator-re-admission:<reference>`), never automatically.
+    DispatchState.EXPIRED: {DispatchState.QUEUED},
     DispatchState.UNKNOWN: {
         DispatchState.ACKNOWLEDGED,
         DispatchState.RETRY_WAIT,
