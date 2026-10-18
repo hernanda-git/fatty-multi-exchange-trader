@@ -133,15 +133,26 @@ overshoots from the 2.4 % signal stop to the ~4.5 % backstop — worse than toda
   5 s default.
 
 **Slices (each shippable, each verified).**
-- **3a — shadow mode (no mutations):** construct `BitgetFallbackStreamEngine` in
-  `monitor-bitget` with a callback that only records the decision (symbol, mark, stop,
-  decision latency, would-have-closed) — never posts; fix the `stale_after` wiring. This
-  gives real tick→decision latency and a dry-run population of would-be closes.
-- **3b — arm it:** make `BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=1` a *valid* mode
-  only when the engine is wired, with the callback bound to
-  `submit_fallback_close_async`; default stays `0`. Tests: healthy protection never
-  closes; a crossed signal stop closes exactly once; duplicate/out-of-order events fence;
-  a failed close leaves the venue backstop as the remaining protection.
+- **3a — shadow mode (deliberately skipped):** the owner's P0-3 policy says no
+  observe-only stage, so the lane lands armed-capable from the start and the off switch
+  (`BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=0`) is the safety position, not a phase.
+  The `stale_after` wiring fix that this slice would have carried is included in 3b.
+- **3b — arm it (landed):** `BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=1` is now a valid
+  mode; it builds `BitgetFallbackStreamEngine` inside `build_bitget_protection_stream` and
+  binds its callback to `submit_fallback_close_async` (exact-ownership check, atomic
+  durable claim, one POST, no retry). Flag `0` builds exactly the previous observe-only
+  runtime — no engine, no callback. `1` without an execution client raises; any value
+  other than `0`/`1` raises; `STREAM_MODE` still rejects anything but `observe`.
+  `stale_after` now reaches socket, runtime, and engine from one parse. The fallback
+  registry is read through a 2 s snapshot cache so the engine does not query the
+  database on every mark (the close seam re-reads the position and re-checks ownership,
+  so a stale stop payload cannot cause a wrong close).
+  **Known bound:** evaluation is serial on the stream loop, so while a close is in
+  flight (≈1–3 s) other marks are not evaluated. The REST lane remains a second trigger;
+  a bounded work-queue is the follow-up if measurement shows second-order stalls.
+  Tests: default path unchanged; engine receives only fresh marks; duplicate and
+  out-of-order marks never produce two closes; a raising close callback or engine error
+  cannot kill the stream or stop capability recording; `stale_after` propagation.
 - **3c — rehearsals:** kill the process, drop the socket, replay a fast candle; each ends
   protected; zero wash trades; every local close auditable via the WS-2 trail.
 - **3d — widen the venue stop and enable mutations in one release,** with rollback being:
@@ -163,3 +174,45 @@ the venue stop level; both are single-value changes, documented in the handover.
   recorded (measurement says the local trigger cannot beat the venue stop in the current
   architecture);
 - `docs/MASTER-PLAN.md` and `docs/HANDOVER-2026-10-18.md` reflect the new state.
+
+---
+
+## WS-3 · Arming and rollback (runbook)
+
+The wiring lands with `BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=0`: the lane exists,
+is tested, and is inert. Arming is one value, and it is the owner's call because it
+changes how live positions exit.
+
+**Arm (one value, then one recreate):**
+
+```
+# docker-compose.yml, monitor-bitget only
+BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: "1"
+docker compose up -d --no-deps --no-build monitor-bitget
+```
+
+Verify after arming:
+1. `docker compose logs monitor-bitget | grep -i stream` shows the engine constructed and
+   the runtime still recording `stream_state=HEALTHY` in
+   `bitget_protection_capabilities`;
+2. one controlled canary position (tiny size, stop ~0.1 % away) is closed by the stream
+   path: exactly one `fallback_protection` row goes `closing → closed`, exactly one
+   `place_market_close` POST appears, and `scripts/dispatch_trail.py --latest` shows the
+   close;
+3. no second close for the same position (duplicate fence) and no close when protection
+   is healthy.
+
+**Roll back (seconds):** set the flag back to `"0"`, recreate `monitor-bitget`. The REST
+lane and the venue stop are untouched by this release, so nothing else needs restoring.
+
+**Deliberate sequencing deviation (needs the owner's nod):** `MASTER-PLAN` P0-3 asks for
+the local stop and the wide venue backstop in *one* release. This release does the local
+stop only. Widening the venue stop changes the stop distance that position sizing is
+derived from (SL distance feeds liquidation headroom and size), so it needs the replay
+corpus (P2-1) to prove no trade gets larger or worse. Recommended order: arm the local
+stop → observe real exits → widen with the corpus numbers in hand. That is two releases,
+not one, and the reason is recorded here rather than silently.
+
+**Guardrails while armed:** the engine's duplicate/out-of-order fence, the close seam's
+exact-ownership check and atomic durable claim, exactly one POST with no retry on an
+ambiguous result, and the independent REST lane as a second trigger.

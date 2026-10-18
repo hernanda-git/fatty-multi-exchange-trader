@@ -140,7 +140,9 @@ def collect(
     client_oid: str | None,
 ) -> dict[str, Any] | None:
     with connection.cursor() as cursor:
-        dispatch = find_dispatch(cursor, dispatch_id, client_oid, latest=not dispatch_id and not client_oid)
+        dispatch = find_dispatch(
+            cursor, dispatch_id, client_oid, latest=not dispatch_id and not client_oid
+        )
         if dispatch is None:
             return None
         did = dispatch[0]
@@ -184,7 +186,11 @@ def collect(
             for row in cursor.fetchall()
         ]
         signal_id = next(
-            (item["canonical_signal_id"] for item in trail["transitions"] if item["canonical_signal_id"]),
+            (
+                item["canonical_signal_id"]
+                for item in trail["transitions"]
+                if item["canonical_signal_id"]
+            ),
             dispatch[7],
         )
         if signal_id:
@@ -216,7 +222,10 @@ def collect(
             }
             for row in cursor.fetchall()
         ]
-        root = next((item["client_order_id"] for item in trail["reservations"] if item["client_order_id"]), None)
+        root = next(
+            (item["client_order_id"] for item in trail["reservations"] if item["client_order_id"]),
+            None,
+        )
         entry_oid = root or client_oid or ""
         if entry_oid:
             cursor.execute(INTENT_SQL, (entry_oid, entry_oid, did))
@@ -307,7 +316,8 @@ def render(trail: dict[str, Any]) -> str:
     )
     lines += [
         "",
-        f"timing: signal→dispatch {_delta(signal.get('message_received_at'), dispatch['created_at'])}"
+        "timing: signal→dispatch "
+        f"{_delta(signal.get('message_received_at'), dispatch['created_at'])}"
         f" · fill→protection claim {_delta(first_fill, first_claim)}"
         f" · fill→close fill {_delta(first_fill, close_fill)}",
         "",
@@ -322,14 +332,26 @@ def render(trail: dict[str, Any]) -> str:
             f"{item['stage'] or '-'} | {item['reason_code'] or item['reason']} | "
             f"{item['attempt'] or '-'} | {item['provider_effect'] or '-'} |"
         )
-    lines += ["", "## Intents", "", "| oid | role | state | filled | provider id | created |", "| --- | --- | --- | --- | --- | --- |"]
+    lines += [
+        "",
+        "## Intents",
+        "",
+        "| oid | role | state | filled | provider id | created |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
     for item in trail["intents"]:
         lines.append(
             f"| `{item['client_order_id']}` | {item['role']} | {item['state']} | "
             f"{item['filled_qty']}@{item['filled_price']} | {item['provider_order_id'] or '-'} | "
             f"{_ts(item['created_at'])} |"
         )
-    lines += ["", "## Fills", "", "| oid | price | qty | fee | pnl | at |", "| --- | --- | --- | --- | --- | --- |"]
+    lines += [
+        "",
+        "## Fills",
+        "",
+        "| oid | price | qty | fee | pnl | at |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
     for item in trail["fills"]:
         lines.append(
             f"| `{item['client_order_id']}` | {item['price']} | {item['quantity']} | "
@@ -339,15 +361,18 @@ def render(trail: dict[str, Any]) -> str:
         capability = trail["capability"]
         lines += [
             "",
-            f"capability: native=`{capability['native_state']}` verified={_ts(capability['last_verified_at'])} "
-            f"stream=`{capability['stream_state']}` last_stream={_ts(capability['last_stream_at'])} "
+            f"capability: native=`{capability['native_state']}` "
+            f"verified={_ts(capability['last_verified_at'])} "
+            f"stream=`{capability['stream_state']}` "
+            f"last_stream={_ts(capability['last_stream_at'])} "
             f"last_error={capability['last_error'] or '-'}",
         ]
     if trail["post_fill"]:
         post = trail["post_fill"]
         lines += [
-            f"post-fill: `{post['status']}` {post['reason'] or '-'} qty={post['observed_quantity']} "
-            f"price={post['observed_entry_price']} observed={_ts(post['observed_at'])}",
+            f"post-fill: `{post['status']}` {post['reason'] or '-'} "
+            f"qty={post['observed_quantity']} price={post['observed_entry_price']} "
+            f"observed={_ts(post['observed_at'])}",
         ]
     lines.append("")
     return "\n".join(lines)

@@ -452,7 +452,7 @@ def _rollout(args: argparse.Namespace) -> None:
     )
     if worker_state != "active":
         # A rollout that leaves the operator surface dead is not a successful rollout.
-        raise SystemExit("ops worker is not active after rollout: %s" % worker_state)
+        raise SystemExit(f"ops worker is not active after rollout: {worker_state}")
 
     # ── 17. Post-deployment evidence: log settings and queue state.
     services = READ_ONLY + ENTRY_CAPABLE + ["monitor-bitget", "postgres"]

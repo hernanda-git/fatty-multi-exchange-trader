@@ -240,8 +240,16 @@ def build_bitget_protection_stream(
     clock: Callable[[], float] | None = None,
     wall_clock: Callable[[], float] | None = None,
     active_symbol_source: Callable[[], Iterable[str]] | None = None,
+    client: Any | None = None,
+    entries: Callable[[], Iterable[Mapping[str, Any]]] | None = None,
+    now: Callable[[], datetime] | None = None,
 ) -> Any | None:
-    """Build the disabled-by-default, observe-only stream (V2 for LIVE)."""
+    """Build the disabled-by-default stream, observe-only unless mutations are enabled.
+
+    ``BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=1`` additionally wires the
+    ``BitgetFallbackStreamEngine`` with a close callback; the default ``0`` keeps
+    today's observe-only runtime (no engine, no callback).
+    """
     raw_enabled = environ.get("BITGET_PROTECTION_STREAM_ENABLED", "0").lower()
     if raw_enabled not in {"0", "1"}:
         raise ValueError("BITGET_PROTECTION_STREAM_ENABLED must be 0 or 1")
@@ -251,8 +259,8 @@ def build_bitget_protection_stream(
     if raw_mutations not in {"0", "1"}:
         raise ValueError("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED must be 0 or 1")
     mode = environ.get("BITGET_PROTECTION_STREAM_MODE", "observe").strip().lower()
-    if mode != "observe" or raw_mutations == "1":
-        raise ValueError("Bitget protection stream is observe-only until close path is verified")
+    if mode != "observe":
+        raise ValueError("BITGET_PROTECTION_STREAM_MODE must be observe")
     symbols = tuple(
         symbol.strip().upper()
         for symbol in environ.get("BITGET_PROTECTION_STREAM_SYMBOLS", "").split(",")
@@ -296,11 +304,100 @@ def build_bitget_protection_stream(
         stale_after=stale_after,
         heartbeat_interval=heartbeat_interval,
     )
+    engine: Any = None
+    if raw_mutations == "1":
+        engine = _build_fallback_stream_engine(
+            client=client,
+            entries=entries,
+            now=now,
+            stale_after=stale_after,
+            socket=socket,
+        )
     return BitgetProtectionStreamRuntime(
         socket,
         repository,
         environment=environment,
+        now=now,
         active_symbol_source=active_symbol_source,
+        stale_after=stale_after,
+        engine=engine,
+    )
+
+
+def _build_fallback_stream_engine(
+    *,
+    client: Any | None,
+    entries: Callable[[], Iterable[Mapping[str, Any]]] | None,
+    now: Callable[[], datetime] | None,
+    stale_after: float,
+    socket: Any,
+) -> Any:
+    """Wire the mutating engine and its close callback; never reachable while gated off."""
+    from fatty_trader.execution.bitget_fallback_protection import (
+        load_active,
+        submit_fallback_close_async,
+    )
+    from fatty_trader.execution.bitget_protection_stream import (
+        BitgetFallbackStreamEngine,
+        StreamCloseRequest,
+        StreamCloseResult,
+    )
+
+    if client is None:
+        raise ValueError("Bitget protection stream mutations require an execution client")
+    source: Callable[[], Iterable[Mapping[str, Any]]] = (
+        entries if entries is not None else load_active
+    )
+    # Marks arrive far faster than the fallback registry changes, and the engine asks
+    # for its entries on every fresh mark. A short snapshot cache keeps the close path
+    # off the database on the event loop while still seeing a row registered moments
+    # ago; the close seam re-reads the position and re-checks ownership at the venue,
+    # so a slightly stale stop/entry payload cannot cause a wrong close.
+    snapshot: list[Mapping[str, Any]] = []
+    snapshot_at = float("-inf")
+
+    def cached_source() -> tuple[Mapping[str, Any], ...]:
+        nonlocal snapshot_at
+        monotonic = time.monotonic()
+        if monotonic - snapshot_at >= 2.0:
+            snapshot[:] = list(source())
+            snapshot_at = monotonic
+        return tuple(snapshot)
+
+    def find_entry(fallback_id: str) -> dict[str, Any] | None:
+        for raw in cached_source():
+            if str(raw.get("id")) == fallback_id:
+                return dict(raw)
+        return None
+
+    async def close(request: StreamCloseRequest) -> StreamCloseResult:
+        entry = find_entry(request.fallback_id)
+        if entry is None:
+            # The engine only closes rows it just read, so this is a torn read, not a retry.
+            return StreamCloseResult(request.fallback_id, False, "close-entry-missing")
+        outcome = await submit_fallback_close_async(
+            client,
+            entry,
+            mark_price=request.mark_price,
+            reason=request.reason,
+            environment=client.environment,
+        )
+        return StreamCloseResult(
+            request.fallback_id,
+            bool(outcome.get("submitted")),
+            str(outcome.get("reason") or "close-result-unknown"),
+        )
+
+    def transport_fresh(symbol: str) -> bool:
+        check = getattr(socket, "check_freshness", None)
+        return bool(check(symbol)) if callable(check) else False
+
+    return BitgetFallbackStreamEngine(
+        cached_source,
+        close,
+        now=now,
+        stale_after=stale_after,
+        transport_fresh=transport_fresh,
     )
 
 
@@ -1111,6 +1208,7 @@ def build_bitget_monitor_protection(
         clock=clock,
         wall_clock=wall_clock,
         active_symbol_source=active_symbol_source,
+        client=client,
     )
     if stream is None:
         return None, None, None

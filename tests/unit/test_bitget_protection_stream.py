@@ -45,6 +45,82 @@ def mark(symbol: str, price: str, event_time_ms: int) -> BitgetWebSocketEvent:
     )
 
 
+STREAM_EPOCH = int(datetime(2026, 9, 14, 3, 0, tzinfo=UTC).timestamp())
+
+
+class _FreshSocket:
+    """Socket double that treats every symbol as fresh without a live connection."""
+
+    def __init__(self, symbols: tuple[str, ...] = ("BTCUSDT",)) -> None:
+        self.symbols = symbols
+
+    def check_freshness(self, symbol: str | None = None) -> bool:
+        return True
+
+
+def stream_now() -> datetime:
+    return datetime.fromtimestamp(STREAM_EPOCH, UTC)
+
+
+@pytest.mark.asyncio
+async def test_mutations_flag_reaches_the_audited_close_seam(
+    active_entry: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The armed builder must close through `submit_fallback_close_async`, not a stand-in."""
+    from fatty_trader import service as service_module
+    from fatty_trader.execution import bitget_fallback_protection as fallback_module
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_close(client, entry, *, mark_price, reason, environment):
+        calls.append(
+            {
+                "entry_id": entry.get("id"),
+                "mark_price": mark_price,
+                "reason": reason,
+                "environment": environment,
+            }
+        )
+        return {"submitted": True, "reason": "stream-stop"}
+
+    monkeypatch.setattr(fallback_module, "submit_fallback_close_async", fake_close)
+
+    class _Client:
+        environment = "LIVE"
+
+    stream = service_module.build_bitget_protection_stream(
+        {
+            "BITGET_PROTECTION_STREAM_ENABLED": "1",
+            "BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED": "1",
+            "BITGET_PROTECTION_STREAM_SYMBOLS": "BTCUSDT",
+            "BITGET_API_KEY": "key",
+            "BITGET_API_SECRET": "secret",
+            "BITGET_API_PASSPHRASE": "passphrase",
+            "BITGET_MODE": "LIVE",
+        },
+        repository=InMemoryProtectionCapabilityRepository(),
+        client=_Client(),
+        entries=lambda: [active_entry],
+        now=stream_now,
+        active_symbol_source=lambda: ("BTCUSDT",),
+    )
+    assert stream is not None
+    assert stream.engine is not None
+    stream.socket.check_freshness = lambda symbol=None: True
+
+    await stream._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000 - 1))
+    await stream._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000 - 1))
+
+    assert calls == [
+        {
+            "entry_id": "fallback-1",
+            "mark_price": Decimal("94"),
+            "reason": "sl_hit",
+            "environment": "LIVE",
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_mark_price_sl_event_creates_one_close_request(
     active_entry: dict[str, object],
@@ -459,3 +535,117 @@ async def test_dynamic_subscription_runtime_propagates_reader_failure():
     )
     with pytest.raises(RuntimeError, match="reader-failed"):
         await asyncio.wait_for(runtime.run(asyncio.Event()), timeout=3)
+
+
+def test_runtime_defaults_to_observe_only_without_engine() -> None:
+    runtime = BitgetProtectionStreamRuntime(
+        _FreshSocket(), InMemoryProtectionCapabilityRepository(), environment="LIVE"
+    )
+
+    assert runtime.engine is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_forwards_fresh_mark_to_engine_and_records_capability(
+    active_entry: dict[str, object],
+) -> None:
+    requests: list[StreamCloseRequest] = []
+
+    async def close(request: StreamCloseRequest) -> StreamCloseResult:
+        requests.append(request)
+        return StreamCloseResult(request.fallback_id, True, "submitted")
+
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=stream_now,
+        transport_fresh=lambda _symbol: True,
+    )
+    repository = InMemoryProtectionCapabilityRepository()
+    runtime = BitgetProtectionStreamRuntime(
+        _FreshSocket(), repository, environment="LIVE", now=stream_now, engine=engine
+    )
+
+    await runtime._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000))
+
+    assert len(requests) == 1
+    assert requests[0].reason == "sl_hit"
+    assert repository.get("bitget", "LIVE", "BTCUSDT") is not None
+
+
+@pytest.mark.asyncio
+async def test_runtime_duplicate_and_out_of_order_marks_never_post_twice(
+    active_entry: dict[str, object],
+) -> None:
+    requests: list[StreamCloseRequest] = []
+
+    async def close(request: StreamCloseRequest) -> StreamCloseResult:
+        requests.append(request)
+        return StreamCloseResult(request.fallback_id, False, "close-result-unknown")
+
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=stream_now,
+        transport_fresh=lambda _symbol: True,
+    )
+    runtime = BitgetProtectionStreamRuntime(
+        _FreshSocket(),
+        InMemoryProtectionCapabilityRepository(),
+        environment="LIVE",
+        now=stream_now,
+        engine=engine,
+    )
+
+    await runtime._on_event(mark("BTCUSDT", "100", STREAM_EPOCH * 1000 - 3))
+    await runtime._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000 - 2))
+    await runtime._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000 - 2))
+    await runtime._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000 - 4))
+    await runtime._on_event(mark("BTCUSDT", "93", STREAM_EPOCH * 1000 - 1))
+
+    assert len(requests) == 1
+    assert engine.pending_fallback_ids == frozenset({"fallback-1"})
+
+
+@pytest.mark.asyncio
+async def test_runtime_contains_raising_close_callback(
+    active_entry: dict[str, object],
+) -> None:
+    async def close(request: StreamCloseRequest) -> StreamCloseResult:
+        raise RuntimeError("close transport exploded")
+
+    engine = BitgetFallbackStreamEngine(
+        lambda: [active_entry],
+        close,
+        now=stream_now,
+        transport_fresh=lambda _symbol: True,
+    )
+    repository = InMemoryProtectionCapabilityRepository()
+    runtime = BitgetProtectionStreamRuntime(
+        _FreshSocket(), repository, environment="LIVE", now=stream_now, engine=engine
+    )
+
+    await runtime._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000))
+
+    assert repository.get("bitget", "LIVE", "BTCUSDT") is not None
+    assert engine.pending_fallback_ids == frozenset({"fallback-1"})
+
+
+@pytest.mark.asyncio
+async def test_runtime_contains_engine_exception_and_keeps_recording_capability() -> None:
+    class ExplodingEngine:
+        async def handle_event(self, event: BitgetWebSocketEvent) -> list[StreamCloseResult]:
+            raise RuntimeError("engine exploded")
+
+    repository = InMemoryProtectionCapabilityRepository()
+    runtime = BitgetProtectionStreamRuntime(
+        _FreshSocket(),
+        repository,
+        environment="LIVE",
+        now=stream_now,
+        engine=ExplodingEngine(),  # type: ignore[arg-type]
+    )
+
+    await runtime._on_event(mark("BTCUSDT", "94", STREAM_EPOCH * 1000))
+
+    assert repository.get("bitget", "LIVE", "BTCUSDT") is not None

@@ -139,6 +139,7 @@ class BitgetProtectionStreamRuntime:
         now: Callable[[], datetime] | None = None,
         active_symbol_source: Callable[[], Iterable[str]] | None = None,
         stale_after: float = 5.0,
+        engine: BitgetFallbackStreamEngine | None = None,
     ) -> None:
         self._socket = socket
         self._repository = repository
@@ -150,6 +151,7 @@ class BitgetProtectionStreamRuntime:
         if stale_after <= 0:
             raise ValueError("stale_after must be positive")
         self._stale_after = stale_after
+        self._engine = engine
         self._last_event_ms: dict[str, int] = {}
 
     @property
@@ -161,6 +163,11 @@ class BitgetProtectionStreamRuntime:
     def repository(self) -> Any:
         """Return the capability store shared with admission and watchdogs."""
         return self._repository
+
+    @property
+    def engine(self) -> BitgetFallbackStreamEngine | None:
+        """Return the mutating engine, or None for the observe-only default."""
+        return self._engine
 
     @property
     def symbols(self) -> tuple[str, ...]:
@@ -228,7 +235,33 @@ class BitgetProtectionStreamRuntime:
         if not callable(check) or not check(event.symbol):
             return
         self._last_event_ms[event.symbol] = event.event_time_ms
+        engine = self._engine
+        if engine is not None:
+            await self._evaluate_close(engine, event)
         await _run_sync_storage(self._record_event, event)
+
+    async def _evaluate_close(
+        self, engine: BitgetFallbackStreamEngine, event: BitgetWebSocketEvent
+    ) -> None:
+        """Run the fallback engine on a fresh mark; never let a close failure kill the stream."""
+        try:
+            results = await engine.handle_event(event)
+        except Exception:
+            logger.exception(
+                "Bitget protection stream close evaluation failed: symbol=%s reason=%s",
+                event.symbol,
+                "engine-error",
+            )
+            return
+        for result in results:
+            logger.info(
+                "Bitget protection stream close evaluated: symbol=%s fallback=%s "
+                "submitted=%s reason=%s",
+                event.symbol,
+                result.fallback_id,
+                result.submitted,
+                result.reason,
+            )
 
     def _record_event(self, event: BitgetWebSocketEvent) -> None:
         """Keep synchronous store calls ordered without blocking socket/clock I/O."""
