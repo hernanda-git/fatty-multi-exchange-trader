@@ -119,6 +119,25 @@ The outdated "crossed echo is a mismatch" invariants were replaced by the live-e
 Local checks: `ruff` clean, `mypy src` clean (125 files), full suite green except one pre-existing
 Windows-only websocket heartbeat test (unrelated module, fails identically without these edits).
 
+## Auto-rollout armed (owner instruction 2026-10-19: "rollout immediately once my WLD is closed")
+
+- Branch pushed: `fix/protection-plan-evidence` @ `549dec8` (origin, GitHub).
+- The plan workspace on the host (`~/apps/fatty-plan`) is detached at the same commit, so the
+  rollout tooling includes the F-8 `is-active` fix.
+- Watcher: transient user unit `wld-rollout-watch.service` running
+  `/home/valarion/wld_rollout_watch.sh`, log `/home/valarion/wld-rollout-watch.log`.
+  It (1) proves the account flat with a read-only venue GET every 60 s (heartbeat every 30 min),
+  (2) polls the deploy gate for up to 5 minutes so the recovery can settle on its own,
+  (3) if the gate is still blocked, runs the audited baseline for the closed lifecycle
+  (`--dry-run` digest → `--apply --expected-digest`; the tool recomputes and re-checks every
+  precondition under its DB lock), approval reference `owner-chat-20261019-rollout-after-wld-close`,
+  (4) rolls out with the standard tool (`scripts/rollout.py --branch fix/protection-plan-evidence`).
+  A gate that still cannot approve stops the watcher with an owner notification; it never forces.
+- Baseline candidate set previewed read-only before arming: exactly the WLD lifecycle
+  (intent `live-bitget-WLDUSDT-18554b4e90b75ed7`, reservation `51952067-…`, dispatch `4b007ed8-…`).
+  The baseline also requires the venue plans/pending orders to be gone, so a local-lane close that
+  leaves venue plans behind stops the watcher rather than guessing.
+
 ## Non-claims
 
 No source change was deployed; the live revision is unchanged. No venue order was placed by this
