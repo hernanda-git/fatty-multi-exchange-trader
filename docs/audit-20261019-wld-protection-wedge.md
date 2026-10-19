@@ -151,6 +151,19 @@ observations render as `—` instead of an assertion. While verifying it, the ov
 `npm ci && npm run build` (tsc + vite) and a rendered browser check against a mock overview payload.
 The card ships with the same staged rollout (`fix/protection-plan-evidence`).
 
+## Telegram card (owner request 2026-10-19)
+
+The periodic `/health` card already carries the balance/position view (equity, available, margin
+used, open uPnL, per-position size/entry/mark/liquidation/protection and level gaps). It now also
+shows, per open position, the estimated PnL at the stop, target and liquidation plus the delta
+versus current uPnL (`operator/health_report_format.py`). The slope is derived from the venue's own
+uPnL, so no contract-size assumption is introduced; lines are omitted when mark equals entry, and
+the card states that the figures are estimates with fees excluded. Tests:
+`tests/unit/test_report_execution_health.py`. One snapshot was triggered on demand through
+`systemctl --user start fatty-health-report.service` (unit `Result=success`, exit 0); the
+six-hourly `fatty-health-report.timer` continues unchanged. The token comes from the live `.env`
+through the unit's `EnvironmentFile` and was never printed or handled here.
+
 ## Non-claims
 
 No source change was deployed; the live revision is unchanged. No venue order was placed by this
