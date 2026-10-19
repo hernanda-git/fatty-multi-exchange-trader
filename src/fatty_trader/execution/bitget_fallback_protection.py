@@ -156,6 +156,42 @@ def register_fallback(
     return f"{exchange}:{symbol}"
 
 
+def update_fallback_levels(
+    *,
+    position_key: str,
+    stop_loss: Decimal,
+    quantity: Decimal,
+    environment: str | None,
+) -> bool:
+    """Move a close-capable local registration to the source-managed stop/residual.
+
+    Source management (TP1 booking, SL to entry) moves the venue stop and/or
+    reduces the position; the local price lane must use the same level for the
+    remaining quantity or it would close at the previous trigger. Legacy rows
+    (no proven epoch/environment) cannot close and are left untouched.
+    """
+    if not position_key:
+        raise ValueError("fallback level update requires a position key")
+    if not stop_loss.is_finite() or stop_loss <= 0:
+        raise ValueError("fallback level update requires a positive stop")
+    if not quantity.is_finite() or quantity <= 0:
+        raise ValueError("fallback level update requires a positive quantity")
+    if environment not in {"DEMO", "LIVE"}:
+        return False
+    with _psycopg_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE fallback_protection
+               SET stop_loss = %s, quantity = %s, updated_at = now()
+               WHERE position_key = %s AND environment = %s
+                 AND state IN ('active', 'closing')
+               RETURNING id""",
+            (stop_loss, quantity, position_key, environment),
+        )
+        moved = cur.fetchone() is not None
+        conn.commit()
+    return moved
+
+
 def load_active() -> list[dict[str, Any]]:
     """Load fallback entries that still need provider reconciliation."""
     rows = _db_query(

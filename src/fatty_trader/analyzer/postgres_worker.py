@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import closing, suppress
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -49,10 +49,12 @@ VALUES (%s, 'canonical_signal', %s, %s, %s, 'QUEUED')
 ON CONFLICT (source_type, source_id, revision, exchange) DO NOTHING
 RETURNING id
 """
+_MANAGEMENT_DEADLINE_MINUTES = 30
 _MANAGEMENT_INSERT = """
 INSERT INTO source_management_updates
-(id, source_message_id, revision, symbol, action, state)
-VALUES (%s, %s, %s, %s, %s, 'queued')
+(id, source_message_id, revision, symbol, action, state, deadline_at)
+VALUES (%s, %s, %s, %s, %s, 'queued',
+        clock_timestamp() + (%s * interval '1 minute'))
 ON CONFLICT (source_message_id, revision, symbol, action) DO NOTHING
 """
 _ANALYSIS_NOTIFICATION_INSERT = """
@@ -60,6 +62,30 @@ INSERT INTO notifications_outbox (id, dedup_key, payload)
 VALUES (%s, %s, %s::jsonb)
 ON CONFLICT (dedup_key) DO NOTHING
 """
+
+
+def _enroll_management(
+    cursor: Any, message_uuid: Any, revision: str, management: Any
+) -> None:
+    """Durably enroll one deterministic management instruction.
+
+    Migration 35 requires every non-terminal row to carry a deadline; an insert
+    without one raises the table's CHECK and dropped the instruction silently
+    (LIVE 2026-10-19, source message #16333: "TP1 booked").  The deadline bounds
+    the execution budget, not the source window; the executor re-checks the
+    source revision before any mutation.
+    """
+    cursor.execute(
+        _MANAGEMENT_INSERT,
+        (
+            uuid4(),
+            message_uuid,
+            revision,
+            management.symbol,
+            management.action.value,
+            _MANAGEMENT_DEADLINE_MINUTES,
+        ),
+    )
 
 
 def process_received_batch(
@@ -231,16 +257,7 @@ def process_received_batch(
                     ):
                         management = management_from_image_json(image_result)
                     if management is not None:
-                        cursor.execute(
-                            _MANAGEMENT_INSERT,
-                            (
-                                uuid4(),
-                                message_uuid,
-                                revision,
-                                management.symbol,
-                                management.action.value,
-                            ),
-                        )
+                        _enroll_management(cursor, message_uuid, revision, management)
                     signal_id = None
                     dispatches = 0
                     if result.signal is not None:
@@ -325,10 +342,49 @@ def process_received_batch(
                 except Exception as exc:  # noqa: BLE001 - one bad message must not kill the batch
                     # Restore transaction usability and erase this row's partial fan-out.
                     cursor.execute("ROLLBACK TO SAVEPOINT analyzer_message")
-                    cursor.execute(_UPDATE_STATE, ("FAILED", message_uuid))
+                    failure = f"analysis-failed:{type(exc).__name__}"
+                    cursor.execute(
+                        "UPDATE telegram_messages SET intake_state='FAILED', "
+                        "entry_rejection_reason=COALESCE(entry_rejection_reason, %s) "
+                        "WHERE id=%s",
+                        (failure, message_uuid),
+                    )
+                    # A deterministic management instruction does not depend on the model.
+                    # Re-enroll it here so a failure earlier in the transaction (even the
+                    # enrollment itself) cannot drop the source's instruction. The FAILED
+                    # state and reason above remain the primary evidence if this retry or
+                    # the alert insert cannot be written either.
+                    with suppress(Exception):
+                        fallback_management = (
+                            None
+                            if entry_stands_down(message.raw_text)
+                            else parse_source_management(message.raw_text)
+                        )
+                        if fallback_management is not None:
+                            _enroll_management(
+                                cursor, message_uuid, revision, fallback_management
+                            )
+                    # Never silent: one durable card per failed message revision.
+                    with suppress(Exception):
+                        cursor.execute(
+                            _ANALYSIS_NOTIFICATION_INSERT,
+                            (
+                                uuid4(),
+                                f"analysis-failed:{message_uuid}:{revision}",
+                                json.dumps(
+                                    {
+                                        "kind": "system-event",
+                                        "message": (
+                                            f"Analyzer failed · source #{message_id} · "
+                                            f"error={type(exc).__name__}"
+                                        ),
+                                    }
+                                ),
+                            ),
+                        )
                     print(
                         f"service=analyzer state=message-failed message_id={message_id} "
-                        f"error={exc!r}",
+                        f"reason={failure} error={exc!r}",
                         flush=True,
                     )
                 cursor.execute("RELEASE SAVEPOINT analyzer_message")

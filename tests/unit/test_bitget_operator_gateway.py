@@ -12,6 +12,14 @@ from fatty_trader.exchanges.bitget.live import InMemoryLiveIntentStore, LiveInte
 from fatty_trader.operator.bitget_gateway import BitgetOperatorGateway
 
 
+@pytest.fixture(autouse=True)
+def _local_lane_registry(monkeypatch):
+    """Gateway tests stay DB-free; a verified stop move is a no-op for the registry."""
+    import fatty_trader.execution.bitget_fallback_protection as fallback_protection
+
+    monkeypatch.setattr(fallback_protection, "update_fallback_levels", lambda **_: False)
+
+
 class FakeBitgetClient:
     environment = "LIVE"
 
@@ -513,3 +521,27 @@ def test_invalid_position_quantity_is_not_a_flat_provider_observation(quantity) 
         assert all(name.startswith("get_") for name, _ in client.calls)
     finally:
         gateway.close()
+
+
+def test_stop_move_syncs_the_local_lane_to_the_managed_level(monkeypatch) -> None:
+    gateway, client, store = stop_gateway()
+    client.environment = "LIVE"
+    calls: list[dict[str, object]] = []
+    import fatty_trader.execution.bitget_fallback_protection as fallback_protection
+
+    monkeypatch.setattr(
+        fallback_protection,
+        "update_fallback_levels",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+    move_stop(gateway)
+
+    assert calls == [
+        {
+            "position_key": "root-entry",
+            "stop_loss": Decimal("60000.0"),
+            "quantity": Decimal("0.01"),
+            "environment": "LIVE",
+        }
+    ]
+    gateway.close()

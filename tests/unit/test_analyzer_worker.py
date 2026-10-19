@@ -311,3 +311,140 @@ def test_worker_rechecks_source_eligibility_before_model_or_market_io():
     assert "INSERT INTO canonical_signals" not in statements
     assert "INSERT INTO dispatches" not in statements
     assert connection.commits == 1
+
+
+def _management_rows() -> list[tuple[object, ...]]:
+    return [
+        (
+            uuid4(),
+            7,
+            16333,
+            "b" * 64,
+            "$WLD TP1 booked here, almost 2R up",
+            datetime.now(UTC),
+        )
+    ]
+
+
+def test_management_message_enrolls_with_a_deadline_and_no_signal() -> None:
+    cursor = Cursor()
+    cursor.rows = _management_rows()
+    connection = Connection(cursor)
+
+    processed = process_received_batch(
+        lambda: connection,
+        runner=lambda _: CodexRunResult(False, True, False, 1, "unavailable", "", ""),
+        channel_ids=(7,),
+    )
+
+    assert processed == 1
+    enrollments = [
+        (statement, params)
+        for statement, params in cursor.executed
+        if "INSERT INTO source_management_updates" in statement
+    ]
+    assert len(enrollments) == 1
+    statement, params = enrollments[0]
+    assert "deadline_at" in statement
+    values = cast(tuple[Any, ...], params)
+    assert values[3:6] == ("WLDUSDT", "TP1_BOOKED", 30)
+    notifications = [
+        params
+        for statement, params in cursor.executed
+        if "INSERT INTO notifications_outbox" in statement
+    ]
+    assert len(notifications) == 1
+    payload = json.loads(cast(tuple[Any, ...], notifications[0])[2])
+    assert payload["management_action"] == "TP1_BOOKED"
+    assert payload["management_symbol"] == "WLDUSDT"
+    assert payload["canonical_signal"] is False
+    states = [
+        cast(tuple[Any, ...], params)[0]
+        for statement, params in cursor.executed
+        if "intake_state = %s" in statement
+    ]
+    assert states == ["ANALYZED"]
+
+
+class FailingManagementCursor(Cursor):
+    def execute(self, statement: str, params: object = ()) -> None:
+        super().execute(statement, params)
+        if "INSERT INTO source_management_updates" in statement:
+            raise RuntimeError("check constraint")
+
+
+def test_management_enrollment_failure_is_durable_and_alerted() -> None:
+    cursor = FailingManagementCursor()
+    cursor.rows = _management_rows()
+    connection = Connection(cursor)
+
+    processed = process_received_batch(
+        lambda: connection,
+        runner=lambda _: CodexRunResult(False, True, False, 1, "unavailable", "", ""),
+        channel_ids=(7,),
+    )
+
+    assert processed == 1
+    failed = [
+        params
+        for statement, params in cursor.executed
+        if "intake_state='FAILED'" in statement
+    ]
+    assert len(failed) == 1
+    values = cast(tuple[Any, ...], failed[0])
+    assert values[0] == "analysis-failed:RuntimeError"
+    alerts = [
+        cast(tuple[Any, ...], params)
+        for statement, params in cursor.executed
+        if "INSERT INTO notifications_outbox" in statement
+    ]
+    assert alerts and str(alerts[0][1]).startswith("analysis-failed:")
+    payload = json.loads(alerts[0][2])
+    assert payload["kind"] == "system-event"
+    assert "Analyzer failed" in payload["message"]
+    states = [
+        cast(tuple[Any, ...], params)[0]
+        for statement, params in cursor.executed
+        if "intake_state = %s" in statement
+    ]
+    assert "ANALYZED" not in states
+
+
+class FailingNotificationCursor(Cursor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.notification_failed = False
+
+    def execute(self, statement: str, params: object = ()) -> None:
+        super().execute(statement, params)
+        if "INSERT INTO notifications_outbox" in statement and not self.notification_failed:
+            self.notification_failed = True
+            raise RuntimeError("notification sink unavailable")
+
+
+def test_management_enrollment_survives_a_later_transaction_failure() -> None:
+    cursor = FailingNotificationCursor()
+    cursor.rows = _management_rows()
+    connection = Connection(cursor)
+
+    assert (
+        process_received_batch(
+            lambda: connection,
+            runner=lambda _: CodexRunResult(False, True, False, 1, "unavailable", "", ""),
+            channel_ids=(7,),
+        )
+        == 1
+    )
+    enrollments = [
+        params
+        for statement, params in cursor.executed
+        if "INSERT INTO source_management_updates" in statement
+    ]
+    # Once before the failure, once from the recovery path; ON CONFLICT keeps it one row.
+    assert len(enrollments) == 2
+    failed = [
+        cast(tuple[Any, ...], params)
+        for statement, params in cursor.executed
+        if "intake_state='FAILED'" in statement
+    ]
+    assert failed and failed[0][0] == "analysis-failed:RuntimeError"

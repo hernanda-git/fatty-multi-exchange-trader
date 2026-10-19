@@ -37,6 +37,27 @@ After proved cancellation, read provider positions again. A fill can race cancel
 
 A source relay says management was detected/queued; it is not a provider execution confirmation. Duplicate messages and restart must not repost claimed cancels or previously intended closes.
 
+### Enrollment, failure evidence, and the local lane
+
+- Enrollment is durable or it is reported. Migration 35 requires every non-terminal
+  `source_management_updates` row to carry a deadline, so the analyzer insert sets one
+  (30 minutes: the execution budget, not the source window; the executor still re-checks
+  the source revision before any mutation). An insert that cannot be proven is a failed
+  message, not a silent one: `intake_state='FAILED'`, `entry_rejection_reason` records
+  `analysis-failed:<Type>`, and one deduplicated `system-event` card is queued per
+  message revision. A deterministic management instruction is re-enrolled after a
+  failure that occurs later in the same message transaction.
+- R is the price distance from entry to the signal's own stop (`entry - stop` for a SHORT,
+  `stop - entry` for a LONG) times the bot's filled quantity. A source post's "2R" is
+  informational: the bot never resizes or re-books from it, and a single-target signal has
+  no TP1 level beyond that one target.
+- The local fallback lane follows a verified venue stop move. After `TP1_BOOKED` (half
+  close, stop to remaining entry) or `SL_TO_ENTRY`, the gateway updates the durable
+  `fallback_protection` row to the same stop and residual quantity for a close-capable
+  registration (proven epoch and environment). A legacy/absent row is untouched; a
+  registry write failure parks the update for a GET-only retry. Without this sync the
+  local lane would keep closing at the previous trigger.
+
 ## Evidence and verification responsibilities
 
 Implementation boundaries: `analyzer/trade_management.py`, `execution/source_management.py`, `operator/bitget_gateway.py`, the dispatch entry execution adapter, live-intent storage and schema migration 25. Source-management storage reclaims pending updates for readback recovery, and orders by last update time so one unresolved item does not permanently starve later instructions.

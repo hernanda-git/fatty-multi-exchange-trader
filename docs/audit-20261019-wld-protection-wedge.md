@@ -164,6 +164,25 @@ the card states that the figures are estimates with fees excluded. Tests:
 six-hourly `fatty-health-report.timer` continues unchanged. The token comes from the live `.env`
 through the unit's `EnvironmentFile` and was never printed or handled here.
 
+## Source-management enrollment (incident 2026-10-19, fixed)
+
+Source message #16333 (`$WLD TP1 booked here, almost 2R up`, 10:36 UTC) was recognized by
+the deterministic parser but ended `FAILED` with no durable reason, no
+`source_management_updates` row, and no notification. Root cause: migration 35 added the
+`source_management_updates_parked_deadline` CHECK (every non-terminal row needs a deadline)
+while the analyzer insert still wrote `state='queued'` with `deadline_at=NULL`; every
+management instruction since that migration violated the constraint, and the exception
+handler's savepoint rollback erased the row and the analysis card.
+
+Fixes: the analyzer enrollment now sets a 30-minute execution deadline; a failure records
+`analysis-failed:<Type>` on the message and queues one deduplicated `system-event` card;
+management enrollment is re-attempted after any later failure in the same transaction.
+The gateway now syncs a verified stop move (TP1 half close + stop to entry, or SL to entry)
+into the durable fallback registration (stop + residual quantity) so the local lane closes
+at the managed level, not the previous one. Tests: analyzer unit + disposable-PostgreSQL
+e2e (the fixture now carries the real CHECK), gateway sync, and the existing TP1 executor
+suite. Policy text is in `docs/TRADING-RULES.md` (§ Source booking and CLOSE).
+
 ## Non-claims
 
 No source change was deployed; the live revision is unchanged. No venue order was placed by this

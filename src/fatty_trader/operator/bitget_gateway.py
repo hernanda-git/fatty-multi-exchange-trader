@@ -437,6 +437,35 @@ class BitgetOperatorGateway:
         )
         intent.state = "reconciled"
         self._intent_store.update(intent)
+        self._sync_local_management_levels(root, intent)
+
+    def _sync_local_management_levels(
+        self, root: LiveIntentRecord, intent: LiveIntentRecord
+    ) -> None:
+        """Keep the local price lane on the stop/residual the venue now holds.
+
+        A source-managed stop move (TP1 booking or SL to entry) is only complete
+        when the fallback registration follows: otherwise the local lane would
+        close the remaining position at the previous trigger. Only a close-capable
+        row (proven epoch + environment) moves; an absent/legacy row is a no-op.
+        A registry failure parks the update for a GET-only retry.
+        """
+        from fatty_trader.execution.bitget_fallback_protection import update_fallback_levels
+        from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+        if intent.planned_stop_loss is None or intent.requested_qty <= 0:
+            raise SourceManagementReconciliationPending("managed stop levels are incomplete")
+        try:
+            update_fallback_levels(
+                position_key=root.client_oid,
+                stop_loss=intent.planned_stop_loss,
+                quantity=intent.requested_qty,
+                environment=getattr(self._client, "environment", None),
+            )
+        except Exception as exc:  # noqa: BLE001 - the retry repeats only GET readbacks
+            raise SourceManagementReconciliationPending(
+                "local lane level sync failed"
+            ) from exc
 
     def reconcile_stop_loss(self, client_oid: str) -> None:
         """Recover a previous management claim using GET evidence only."""

@@ -59,8 +59,11 @@ def database():
                 "REFERENCES telegram_messages(id),\n"
                 "                    revision text, symbol text, action text, state "
                 "text,\n"
+                "                    deadline_at timestamptz,\n"
                 "                    UNIQUE(source_message_id, revision, symbol, "
-                "action));\n"
+                "action),\n"
+                "                    CHECK (state IN ('reconciled','failed',"
+                "'cancelled-flat','entries-cancelled') OR deadline_at IS NOT NULL));\n"
                 "                CREATE TABLE notifications_outbox (\n"
                 "                    id uuid PRIMARY KEY, dedup_key text UNIQUE, "
                 "payload jsonb,\n"
@@ -104,7 +107,15 @@ def test_genuine_sql_failure_rolls_back_only_bad_message_and_siblings_commit_onc
         ).fetchall() == [(1, "ANALYZED"), (2, "FAILED"), (3, "ANALYZED")]
         assert conn.execute("SELECT count(*) FROM canonical_signals").fetchone() == (2,)
         assert conn.execute("SELECT count(*) FROM dispatches").fetchone() == (4,)
-        assert conn.execute("SELECT count(*) FROM notifications_outbox").fetchone() == (2,)
+        assert conn.execute("SELECT count(*) FROM notifications_outbox").fetchone() == (3,)
+        assert conn.execute(
+            "SELECT count(*) FROM notifications_outbox "
+            "WHERE payload->>'kind'='signal-analysis'"
+        ).fetchone() == (2,)
+        assert conn.execute(
+            "SELECT count(*) FROM notifications_outbox "
+            "WHERE payload->>'kind'='system-event'"
+        ).fetchone() == (1,)
         assert conn.execute(
             "SELECT count(*) FROM canonical_signals s JOIN telegram_messages m ON "
             "s.message_id=m.id WHERE m.message_id=2"
@@ -113,3 +124,34 @@ def test_genuine_sql_failure_rolls_back_only_bad_message_and_siblings_commit_onc
     assert len(calls) == 3
     with database() as conn:
         assert conn.execute("SELECT count(*) FROM dispatches").fetchone() == (4,)
+
+
+def test_management_message_enrolls_with_deadline(database):
+    message_uuid = uuid4()
+    with database() as conn:
+        conn.execute(
+            (
+                "INSERT INTO telegram_messages\n"
+                " (id, channel_id, message_id, revision_hash, raw_text, "
+                "entry_expires_at, ingestion_origin)\n"
+                " VALUES (%s, 7, 16333, %s, '$WLD TP1 booked here, almost 2R up',\n"
+                "         now() + interval '5 minutes', 'realtime')"
+            ),
+            (message_uuid, "b" * 64),
+        )
+
+    def unavailable(prompt):
+        return CodexRunResult(False, True, False, 1, "unavailable", "", "")
+
+    assert process_received_batch(database, runner=unavailable, channel_ids=(7,)) == 1
+    with database() as conn:
+        row = conn.execute(
+            "SELECT symbol, action, state, deadline_at IS NOT NULL "
+            "FROM source_management_updates WHERE source_message_id=%s",
+            (message_uuid,),
+        ).fetchone()
+        assert row == ("WLDUSDT", "TP1_BOOKED", "queued", True)
+        state = conn.execute(
+            "SELECT intake_state FROM telegram_messages WHERE id=%s", (message_uuid,)
+        ).fetchone()
+        assert state == ("ANALYZED",)
