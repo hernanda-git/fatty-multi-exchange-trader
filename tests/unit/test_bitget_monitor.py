@@ -125,7 +125,16 @@ async def test_clean_cycle_exposes_persisted_latch_separately_from_current_failu
 
 
 @pytest.mark.asyncio
-async def test_unavailable_clock_latches_and_clean_next_cycle_does_not_release():
+async def test_unavailable_clock_latches_then_a_clean_cycle_releases_the_transient_latch():
+    """A transient clock failure must not be an absorbing state.
+
+    The old expectation here was "latches and never releases". That left the entry lane
+    closed after a single timeout: the venue read -28 ms the next day while the lane was
+    still latched from a network blip. The policy is now: latch while the check fails,
+    release automatically once a clean cycle proves the condition is over — and never
+    auto-release a durable reason.
+    """
+
     class Venue(ReadOnlyVenue):
         unavailable = True
 
@@ -140,11 +149,22 @@ async def test_unavailable_clock_latches_and_clean_next_cycle_does_not_release()
     first = await monitor.run_once()
     assert first.reasons == ("clock-skew-unavailable",)
     assert repository.kill_switch_active("bitget")
+
     venue.unavailable = False
     second = await monitor.run_once()
-    assert second.status == "kill-switch-latched"
+    assert second.status == "ok"
     assert second.reasons == ()
-    assert second.latched_reason == "clock-skew-unavailable"
+    assert repository.kill_switch_active("bitget") is False
+    assert repository.kill_switch_reason("bitget") is None
+
+
+@pytest.mark.asyncio
+async def test_a_durable_reason_is_never_released_by_a_clean_cycle() -> None:
+    repository = InMemoryReconciliationRepository()
+    repository.latch_kill_switch("bitget", "provider-fills-invalid")
+    report = await BitgetMonitor(ReadOnlyVenue(), repository).run_once()
+    assert report.status == "kill-switch-latched"
+    assert report.latched_reason == "provider-fills-invalid"
     assert repository.kill_switch_active("bitget")
 
 

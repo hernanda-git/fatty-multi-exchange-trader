@@ -29,6 +29,22 @@ from fatty_trader.storage.reconciliation import ReconciliationRepository
 
 _ALERT_ONLY_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
 
+#: Latch reasons that describe a *transient* condition and are therefore released
+#: automatically once the check passes again.
+#:
+#: `clock-skew-unavailable` is "the venue clock could not be read this cycle" — a network
+#: blip, not a policy failure. Latched permanently it becomes an absorbing state: the
+#: entry lane stays closed for days after a single timeout (observed 2026-10-18 19:02,
+#: still latched the next day while the venue read -28 ms). Durable divergences
+#: (reconciliation mismatches, kill-switch policy) are NOT in this set and never
+#: self-clear.
+_AUTO_RELEASABLE_KILL_SWITCH_REASONS = frozenset(
+    {"clock-skew-unavailable", "clock-skew-exceeded"}
+)
+
+#: Audit reference recorded on an automatic release.
+_AUTO_RELEASE_REFERENCE = "auto:clock-check-recovered"
+
 #: Durable outbox payload kind for a position whose venue protection is not confirmed.
 #:
 #: It deliberately has no bespoke Telegram formatter: the generic key/value renderer
@@ -313,13 +329,28 @@ class BitgetMonitor:
         if self._enforce_kill_switch and await _run_sync_storage(
             self._repository.kill_switch_active, self._scope
         ):
-            return MonitorReport(
-                "kill-switch-latched",
-                provider_exits_reconciled=provider_exits_reconciled,
-                latched_reason=await _run_sync_storage(
-                    self._repository.kill_switch_reason, self._scope
-                ),
+            latched_reason = await _run_sync_storage(
+                self._repository.kill_switch_reason, self._scope
             )
+            if latched_reason in _AUTO_RELEASABLE_KILL_SWITCH_REASONS:
+                # This cycle found nothing latchable, so the transient clock condition is
+                # over: release it instead of leaving the entry lane closed forever.
+                await _run_sync_storage(
+                    self._repository.release_kill_switch, self._scope, _AUTO_RELEASE_REFERENCE
+                )
+                logging.getLogger(__name__).info(
+                    "Bitget monitor released transient kill switch: "
+                    "scope=%s reason=%s reference=%s",
+                    self._scope,
+                    latched_reason,
+                    _AUTO_RELEASE_REFERENCE,
+                )
+            else:
+                return MonitorReport(
+                    "kill-switch-latched",
+                    provider_exits_reconciled=provider_exits_reconciled,
+                    latched_reason=latched_reason,
+                )
         return MonitorReport("ok", provider_exits_reconciled=provider_exits_reconciled)
 
     async def _run_fallback_monitor(self, reasons: list[str]) -> None:
