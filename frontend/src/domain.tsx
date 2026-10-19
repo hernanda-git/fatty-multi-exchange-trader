@@ -75,8 +75,10 @@ export function PositionsTable({
         <tbody>
           {items.map((row, i) => {
             const sym = String(row.symbol || 'UNKNOWN');
-            const dir = String(row.direction || row.side || 'LONG').toUpperCase();
-            const provider = isObjectRecord(row.provider) ? row.provider : {};
+            // The overview passes raw provider rows; the trading view passes ledger rows
+            // with a nested provider observation. Accept both instead of rendering zeros.
+            const provider = isObjectRecord(row.provider) ? row.provider : row;
+            const dir = String(row.direction || row.holdSide || row.side || 'LONG').toUpperCase();
             const total = String(provider.total || row.owned_residual || '0');
             const entry = String(provider.openPriceAvg || row.entry_price || '0');
             const mark = String(provider.markPrice || '0');
@@ -88,8 +90,10 @@ export function PositionsTable({
             const freshProof = Number.isFinite(proofAge) && proofAge >= 0 && proofAge <= 15000;
             const protectedNow = row.last_known !== true && freshProof && proof?.state === 'VENUE_PROTECTED';
             const staleProof = row.last_known === true || Boolean(proof && !freshProof);
+            const linkedPlans = Boolean(provider.stopLossId && provider.takeProfitId);
             const prot = protectedNow ? 'Native protection verified' :
-              staleProof ? 'Protection observation stale' : 'Protection not verified';
+              staleProof ? 'Protection observation stale' :
+              linkedPlans ? 'Venue plan ids linked' : 'Protection not verified';
 
             return (
               <tr key={String(row.id ?? i)}>

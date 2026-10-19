@@ -138,6 +138,19 @@ Windows-only websocket heartbeat test (unrelated module, fails identically witho
   The baseline also requires the venue plans/pending orders to be gone, so a local-lane close that
   leaves venue plans behind stops the watcher rather than guessing.
 
+## Console visualization (owner request 2026-10-19)
+
+The overview dashboard now carries a `CAPITAL & RISK` card: equity / free / in-use / uPnL tiles
+plus, per open position, a level table (entry, mark, stop, target, liquidation, break-even with
+distance-from-mark and P&L-from-entry) and a scenario table (take-profit, now, stop, liquidation
+with P&L and delta-vs-now). It is sourced entirely from the GET-only provider reads already in the
+overview payload (`provider.account`, `provider.positions`, `provider.plan_orders`); missing
+observations render as `—` instead of an assertion. While verifying it, the overview's
+`PositionsTable` was fixed to accept raw provider rows — it previously rendered a short position as
+"LONG 0" because it expected the trading view's nested `provider` object. Verified with
+`npm ci && npm run build` (tsc + vite) and a rendered browser check against a mock overview payload.
+The card ships with the same staged rollout (`fix/protection-plan-evidence`).
+
 ## Non-claims
 
 No source change was deployed; the live revision is unchanged. No venue order was placed by this
