@@ -11,13 +11,17 @@ from fatty_trader.execution.protection import ProtectionState
 
 
 class Repository:
-    def __init__(self, dispatch, oid):
+    def __init__(self, dispatch, oid, *, locally_managed=False):
         self.dispatch = dispatch
         self.oid = oid
         self.events = []
+        self.locally_managed = locally_managed
 
     def recovery_candidates(self):
         return [(self.dispatch, self.oid)]
+
+    def is_locally_managed(self, position_key):
+        return self.locally_managed and position_key == self.oid
 
     def transition(self, dispatch_id, **kwargs):
         assert kwargs["expected_state"] == self.dispatch.state
@@ -253,3 +257,55 @@ async def test_close_fill_without_flat_venue_never_settles():
     assert adapter.recovery_ready is False
     assert store.get(intent.client_oid).state == "filled"
     assert adapter._dispatch_repository.events[-1]["target_state"] == "FILLED"
+
+
+def _recovery_case(*, locally_managed: bool):
+    dispatch = replace(_dispatch(), state="FILLED")
+    intent = BitgetDispatchExecution._intent(dispatch, _submission())
+    store = InMemoryLiveIntentStore()
+    store.save(intent)
+
+    async def read_protection(entry, plan):
+        return AsyncProtectionResult(
+            ProtectionState.DEGRADED, Decimal("0.002"), "missing-native-protection"
+        )
+
+    adapter = BitgetDispatchExecution(
+        Execution(result=_result()),
+        store,
+        dispatch_repository=Repository(
+            dispatch, intent.client_oid, locally_managed=locally_managed
+        ),
+        recovery_protection=read_protection,
+    )
+    return adapter, store, intent
+
+
+@pytest.mark.asyncio
+async def test_locally_managed_entry_reaches_non_blocking_recovery_verdict():
+    adapter, store, intent = _recovery_case(locally_managed=True)
+
+    assert await adapter.recover_entry_lifecycles() == 1
+
+    # A durable fallback row means the local price lane owns the close: native
+    # protection is not required and must not block readiness.
+    assert adapter.recovery_ready is True
+    assert adapter.recovery_issues == ()
+    assert (
+        adapter._dispatch_repository.events[-1]["reason"] == "recovery-protection-locally-managed"
+    )
+    assert store.get(intent.client_oid).state == "filled"
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_entry_keeps_blocking_recovery_verdict():
+    adapter, _, _ = _recovery_case(locally_managed=False)
+
+    assert await adapter.recover_entry_lifecycles() == 1
+
+    assert adapter.recovery_ready is False
+    assert adapter.recovery_issues == ("recovery-missing-protection:missing-native-protection",)
+    assert (
+        adapter._dispatch_repository.events[-1]["reason"]
+        == "recovery-missing-protection:missing-native-protection"
+    )

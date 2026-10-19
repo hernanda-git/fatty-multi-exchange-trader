@@ -35,6 +35,9 @@ class ReconciliationRepository(Protocol):
     def latch_kill_switch(self, scope: str, reason: str) -> None: ...
     def release_kill_switch(self, scope: str, approval_reference: str) -> None: ...
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool: ...
+    def alert_protection_unconfirmed(
+        self, scope: str, dedup_key: str, payload: dict[str, Any]
+    ) -> None: ...
 
 
 class KillSwitch(Protocol):
@@ -57,6 +60,7 @@ class InMemoryReconciliationRepository:
         self._alert_keys: set[tuple[str, str]] = set()
         self._unhandled_mismatches: set[str] = set()
         self.alerts: list[str] = []
+        self.alert_payloads: list[dict[str, Any]] = []
 
     def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
         return [
@@ -100,6 +104,16 @@ class InMemoryReconciliationRepository:
         self._kill_switches.discard(scope)
         # A release also handles any mismatch recorded before it.
         self._unhandled_mismatches.discard(scope)
+
+    def alert_protection_unconfirmed(
+        self, scope: str, dedup_key: str, payload: dict[str, Any]
+    ) -> None:
+        """Record one non-latching protection alert, deduplicated like the latch."""
+        key = ("protection-alert", dedup_key)
+        if key in self._alert_keys:
+            return
+        self._alert_keys.add(key)
+        self.alert_payloads.append(dict(payload))
 
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
         return scope in self._unhandled_mismatches
@@ -241,6 +255,30 @@ class PostgresReconciliationRepository:
                         }
                     ),
                 ),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def alert_protection_unconfirmed(
+        self, scope: str, dedup_key: str, payload: dict[str, Any]
+    ) -> None:
+        """Enqueue one durable alert for a position whose protection is unconfirmed.
+
+        Same outbox and same ``ON CONFLICT (dedup_key) DO NOTHING`` dedup as the
+        kill-switch latch, but nothing is latched and nothing is closed: the row is
+        the evidence an operator (or a later agent) acts on at the exchange side.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """INSERT INTO notifications_outbox (id, dedup_key, payload)
+                   VALUES (%s, %s, %s::jsonb) ON CONFLICT (dedup_key) DO NOTHING""",
+                (uuid4(), f"{scope}:{dedup_key}", json.dumps(payload, sort_keys=True)),
             )
             connection.commit()
         except Exception:

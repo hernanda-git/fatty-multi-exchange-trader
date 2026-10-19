@@ -177,42 +177,47 @@ the venue stop level; both are single-value changes, documented in the handover.
 
 ---
 
-## WS-3 · Arming and rollback (runbook)
+## WS-3 · Exit policy (owner decision, 2026-10-19) and runbook
 
-The wiring lands with `BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED=0`: the lane exists,
-is tested, and is inert. Arming is one value, and it is the owner's call because it
-changes how live positions exit.
+**The rule, as decided:**
 
-**Arm (one value, then one recreate):**
+1. A position whose exchange-side SL/TP cannot be confirmed — or is rejected outright —
+   is **never closed by us** for that reason. There is no 15-second-then-close: the grace
+   exists only to avoid a false "missing" verdict, and when it expires the position is
+   kept.
+2. Such a position is **marked locally managed** (durable `fallback_protection` row,
+   capability `FAILED` with the readback reason) and the **local price monitors** close it
+   at the signal's stop when the live price crosses it.
+3. If the local lane is **also** unavailable (stream stale, or the lane disabled), the
+   system **alerts only** — a detailed notification with symbol, direction, quantity,
+   entry, stop, take-profits, the venue readback reason, and the local-lane state — and
+   still does not close. The owner (or a future autonomous agent acting on the exchange
+   side) handles that position; the running bot is not to be disturbed by it.
 
-```
-# docker-compose.yml, monitor-bitget only
-BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: "1"
-docker compose up -d --no-deps --no-build monitor-bitget
-```
+**Landing state of the switches:**
 
-Verify after arming:
-1. `docker compose logs monitor-bitget | grep -i stream` shows the engine constructed and
-   the runtime still recording `stream_state=HEALTHY` in
-   `bitget_protection_capabilities`;
-2. one controlled canary position (tiny size, stop ~0.1 % away) is closed by the stream
-   path: exactly one `fallback_protection` row goes `closing → closed`, exactly one
-   `place_market_close` POST appears, and `scripts/dispatch_trail.py --latest` shows the
-   close;
-3. no second close for the same position (duplicate fence) and no close when protection
-   is healthy.
+| switch | value | meaning |
+| --- | --- | --- |
+| `BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED` (monitor) | **1** | the sub-second stream trigger may close a locally-managed position |
+| `BITGET_FALLBACK_MUTATIONS_ENABLED` (monitor) | **1** | the 30 s REST lane is the second local trigger |
+| `BITGET_EMERGENCY_CONTAINMENT_ENABLED` | **0** | the old "close because protection is unconfirmed" path is opt-in and off |
 
-**Roll back (seconds):** set the flag back to `"0"`, recreate `monitor-bitget`. The REST
-lane and the venue stop are untouched by this release, so nothing else needs restoring.
+**Verify after a rollout:**
+1. `docker compose exec -T monitor-bitget printenv | grep -E 'MUTATIONS|STREAM_ENABLED'`
+   shows the values above;
+2. `docker compose logs monitor-bitget | grep -i stream` shows the engine constructed and
+   the runtime still recording `stream_state=HEALTHY`;
+3. a locally-managed position closes through exactly one `place_market_close` POST, the
+   `fallback_protection` row goes `closing → closed`, and `scripts/dispatch_trail.py
+   --latest` shows the close; the venue stop stays as the backstop, and the duplicate
+   fence prevents a second close;
+4. with the triggers off, a locally-managed position produces the detailed alert and no
+   close.
 
-**Deliberate sequencing deviation (needs the owner's nod):** `MASTER-PLAN` P0-3 asks for
-the local stop and the wide venue backstop in *one* release. This release does the local
-stop only. Widening the venue stop changes the stop distance that position sizing is
-derived from (SL distance feeds liquidation headroom and size), so it needs the replay
-corpus (P2-1) to prove no trade gets larger or worse. Recommended order: arm the local
-stop → observe real exits → widen with the corpus numbers in hand. That is two releases,
-not one, and the reason is recorded here rather than silently.
+**Rollback (seconds):** set either trigger back to `0` and recreate `monitor-bitget`;
+re-enable containment with `BITGET_EMERGENCY_CONTAINMENT_ENABLED=1` if the old
+close-on-unconfirmed behaviour is ever wanted again.
 
-**Guardrails while armed:** the engine's duplicate/out-of-order fence, the close seam's
-exact-ownership check and atomic durable claim, exactly one POST with no retry on an
-ambiguous result, and the independent REST lane as a second trigger.
+**Still deliberately sequenced:** the wide venue backstop. Stop distance feeds sizing and
+liquidation headroom, so widening it needs the replay corpus (P2-1); sequence is
+local management (now) → observe real exits → widen.

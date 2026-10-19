@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import random
 import time
 from collections.abc import Callable
@@ -193,6 +194,7 @@ class AsyncBitgetExecution:
         reconciliation_repository: Any | None = None,
         entry_admission_latch: Any | None = None,
         fallback_protection_enabled: bool = False,
+        emergency_containment_enabled: bool | None = None,
         environment: str = "DEMO",
         protection_grace_seconds: float = 0.0,
         protection_grace_interval_seconds: float = 3.0,
@@ -208,6 +210,16 @@ class AsyncBitgetExecution:
         # a symbol that rejects native SL/TP while that monitor is gated off leaves
         # the position naked, so the fallback path must fail closed instead.
         self._fallback_protection_enabled = fallback_protection_enabled
+        # Emergency containment (market-closing a position whose venue SL/TP could not
+        # be confirmed) is an explicit opt-in, default off. A filled position is never
+        # closed implicitly for unconfirmed protection; the default path registers it
+        # for local price management instead. Read from the environment here so the
+        # wiring cannot silently enable the dangerous path.
+        self._emergency_containment_enabled = (
+            os.environ.get("BITGET_EMERGENCY_CONTAINMENT_ENABLED", "0").strip() == "1"
+            if emergency_containment_enabled is None
+            else emergency_containment_enabled
+        )
         # Bounded, read-only grace before containment. Zero keeps library/test
         # behaviour unchanged; production wires a real budget from the environment so
         # a trade is never closed before the venue has had time to confirm the plans
@@ -523,8 +535,10 @@ class AsyncBitgetExecution:
     ) -> AsyncProtectionResult:
         """Install and read back native protection before accepting a filled position.
 
-        Any unconfirmed result latches the adapter degraded. Containment is intent-first
-        and deterministic, so an unknown close POST is never retried blindly.
+        Any unconfirmed result latches the adapter degraded. Emergency containment is
+        an explicit, default-off opt-in: by default an unprotected fill is registered
+        for local price management (or escalated) and never closed, so a confirmation
+        race can wash out neither a protected nor an unprotected live position.
         """
         filled_quantity = intent.filled_qty
         if filled_quantity <= 0:
@@ -532,8 +546,9 @@ class AsyncBitgetExecution:
             return AsyncProtectionResult(ProtectionState.FAILED, Decimal("0"), "no-filled-quantity")
         if plan.quantity != filled_quantity:
             self._degraded = True
-            return await self._contain(
+            return await self._contain_or_local_management(
                 intent,
+                plan,
                 store,
                 ProtectionReport(
                     ProtectionState.FAILED, filled_quantity, "protection-quantity-mismatch"
@@ -740,7 +755,64 @@ class AsyncBitgetExecution:
             last_error=f"{report.reason or 'native-protection-unconfirmed'}|grace:{grace_attempts}",
         )
         self._degraded = True
-        return await self._contain(intent, store, report)
+        return await self._contain_or_local_management(intent, plan, store, report)
+
+    async def _contain_or_local_management(
+        self,
+        intent: LiveIntentRecord,
+        plan: ProtectionPlan,
+        store: LiveIntentStoreProtocol,
+        report: ProtectionReport,
+    ) -> AsyncProtectionResult:
+        """Never close a filled position whose venue protection is unconfirmed.
+
+        Emergency containment is an explicit, default-off opt-in. The default verdict
+        marks the position locally managed: register it with the fallback price monitor
+        so the local lane closes it at the signal stop once the live price crosses it,
+        or, when that lane is unavailable or its identity proof fails, escalate without
+        closing. Every non-closing outcome carries the durable ``-locally-managed``
+        marker; registration failure is contained and reported, never raised.
+        """
+        if self._emergency_containment_enabled:
+            return await self._contain(intent, store, report)
+        base = report.reason or "native-protection-unconfirmed"
+        if not self._fallback_protection_enabled:
+            return AsyncProtectionResult(
+                ProtectionState.DEGRADED,
+                report.observed_quantity,
+                f"{base}:fallback-monitor-mutations-disabled-locally-managed",
+            )
+        if intent.avg_price is None or intent.avg_price <= 0:
+            return AsyncProtectionResult(
+                ProtectionState.DEGRADED,
+                report.observed_quantity,
+                f"{base}:fallback-entry-price-unavailable-locally-managed",
+            )
+        try:
+            from fatty_trader.execution.bitget_fallback_protection import register_fallback
+
+            epoch, environment = await self._fallback_identity(intent, plan, store)
+            register_fallback(
+                provider_position_epoch=epoch,
+                environment=environment,
+                exchange=intent.exchange,
+                symbol=intent.symbol,
+                direction=plan.direction.value,
+                entry_price=intent.avg_price,
+                stop_loss=plan.stop_loss,
+                take_profits=list(plan.take_profits),
+                quantity=intent.filled_qty,
+                position_key=intent.client_oid,
+            )
+        except Exception as exc:
+            return AsyncProtectionResult(
+                ProtectionState.DEGRADED,
+                report.observed_quantity,
+                f"{base}:fallback-registration-failed:{type(exc).__name__}-locally-managed",
+            )
+        return AsyncProtectionResult(
+            ProtectionState.DEGRADED, report.observed_quantity, f"{base}-locally-managed"
+        )
 
     async def _fallback_identity(
         self, intent: LiveIntentRecord, plan: ProtectionPlan, store: LiveIntentStoreProtocol

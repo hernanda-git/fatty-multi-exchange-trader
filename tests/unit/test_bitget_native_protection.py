@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -276,7 +277,9 @@ async def test_verified_native_readback_persists_symbol_capability() -> None:
 async def test_plan_id_needs_readback_of_sl_tp_and_quantity() -> None:
     client = NativeProtectionClient(plans=[{"planType": "loss_plan", "size": "0.008"}])
     store = InMemoryLiveIntentStore()
-    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), emergency_containment_enabled=True
+    )
 
     result = await adapter.protect_filled_position(_intent(), _plan(), store)
 
@@ -312,7 +315,9 @@ async def test_unconfirmed_protection_degrades_and_blocks_additional_dispatches(
 async def test_containment_persists_one_deterministic_close_without_retry() -> None:
     client = NativeProtectionClient(plans=[])
     store = InMemoryLiveIntentStore()
-    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), emergency_containment_enabled=True
+    )
 
     first = await adapter.protect_filled_position(_intent(), _plan(), store)
     second = await adapter.protect_filled_position(_intent(), _plan(), store)
@@ -335,7 +340,9 @@ async def test_containment_uses_atomic_claim_before_emergency_close() -> None:
 
     client = NativeProtectionClient(plans=[])
     store = ClaimOnlyStore()
-    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), emergency_containment_enabled=True
+    )
 
     result = await adapter.protect_filled_position(_intent(), _plan(), store)
 
@@ -346,7 +353,9 @@ async def test_containment_uses_atomic_claim_before_emergency_close() -> None:
 @pytest.mark.asyncio
 async def test_pre_cutover_flat_account_never_calls_emergency_close() -> None:
     client = NativeProtectionClient(position_qty="0", plans=[])
-    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), emergency_containment_enabled=True
+    )
 
     result = await adapter.protect_filled_position(_intent(), _plan(), InMemoryLiveIntentStore())
 
@@ -586,6 +595,7 @@ async def test_protection_never_confirmed_still_contains_after_the_grace() -> No
     adapter = AsyncBitgetExecution(
         client,
         AsyncBitgetVenue(client),
+        emergency_containment_enabled=True,
         protection_grace_seconds=0.2,
         protection_grace_interval_seconds=0.05,
     )
@@ -601,12 +611,186 @@ async def test_protection_never_confirmed_still_contains_after_the_grace() -> No
 async def test_grace_is_read_only_and_skipped_without_a_budget() -> None:
     client = NativeProtectionClient(position_qty="0.008", plans=[])
     store = InMemoryLiveIntentStore()
-    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), emergency_containment_enabled=True
+    )
 
     await adapter.protect_filled_position(_intent(), _plan(), store)
 
-    # Default budget is zero: existing behaviour (and tests) stay unchanged, and only
-    # placement ever POSTs — the grace never re-places protection.
+    # Default budget is zero: the grace never re-places protection and only the
+    # placement POSTs; containment stays the opt-in path exercised here.
     assert adapter._protection_grace_seconds == 0
     assert len(client.protection_calls) == 1
     assert len(client.close_calls) == 1
+
+
+class FallbackIdentityClient(NativeProtectionClient):
+    """A client whose provider reads prove the fallback identity of the entry."""
+
+    environment = "DEMO"
+
+    async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+        return [
+            {
+                "symbol": symbol,
+                "holdSide": "long",
+                "total": "0.008",
+                "cTime": "1700000000000",
+            }
+        ]
+
+    async def get_fills(self, symbol: str) -> list[dict[str, str]]:
+        return [
+            {
+                "orderId": "provider-1",
+                "symbol": symbol,
+                "clientOid": _intent().client_oid,
+                "side": "buy",
+                "tradeSide": "open",
+                "tradeId": "fill-1",
+                "cTime": "1700000000000",
+                "baseVolume": "0.008",
+            }
+        ]
+
+
+def _proven_entry_intent() -> LiveIntentRecord:
+    intent = _intent()
+    intent.provider_order_id = "provider-1"
+    intent.avg_price = Decimal("50000")
+    intent.state = "filled"
+    return intent
+
+
+def _record_registrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    import fatty_trader.execution.bitget_fallback_protection as fallback_protection
+
+    registrations: list[dict[str, Any]] = []
+
+    def fake_register(**kwargs: Any) -> str:
+        registrations.append(kwargs)
+        return "bitget:BTCUSDT"
+
+    monkeypatch.setattr(fallback_protection, "register_fallback", fake_register)
+    return registrations
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_protection_is_locally_managed_without_a_close() -> None:
+    client = NativeProtectionClient(position_qty="0.008", plans=[])
+    capabilities = InMemoryProtectionCapabilityRepository()
+    store = InMemoryLiveIntentStore()
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), capability_repository=capabilities
+    )
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), store)
+
+    assert result.state is ProtectionState.DEGRADED
+    assert (result.reason or "").endswith("-locally-managed")
+    assert result.emergency_close_oid is None
+    assert client.close_calls == []
+    assert store.get(f"{_intent().client_oid}-emergency") is None
+    assert adapter.degraded is True
+    capability = capabilities.get("bitget", "DEMO", "BTCUSDT")
+    assert capability is not None
+    assert capability.native_state.value == "FAILED"
+    assert "grace:" in (capability.last_error or "")
+
+
+@pytest.mark.asyncio
+async def test_locally_managed_registration_is_skipped_when_monitor_cannot_mutate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registrations = _record_registrations(monkeypatch)
+    client = NativeProtectionClient(position_qty="0.008", plans=[])
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), fallback_protection_enabled=False
+    )
+
+    result = await adapter.protect_filled_position(
+        _proven_entry_intent(), _plan(), InMemoryLiveIntentStore()
+    )
+
+    assert registrations == []
+    assert result.state is ProtectionState.DEGRADED
+    assert "fallback-monitor-mutations-disabled" in (result.reason or "")
+    assert (result.reason or "").endswith("-locally-managed")
+    assert client.close_calls == []
+    assert adapter.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_locally_managed_registration_is_attempted_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registrations = _record_registrations(monkeypatch)
+    client = FallbackIdentityClient(position_qty="0.008", plans=[])
+    intent = _proven_entry_intent()
+    store = InMemoryLiveIntentStore()
+    store.save(intent)
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        fallback_protection_enabled=True,
+        environment="DEMO",
+    )
+
+    result = await adapter.protect_filled_position(intent, _plan(), store)
+
+    assert len(registrations) == 1
+    kwargs = registrations[0]
+    assert kwargs["position_key"] == intent.client_oid
+    assert kwargs["provider_position_epoch"] == "1700000000000"
+    assert kwargs["environment"] == "DEMO"
+    assert kwargs["quantity"] == Decimal("0.008")
+    assert kwargs["entry_price"] == Decimal("50000")
+    assert result.state is ProtectionState.DEGRADED
+    assert (result.reason or "").endswith("-locally-managed")
+    assert "registration-failed" not in (result.reason or "")
+    assert client.close_calls == []
+    assert adapter.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_locally_managed_registration_failure_never_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registrations = _record_registrations(monkeypatch)
+    # No authenticated environment: the identity proof must fail, and the failure
+    # must be contained into the result instead of escaping protect_filled_position.
+    client = NativeProtectionClient(position_qty="0.008", plans=[])
+    intent = _proven_entry_intent()
+    store = InMemoryLiveIntentStore()
+    store.save(intent)
+    adapter = AsyncBitgetExecution(
+        client, AsyncBitgetVenue(client), fallback_protection_enabled=True
+    )
+
+    result = await adapter.protect_filled_position(intent, _plan(), store)
+
+    assert registrations == []
+    assert result.state is ProtectionState.DEGRADED
+    assert "fallback-registration-failed" in (result.reason or "")
+    assert (result.reason or "").endswith("-locally-managed")
+    assert client.close_calls == []
+    assert adapter.degraded is True
+
+
+@pytest.mark.asyncio
+async def test_emergency_containment_env_flag_restores_the_close_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BITGET_EMERGENCY_CONTAINMENT_ENABLED", "1")
+    client = NativeProtectionClient(position_qty="0.008", plans=[])
+    store = InMemoryLiveIntentStore()
+    adapter = AsyncBitgetExecution(client, AsyncBitgetVenue(client))
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), store)
+
+    assert adapter._emergency_containment_enabled is True
+    assert len(client.close_calls) == 1
+    assert result.emergency_close_oid is not None
+    assert adapter.degraded is True

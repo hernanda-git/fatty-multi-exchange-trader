@@ -156,14 +156,20 @@ class BitgetDispatchExecution:
             reason = "recovery-entry-" + status.lower()
             if result.filled_qty > 0:
                 protection = await self._read_recovery_protection(intent, dispatch)
-                reason = (
-                    "recovery-protection-verified"
-                    if protection.state is ProtectionState.VENUE_PROTECTED
+                if (
+                    protection.state is ProtectionState.VENUE_PROTECTED
                     and protection.observed_quantity == result.filled_qty
-                    else "recovery-missing-protection:" + (protection.reason or "unconfirmed")
-                )
+                ):
+                    reason = "recovery-protection-verified"
+                elif self._is_locally_managed(intent):
+                    # A durable fallback row means the local price lane owns the close;
+                    # native protection is not required and must not block readiness.
+                    reason = "recovery-protection-locally-managed"
+                else:
+                    reason = "recovery-missing-protection:" + (protection.reason or "unconfirmed")
             if (
-                reason != "recovery-protection-verified"
+                reason
+                not in {"recovery-protection-verified", "recovery-protection-locally-managed"}
                 and status not in {"REJECTED"}
                 and not (limit is not None and result.filled_qty == 0 and status == "ACKNOWLEDGED")
             ):
@@ -264,6 +270,18 @@ class BitgetDispatchExecution:
         alert = getattr(self._dispatch_repository, "alert_recovery_blocked", None)
         if callable(alert):
             alert(self.recovery_issues)
+
+    def _is_locally_managed(self, intent: LiveIntentRecord) -> bool:
+        """Whether a durable fallback_protection row owns this entry root.
+
+        The local price lane closes a locally managed fill at the signal stop, so
+        recovery treats it as resolved protection rather than blocking readiness. A
+        repository without the seam (or any read failure) stays blocking/fail-closed.
+        """
+        check = getattr(self._dispatch_repository, "is_locally_managed", None)
+        if not callable(check):
+            return False
+        return bool(check(intent.client_oid))
 
     async def _read_recovery_protection(
         self, intent: LiveIntentRecord, dispatch: BitgetDispatch
@@ -395,11 +413,10 @@ class BitgetDispatchExecution:
             protection.state is not ProtectionState.VENUE_PROTECTED
             or protection.observed_quantity != result.filled_qty
         ):
-            return (
-                "PARTIAL_UNPROTECTED"
-                if result.status is LiveOrderStatus.PARTIAL
-                else "FILLED_UNPROTECTED"
-            )
+            # A position we could not protect at the venue is managed by the local price
+            # monitors (never closed for that reason alone), and that distinction must
+            # survive: "unprotected" blocks account readiness, "locally managed" must not.
+            return _unprotected_status(result.status, protection.reason)
         return _dispatcher_status(result.status)
 
     @staticmethod
@@ -558,7 +575,7 @@ class BitgetDispatchExecution:
                 self._store.update(limit)
                 self._resolve_reservation(root, "FILLED")
                 return (
-                    "PARTIAL_UNPROTECTED"
+                    _unprotected_status(LiveOrderStatus.PARTIAL, protection.reason)
                     if protection.state is not ProtectionState.VENUE_PROTECTED
                     or protection.observed_quantity != root.filled_qty
                     else "PARTIAL"
@@ -905,6 +922,23 @@ class BitgetDispatchExecution:
         intent.provider_fill_ids = result.provider_fill_ids
         intent.provider_fills = result.provider_fills
         self._store.update(intent)
+
+
+LOCALLY_MANAGED_MARKER = "-locally-managed"
+
+
+def _unprotected_status(status: LiveOrderStatus, protection_reason: str | None) -> str:
+    """Verdict for a fill whose venue protection did not verify.
+
+    The exit policy says such a position is never closed for that reason: it is managed by
+    the local price monitors. The verdict keeps that distinction, because an unprotected
+    dispatch blocks account readiness while a locally managed one is a known state that
+    carries an alert instead.
+    """
+    managed = protection_reason is not None and protection_reason.endswith(LOCALLY_MANAGED_MARKER)
+    if status is LiveOrderStatus.PARTIAL:
+        return "PARTIAL_LOCALLY_MANAGED" if managed else "PARTIAL_UNPROTECTED"
+    return "FILLED_LOCALLY_MANAGED" if managed else "FILLED_UNPROTECTED"
 
 
 def _dispatcher_status(status: LiveOrderStatus) -> str:

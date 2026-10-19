@@ -356,7 +356,9 @@ class BitgetDispatcher:
             "FILLED": "FILLED",
             "FILLED_FALLBACK": "FILLED",
             "FILLED_UNPROTECTED": "FILLED",
+            "FILLED_LOCALLY_MANAGED": "FILLED",
             "PARTIAL_UNPROTECTED": "PARTIALLY_FILLED",
+            "PARTIAL_LOCALLY_MANAGED": "PARTIALLY_FILLED",
             "PARTIAL": "PARTIALLY_FILLED",
             "REJECTED": "REJECTED",
         }.get(status)
@@ -372,6 +374,8 @@ class BitgetDispatcher:
             (
                 "missing-protection-escalated"
                 if status in {"FILLED_UNPROTECTED", "PARTIAL_UNPROTECTED"}
+                else "locally-managed-protection"
+                if status in {"FILLED_LOCALLY_MANAGED", "PARTIAL_LOCALLY_MANAGED"}
                 else "fallback-protection-active"
                 if status == "FILLED_FALLBACK"
                 else None

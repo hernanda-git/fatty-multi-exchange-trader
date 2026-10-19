@@ -296,6 +296,28 @@ class PostgresBitgetDispatchRepository:
             connection.rollback()
             raise
 
+    def is_locally_managed(self, position_key: str) -> bool:
+        """Whether a durable fallback_protection row owns this entry root.
+
+        The row is durable proof the local price monitor closes the position at the
+        signal stop, so recovery need not require native venue protection.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT EXISTS(
+                SELECT 1 FROM fallback_protection WHERE position_key = %s
+            )""",
+                (position_key,),
+            )
+            managed = cursor.fetchone()[0]
+            connection.commit()
+            return bool(managed)
+        except Exception:
+            connection.rollback()
+            raise
+
     def unresolved_protection_issues(self) -> list[str]:
         """Durable account admission veto; independent of optional capability gate.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -284,6 +285,7 @@ async def test_storage_boundary_drains_repeated_cancellation_without_hiding_fail
         "has_unhandled_post_fill_mismatch",
         "latch_kill_switch",
         "update_intent",
+        "alert_protection_unconfirmed",
     ],
 )
 @pytest.mark.parametrize("fails", [False, True])
@@ -324,6 +326,8 @@ def test_postgres_monitor_repository_closes_owned_connection(operation, fails):
         else "bitget"
     )
     args = (argument, "clock-skew-unavailable") if operation == "latch_kill_switch" else (argument,)
+    if operation == "alert_protection_unconfirmed":
+        args = (argument, "protection-alert:dedup", {"kind": "protection-alert"})
     if fails:
         with pytest.raises(RuntimeError) as raised:
             getattr(repository, operation)(*args)
@@ -332,7 +336,7 @@ def test_postgres_monitor_repository_closes_owned_connection(operation, fails):
         getattr(repository, operation)(*args)
     assert events[-1] == "close"
     assert events.count("close") == 1
-    if operation in {"latch_kill_switch", "update_intent"}:
+    if operation in {"latch_kill_switch", "update_intent", "alert_protection_unconfirmed"}:
         assert events[-2] == ("rollback" if fails else "commit")
 
 
@@ -554,7 +558,13 @@ async def test_unsafe_provider_read_latches_kill_switch_and_deduplicates_alert(
 
 
 @pytest.mark.asyncio
-async def test_missing_protection_is_alert_only_without_fallback_mutations() -> None:
+async def test_missing_protection_is_alert_only_without_fallback_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fatty_trader.execution import bitget_fallback_protection, bitget_monitor
+
+    monkeypatch.setattr(bitget_fallback_protection, "load_active", lambda: [])
+    monkeypatch.setattr(bitget_monitor, "_symbol_capability", lambda symbol, environment=None: None)
     venue = ReadOnlyVenue(
         positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}]
     )
@@ -565,13 +575,16 @@ async def test_missing_protection_is_alert_only_without_fallback_mutations() -> 
     assert report.status == "degraded"
     assert report.reasons == ("missing-stop-loss",)
     assert repository.kill_switch_active("bitget") is False
+    # Alert-only: durable and detailed, never a latch and never a close.
+    assert repository.alerts == []
+    assert len(repository.alert_payloads) == 1
 
 
 @pytest.mark.asyncio
 async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fatty_trader.execution import bitget_fallback_protection
+    from fatty_trader.execution import bitget_fallback_protection, bitget_monitor
 
     venue = ReadOnlyVenue(
         positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}]
@@ -586,6 +599,8 @@ async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
         return []
 
     monkeypatch.setattr(bitget_fallback_protection, "run_fallback_monitor_async", run_fallback)
+    monkeypatch.setattr(bitget_fallback_protection, "load_active", lambda: [])
+    monkeypatch.setattr(bitget_monitor, "_symbol_capability", lambda symbol, environment=None: None)
 
     report = await BitgetMonitor(
         venue,
@@ -598,6 +613,227 @@ async def test_missing_protection_is_degraded_when_fallback_monitor_is_enabled(
     assert fallback_calls == ["called"]
     assert repository.kill_switch_active("bitget") is False
     assert repository.alerts == []
+
+
+def _lane_row(**overrides: object) -> dict[str, object]:
+    """One durable local-management row as the REST lane persists it."""
+    row: dict[str, object] = {
+        "id": "fallback-1",
+        "exchange": "bitget",
+        "symbol": "BTCUSDT",
+        "direction": "LONG",
+        "entry_price": Decimal("100"),
+        "stop_loss": Decimal("95"),
+        "take_profits": [Decimal("110"), Decimal("120")],
+        "quantity": Decimal("0.01"),
+        "state": "active",
+        "close_order_id": None,
+        "position_key": "entry-root-1",
+        "provider_position_epoch": "1699999999000",
+        "environment": "DEMO",
+    }
+    row.update(overrides)
+    return row
+
+
+def _stub_protection(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    lane_rows: list[dict[str, object]],
+    capability: object | None,
+) -> None:
+    from fatty_trader.execution import bitget_fallback_protection, bitget_monitor
+
+    async def no_triggers(client: object, *, environment=None) -> list[dict[str, str]]:
+        del client, environment
+        return []
+
+    monkeypatch.setattr(bitget_fallback_protection, "load_active", lambda: list(lane_rows))
+    monkeypatch.setattr(bitget_fallback_protection, "run_fallback_monitor_async", no_triggers)
+    monkeypatch.setattr(
+        bitget_monitor, "_symbol_capability", lambda symbol, environment=None: capability
+    )
+
+
+def _capability(**overrides: object) -> object:
+    from fatty_trader.exchanges.bitget.protection_capability import (
+        BitgetProtectionCapability,
+        StreamState,
+    )
+
+    values: dict[str, object] = {
+        "exchange": "bitget",
+        "environment": "DEMO",
+        "symbol": "BTCUSDT",
+        "stream_state": StreamState.HEALTHY,
+        "last_stream_at": datetime.now(UTC),
+    }
+    values.update(overrides)
+    return BitgetProtectionCapability(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_protection_alert_is_detailed_and_once_per_position_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BITGET_PROTECTION_STREAM_ENABLED", "1")
+    monkeypatch.setenv("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", "1")
+    _stub_protection(monkeypatch, lane_rows=[_lane_row()], capability=_capability())
+    venue = ReadOnlyVenue(
+        positions=[
+            {
+                "symbol": "BTCUSDT",
+                "total": "0.01",
+                "holdSide": "long",
+                "marginMode": "isolated",
+                "openPriceAvg": "100.5",
+                "cTime": "1700000000000",
+            }
+        ]
+    )
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+    monitor = BitgetMonitor(venue, repository, fallback_mutations_enabled=True)
+
+    report = await monitor.run_once()
+    await monitor.run_once()
+
+    assert report.status == "degraded"
+    assert report.reasons == ("missing-stop-loss",)
+    assert repository.kill_switch_active("bitget") is False
+    # One alert for the epoch, and the second cycle did not queue another.
+    assert len(repository.alert_payloads) == 1
+    payload = repository.alert_payloads[0]
+    assert payload["kind"] == "protection-alert"
+    assert payload["reason"] == "missing-stop-loss"
+    assert payload["verdict"] == "missing-stop-loss-locally-managed"
+    assert payload["capability_readback_reason"] == "unavailable"
+    assert payload["scope"] == "bitget"
+    assert payload["symbol"] == "BTCUSDT"
+    assert payload["direction"] == "LONG"
+    assert payload["quantity"] == "0.01"
+    assert payload["entry_price"] == "100.5"
+    assert payload["stop_loss"] == "95"
+    assert payload["take_profits"] == ["110", "120"]
+    assert payload["position_key"] == "entry-root-1"
+    assert payload["provider_position_epoch"] == "1700000000000"
+    assert payload["locally_managed"] is True
+    assert payload["local_lane_state"] == "active"
+    assert payload["local_lane_rest_mutations_enabled"] is True
+    assert payload["local_lane_stream_enabled"] is True
+    assert payload["local_lane_stream_mutations_enabled"] is True
+    assert payload["local_lane_stream_state"] == "HEALTHY"
+    assert payload["local_lane_stream_fresh"] is True
+    assert isinstance(payload["local_lane_stream_last_event_seconds"], float)
+    assert payload["local_lane_registration_read_ok"] is True
+    assert payload["protection_state"] == "DEGRADED"
+    assert payload["observed_quantity"] == "0.01"
+    assert payload["action"] == (
+        "bot will not close this position; check the exchange side and manage it manually"
+    )
+
+    # A new provider position epoch is a new incident and alerts again.
+    venue.positions[0]["cTime"] = "1700000005000"
+    await monitor.run_once()
+
+    assert len(repository.alert_payloads) == 2
+    assert repository.alert_payloads[1]["provider_position_epoch"] == "1700000005000"
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_protection_alert_reports_unregistered_and_unarmed_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BITGET_PROTECTION_STREAM_ENABLED", raising=False)
+    monkeypatch.delenv("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", raising=False)
+    _stub_protection(monkeypatch, lane_rows=[], capability=None)
+    venue = ReadOnlyVenue(
+        positions=[
+            {
+                "symbol": "BTCUSDT",
+                "total": "0.01",
+                "holdSide": "short",
+                "marginMode": "isolated",
+            }
+        ]
+    )
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.reasons == ("missing-stop-loss",)
+    assert repository.kill_switch_active("bitget") is False
+    payload = repository.alert_payloads[0]
+    assert payload["direction"] == "SHORT"
+    assert payload["locally_managed"] is False
+    assert payload["verdict"] == "missing-stop-loss"
+    assert payload["local_lane_state"] == "unregistered"
+    assert payload["local_lane_rest_mutations_enabled"] is False
+    assert payload["local_lane_stream_enabled"] is False
+    assert payload["local_lane_stream_mutations_enabled"] is False
+    assert payload["local_lane_stream_state"] == "DISABLED"
+    assert payload["local_lane_stream_fresh"] is None
+    assert payload["stop_loss"] == "unavailable"
+    assert payload["take_profits"] == []
+    assert payload["entry_price"] == "unavailable"
+    assert payload["action"] == (
+        "bot will not close this position; check the exchange side and manage it manually"
+    )
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "expected_fresh"),
+    [(0.0, True), (600.0, False)],
+)
+@pytest.mark.asyncio
+async def test_unconfirmed_protection_alert_reports_stream_freshness(
+    monkeypatch: pytest.MonkeyPatch,
+    age_seconds: float,
+    expected_fresh: bool,
+) -> None:
+    monkeypatch.setenv("BITGET_PROTECTION_STREAM_ENABLED", "1")
+    monkeypatch.setenv("BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED", "1")
+    _stub_protection(
+        monkeypatch,
+        lane_rows=[_lane_row()],
+        capability=_capability(last_stream_at=datetime.now(UTC) - timedelta(seconds=age_seconds)),
+    )
+    venue = ReadOnlyVenue(
+        positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "isolated"}]
+    )
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+
+    await BitgetMonitor(venue, repository, fallback_mutations_enabled=True).run_once()
+
+    payload = repository.alert_payloads[0]
+    assert payload["locally_managed"] is True
+    assert payload["local_lane_stream_state"] == "HEALTHY"
+    assert payload["local_lane_stream_fresh"] is expected_fresh
+    assert payload["local_lane_stream_last_event_seconds"] >= age_seconds
+
+
+@pytest.mark.asyncio
+async def test_locally_managed_verdict_alert_fires_for_a_latchable_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The adapter's recorded -locally-managed verdict is never silent."""
+    _stub_protection(
+        monkeypatch,
+        lane_rows=[],
+        capability=_capability(last_error="margin-mode-not-isolated-locally-managed"),
+    )
+    venue = ReadOnlyVenue(positions=[{"symbol": "BTCUSDT", "total": "0.01", "marginMode": "cross"}])
+    repository = InMemoryReconciliationRepository(expected_symbols={"BTCUSDT"})
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.reasons == ("margin-mode-not-isolated",)
+    assert repository.alerts == ["margin-mode-not-isolated"]
+    payload = repository.alert_payloads[0]
+    assert payload["reason"] == "margin-mode-not-isolated"
+    assert payload["verdict"] == "margin-mode-not-isolated-locally-managed"
+    assert payload["capability_readback_reason"] == "margin-mode-not-isolated-locally-managed"
+    assert payload["locally_managed"] is False
+    assert payload["local_lane_state"] == "unregistered"
 
 
 @pytest.mark.asyncio

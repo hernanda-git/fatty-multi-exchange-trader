@@ -170,7 +170,15 @@ evaluation is serial with the stream loop, so a close in flight (~1–3 s) delay
 marks; the REST lane stays a second trigger.
 **Deliberate deviation:** the wide venue backstop is *not* in this release. Stop distance
 feeds sizing/liquidation headroom, so widening it needs the corpus numbers (P2-1).
-Sequence is now: arm → observe real exits → widen. Recorded rather than silently dropped.
+Sequence is now: local management → observe real exits → widen. Recorded rather than
+silently dropped.
+**Exit policy confirmed by the owner (2026-10-19):** a position whose exchange-side SL/TP
+cannot be confirmed is **never closed by us**; it is marked locally managed and the local
+price monitors (stream sub-second, REST 30 s as the second trigger) close it at the signal
+stop. If the local lane is also unavailable, the system **alerts only** with full position
+detail and the owner (or a future exchange-side agent) acts — the running bot is not
+disturbed. Emergency containment therefore becomes opt-in and off
+(`BITGET_EMERGENCY_CONTAINMENT_ENABLED=0`). Runbook and switches: `docs/NEXT-STEPS-2026-10-18.md`.
 
 **P0-4 · Pre-entry protection feasibility gate.** *(assumption: anything we can trade we
 can protect)* Before an entry POST, require a fresh backstop capability (or a successful

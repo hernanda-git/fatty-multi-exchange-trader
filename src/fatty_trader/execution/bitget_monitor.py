@@ -7,9 +7,12 @@ is treated as a latchable anomaly so it blocks new entries across restarts.
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Awaitable, Callable
+import os
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
@@ -21,10 +24,36 @@ from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
 from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
 from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
 from fatty_trader.execution.async_storage import _run_sync_storage
-from fatty_trader.execution.protection import ProtectionState
+from fatty_trader.execution.protection import ProtectionReport, ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
 
 _ALERT_ONLY_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
+
+#: Durable outbox payload kind for a position whose venue protection is not confirmed.
+#:
+#: It deliberately has no bespoke Telegram formatter: the generic key/value renderer
+#: then prints every field, which is what makes the alert actionable on a phone. A
+#: reason-only card ("missing-stop-loss") is not enough for the owner to act.
+_PROTECTION_ALERT_KIND = "protection-alert"
+
+#: The one line that says what the bot will NOT do about this position.
+_PROTECTION_ALERT_ACTION = (
+    "bot will not close this position; check the exchange side and manage it manually"
+)
+
+#: Marker the execution adapter appends to its degraded verdict.
+_LOCALLY_MANAGED_MARKER = "-locally-managed"
+
+#: Monitor-process truth about the local price-monitor lane.
+_STREAM_ENABLED_ENV = "BITGET_PROTECTION_STREAM_ENABLED"
+_STREAM_MUTATIONS_ENV = "BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED"
+_STREAM_STALE_SECONDS_ENV = "BITGET_PROTECTION_STREAM_STALE_SECONDS"
+_DEFAULT_STREAM_STALE_SECONDS = 5.0
+
+_ENTRY_PRICE_KEYS = ("openPriceAvg", "averageOpenPrice", "avgPrice", "openPrice")
+_STOP_LOSS_KEYS = ("stopLoss", "stopLossPrice")
+_TAKE_PROFIT_KEYS = ("takeProfit", "takeProfitPrice")
+_EPOCH_KEYS = ("cTime", "ctime", "createdTime")
 
 
 class BitgetMonitorClient(Protocol):
@@ -43,6 +72,167 @@ class MonitorReport:
     reasons: tuple[str, ...] = ()
     provider_exits_reconciled: int = 0
     latched_reason: str | None = None
+
+
+def _enabled(environ_key: str) -> bool:
+    """Read a 0/1 switch from the monitor process environment."""
+    return os.environ.get(environ_key, "0").strip().lower() == "1"
+
+
+def _first_text(source: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def _position_direction(position: Mapping[str, Any]) -> str:
+    side = str(position.get("holdSide", position.get("side", ""))).strip().lower()
+    return {"long": "LONG", "short": "SHORT", "buy": "LONG", "sell": "SHORT"}.get(side, "UNKNOWN")
+
+
+def _local_lane_rows() -> list[dict[str, Any]]:
+    """Read durable local-management rows from the REST lane's own table."""
+    from fatty_trader.execution.bitget_fallback_protection import load_active
+
+    return list(load_active())
+
+
+def _symbol_capability(symbol: str, environment: str | None = None) -> Any | None:
+    """Read the durable protection-capability observation for one symbol."""
+    import psycopg
+
+    from fatty_trader.storage.protection_capabilities import (
+        PostgresProtectionCapabilityRepository,
+    )
+
+    scope = (environment or os.environ.get("BITGET_MODE", "")).strip().upper()
+    if scope not in {"DEMO", "LIVE"}:
+        return None
+    return PostgresProtectionCapabilityRepository(psycopg.connect).get("bitget", scope, symbol)
+
+
+def _stream_health(capability: Any | None, *, read_ok: bool) -> dict[str, Any]:
+    """Describe whether the stream trigger is armed and currently fresh.
+
+    The stream mutates only while its own switch is on and its mark feed is fresh;
+    a connected-but-stale socket still cannot close a locally-managed position.
+    """
+    enabled = _enabled(_STREAM_ENABLED_ENV)
+    health: dict[str, Any] = {
+        "stream_enabled": enabled,
+        "stream_mutations_enabled": _enabled(_STREAM_MUTATIONS_ENV),
+        "stream_state": "DISABLED" if not enabled else "UNKNOWN",
+        "stream_fresh": None,
+        "stream_last_event_seconds": None,
+    }
+    if capability is None:
+        if enabled and read_ok:
+            health["stream_state"] = "NOT-REGISTERED"
+        return health
+    state = str(getattr(capability, "stream_state", "UNKNOWN")).upper()
+    health["stream_state"] = state
+    last_event = getattr(capability, "last_stream_at", None)
+    if not isinstance(last_event, datetime):
+        return health
+    now = datetime.now(UTC)
+    if last_event.tzinfo is None:
+        return health
+    age = (now - last_event).total_seconds()
+    health["stream_last_event_seconds"] = round(age, 3)
+    try:
+        raw_stale = os.environ.get(_STREAM_STALE_SECONDS_ENV, "").strip()
+        stale_after = float(raw_stale) if raw_stale else _DEFAULT_STREAM_STALE_SECONDS
+    except ValueError:
+        stale_after = _DEFAULT_STREAM_STALE_SECONDS
+    health["stream_fresh"] = state == "HEALTHY" and 0 <= age <= stale_after
+    return health
+
+
+def _protection_alert_payload(
+    *,
+    scope: str,
+    position: Mapping[str, Any],
+    quantity: Decimal,
+    report: ProtectionReport,
+    reason: str,
+    lane_row: Mapping[str, Any] | None,
+    lane_read_ok: bool,
+    rest_mutations_enabled: bool,
+    capability: Any | None,
+    capability_read_ok: bool,
+) -> dict[str, Any]:
+    """Build the flat, human-and-agent readable payload for one naked position.
+
+    Flat keys on purpose: the generic notification renderer prints one line per key,
+    so nothing is lost on a phone and nothing needs a bespoke formatter.
+    """
+    symbol = str(position.get("symbol") or "").strip().upper()
+    epoch = _first_text(position, _EPOCH_KEYS) or (
+        str(lane_row.get("provider_position_epoch")) if lane_row else None
+    )
+    position_key = str(lane_row.get("position_key")) if lane_row else None
+    stop_loss = (
+        _first_text(lane_row, ("stop_loss",))
+        if lane_row
+        else _first_text(position, _STOP_LOSS_KEYS)
+    )
+    take_profits: list[str] = []
+    if lane_row:
+        raw = lane_row.get("take_profits")
+        if isinstance(raw, (list, tuple)):
+            take_profits = [str(item) for item in raw]
+        elif raw is not None:
+            take_profits = [str(raw)]
+    else:
+        single = _first_text(position, _TAKE_PROFIT_KEYS)
+        if single is not None:
+            take_profits = [single]
+    locally_managed = lane_row is not None
+    last_error = str(getattr(capability, "last_error", "") or "").strip() or None
+    locally_managed_verdict = locally_managed or (
+        last_error is not None and last_error.endswith(_LOCALLY_MANAGED_MARKER)
+    )
+    verdict = reason
+    if locally_managed_verdict and not verdict.endswith(_LOCALLY_MANAGED_MARKER):
+        verdict = f"{verdict}{_LOCALLY_MANAGED_MARKER}"
+    lane_state = (
+        str(lane_row.get("state"))
+        if lane_row
+        else ("unreadable" if not lane_read_ok else "unregistered")
+    )
+    health = _stream_health(capability, read_ok=capability_read_ok)
+    return {
+        "kind": _PROTECTION_ALERT_KIND,
+        "reason": reason,
+        "verdict": verdict,
+        "capability_readback_reason": last_error or "unavailable",
+        "scope": scope,
+        "symbol": symbol,
+        "direction": _position_direction(position),
+        "quantity": str(quantity),
+        "entry_price": _first_text(position, _ENTRY_PRICE_KEYS) or "unavailable",
+        "stop_loss": stop_loss or "unavailable",
+        "take_profits": take_profits,
+        "position_key": position_key,
+        "provider_position_epoch": epoch,
+        "locally_managed": locally_managed,
+        "local_lane_state": lane_state,
+        "local_lane_rest_mutations_enabled": rest_mutations_enabled,
+        "local_lane_stream_enabled": health["stream_enabled"],
+        "local_lane_stream_mutations_enabled": health["stream_mutations_enabled"],
+        "local_lane_stream_state": health["stream_state"],
+        "local_lane_stream_fresh": health["stream_fresh"],
+        "local_lane_stream_last_event_seconds": health["stream_last_event_seconds"],
+        "local_lane_registration_read_ok": lane_read_ok,
+        "protection_state": str(getattr(report.state, "value", report.state)),
+        "observed_quantity": str(report.observed_quantity),
+        "action": _PROTECTION_ALERT_ACTION,
+    }
 
 
 class BitgetMonitor:
@@ -269,6 +459,96 @@ class BitgetMonitor:
             )
             if report.state is not ProtectionState.VENUE_PROTECTED:
                 reasons.append(report.reason or "native-protection-unconfirmed")
+                await self._alert_unconfirmed_protection(position, quantity, report)
+
+    async def _alert_unconfirmed_protection(
+        self,
+        position: Mapping[str, Any],
+        quantity: Decimal,
+        report: ProtectionReport,
+    ) -> None:
+        """Alert once per position epoch; never close and never latch this position.
+
+        A naked position stays open by owner policy: we cannot prove the venue's stop,
+        so the local price monitors are the only automatic exit and a human owns the
+        rest. Emitting the same alert twice for one epoch is prevented by the outbox
+        dedup key, exactly like the kill-switch latch dedups its own notification.
+        """
+        symbol = str(position.get("symbol") or "").strip().upper()
+        reason = report.reason or "native-protection-unconfirmed"
+        lane_row, lane_read_ok = await self._local_management_row(symbol)
+        capability, capability_read_ok = await self._protection_capability(symbol)
+        adapter_verdict = str(getattr(capability, "last_error", "") or "").endswith(
+            _LOCALLY_MANAGED_MARKER
+        )
+        if (
+            reason not in _ALERT_ONLY_PROTECTION_REASONS
+            and lane_row is None
+            and not adapter_verdict
+            and not reason.endswith(_LOCALLY_MANAGED_MARKER)
+        ):
+            # Any other readback already notifies through the kill-switch latch.
+            return
+        payload = _protection_alert_payload(
+            scope=self._scope,
+            position=position,
+            quantity=quantity,
+            report=report,
+            reason=reason,
+            lane_row=lane_row,
+            lane_read_ok=lane_read_ok,
+            rest_mutations_enabled=self._fallback_mutations_enabled,
+            capability=capability,
+            capability_read_ok=capability_read_ok,
+        )
+        dedup_key = (
+            f"protection-alert:{self._scope}:{symbol}:"
+            f"{payload['provider_position_epoch'] or payload['position_key'] or 'unknown'}:{reason}"
+        )
+        alert = getattr(self._repository, "alert_protection_unconfirmed", None)
+        if not callable(alert):
+            # Never silent: the structured line carries the whole payload.
+            logging.getLogger(__name__).error(
+                "reason=protection-alert-sink-unavailable payload=%s",
+                json.dumps(payload, sort_keys=True, default=str),
+            )
+            return
+        try:
+            await _run_sync_storage(alert, self._scope, dedup_key, payload)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "reason=protection-alert-write-failed symbol=%s exception=%s",
+                symbol,
+                type(exc).__name__,
+            )
+
+    async def _local_management_row(self, symbol: str) -> tuple[dict[str, Any] | None, bool]:
+        """Return the durable local-management row and whether the read worked."""
+        try:
+            rows = await _run_sync_storage(_local_lane_rows)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "reason=local-lane-read-failed symbol=%s exception=%s", symbol, type(exc).__name__
+            )
+            return None, False
+        for row in rows:
+            if str(row.get("symbol", "")).strip().upper() == symbol:
+                return row, True
+        return None, True
+
+    async def _protection_capability(self, symbol: str) -> tuple[Any | None, bool]:
+        """Return the durable capability observation and whether the read worked."""
+        environment = getattr(self._client, "environment", None)
+        try:
+            capability = await _run_sync_storage(_symbol_capability, symbol, environment)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "reason=protection-capability-read-failed symbol=%s exception=%s",
+                symbol,
+                type(exc).__name__,
+            )
+            return None, False
+        return capability, True
 
     async def _check_orders(self, orders: list[dict[str, Any]], reasons: list[str]) -> None:
         intents = await _run_sync_storage(self._repository.unresolved_intents, self._scope)

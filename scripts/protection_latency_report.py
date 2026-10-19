@@ -260,9 +260,7 @@ def summarise(report: dict[str, Any]) -> dict[str, Any]:
         "trades": len(report["trades"]),
         "join_coverage": {
             "with_entry_intent": sum(1 for trade in report["trades"] if trade["entry_oid"]),
-            "without_entry_intent": sum(
-                1 for trade in report["trades"] if not trade["entry_oid"]
-            ),
+            "without_entry_intent": sum(1 for trade in report["trades"] if not trade["entry_oid"]),
         },
         "verdicts": verdicts,
         "entry_fill_to_protection_claim_seconds": {
@@ -329,9 +327,7 @@ def render_markdown(report: dict[str, Any], summary: dict[str, Any]) -> str:
         ("entry fill → close fill", "entry_fill_to_close_fill_seconds"),
     ):
         data = summary[key]
-        lines.append(
-            f"| {label} | {data['median']} | {data['p95']} | {data['samples']} |"
-        )
+        lines.append(f"| {label} | {data['median']} | {data['p95']} | {data['samples']} |")
     lines += ["", "## Per trade", ""]
     for trade in report["trades"]:
         reason = trade["terminal_reason"] or "-"
