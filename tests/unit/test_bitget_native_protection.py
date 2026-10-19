@@ -168,6 +168,73 @@ def _plan_stop_only() -> ProtectionPlan:
     )
 
 
+class PositionWithoutPlanIdsClient(NativeProtectionClient):
+    """Live-shaped provider: live plans exist but the position row omits their IDs."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault(
+            "plans",
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "posSide": "net",
+                    "side": "sell",
+                    "posMode": "one_way_mode",
+                    "marginMode": "crossed",
+                    "planType": "pos_loss",
+                    "orderId": "native-plan-sl",
+                    "clientOid": "live-bitget-BTCUSDT-0011223344556677-sl",
+                    "triggerPrice": "49000",
+                    "triggerType": "mark_price",
+                    "planStatus": "live",
+                    "size": "0",
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "posSide": "net",
+                    "side": "sell",
+                    "posMode": "one_way_mode",
+                    "marginMode": "crossed",
+                    "planType": "pos_profit",
+                    "orderId": "native-plan-tp",
+                    "clientOid": "live-bitget-BTCUSDT-0011223344556677-tp",
+                    "triggerPrice": "51000",
+                    "triggerType": "mark_price",
+                    "planStatus": "live",
+                    "size": "0",
+                },
+            ],
+        )
+        super().__init__(**kwargs)
+
+    async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+        rows = await super().get_single_position(symbol)
+        for row in rows:
+            row["stopLossId"] = None
+            row["takeProfitId"] = None
+        return rows
+
+    async def place_position_tpsl(self, **kwargs: str) -> list[dict[str, str]]:
+        self.protection_calls.append(kwargs)
+        for plan in self.plans:
+            if plan.get("planType") == "pos_loss":
+                plan["clientOid"] = kwargs["stop_loss_client_oid"]
+                plan["triggerPrice"] = kwargs["stop_loss"]
+            elif plan.get("planType") == "pos_profit":
+                plan["clientOid"] = kwargs["take_profit_client_oid"]
+                plan["triggerPrice"] = kwargs["take_profit"]
+        return [
+            {
+                "orderId": "native-plan-sl",
+                "stopLossClientOid": kwargs["stop_loss_client_oid"],
+            },
+            {
+                "orderId": "native-plan-tp",
+                "stopSurplusClientOid": kwargs["take_profit_client_oid"],
+            },
+        ]
+
+
 def test_live_intent_store_claims_a_close_identity_only_once() -> None:
     store = InMemoryLiveIntentStore()
     close = LiveIntentRecord(
@@ -269,6 +336,26 @@ async def test_verified_native_readback_persists_symbol_capability() -> None:
 
     assert result.state is ProtectionState.VENUE_PROTECTED
     capability = capabilities.get("bitget", "LIVE", "BTCUSDT")
+    assert capability is not None
+    assert capability.native_state.value == "VERIFIED"
+
+
+@pytest.mark.asyncio
+async def test_position_level_plans_verify_when_the_position_row_omits_plan_ids() -> None:
+    client = PositionWithoutPlanIdsClient(position_qty="0.008")
+    capabilities = InMemoryProtectionCapabilityRepository()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        capability_repository=capabilities,
+    )
+
+    result = await adapter.protect_filled_position(_intent(), _plan(), InMemoryLiveIntentStore())
+
+    assert result.state is ProtectionState.VENUE_PROTECTED
+    assert client.close_calls == []
+    assert adapter.degraded is False
+    capability = capabilities.get("bitget", "DEMO", "BTCUSDT")
     assert capability is not None
     assert capability.native_state.value == "VERIFIED"
 
@@ -678,21 +765,31 @@ def _record_registrations(
 
 
 @pytest.mark.asyncio
-async def test_unconfirmed_protection_is_locally_managed_without_a_close() -> None:
-    client = NativeProtectionClient(position_qty="0.008", plans=[])
+async def test_unconfirmed_protection_is_locally_managed_without_a_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registrations = _record_registrations(monkeypatch)
+    client = FallbackIdentityClient(position_qty="0.008", plans=[])
     capabilities = InMemoryProtectionCapabilityRepository()
+    intent = _proven_entry_intent()
     store = InMemoryLiveIntentStore()
+    store.save(intent)
     adapter = AsyncBitgetExecution(
-        client, AsyncBitgetVenue(client), capability_repository=capabilities
+        client,
+        AsyncBitgetVenue(client),
+        capability_repository=capabilities,
+        fallback_protection_enabled=True,
+        environment="DEMO",
     )
 
-    result = await adapter.protect_filled_position(_intent(), _plan(), store)
+    result = await adapter.protect_filled_position(intent, _plan(), store)
 
+    assert len(registrations) == 1
     assert result.state is ProtectionState.DEGRADED
     assert (result.reason or "").endswith("-locally-managed")
     assert result.emergency_close_oid is None
     assert client.close_calls == []
-    assert store.get(f"{_intent().client_oid}-emergency") is None
+    assert store.get(f"{intent.client_oid}-emergency") is None
     assert adapter.degraded is True
     capability = capabilities.get("bitget", "DEMO", "BTCUSDT")
     assert capability is not None
@@ -706,8 +803,12 @@ async def test_locally_managed_registration_is_skipped_when_monitor_cannot_mutat
 ) -> None:
     registrations = _record_registrations(monkeypatch)
     client = NativeProtectionClient(position_qty="0.008", plans=[])
+    capabilities = InMemoryProtectionCapabilityRepository()
     adapter = AsyncBitgetExecution(
-        client, AsyncBitgetVenue(client), fallback_protection_enabled=False
+        client,
+        AsyncBitgetVenue(client),
+        fallback_protection_enabled=False,
+        capability_repository=capabilities,
     )
 
     result = await adapter.protect_filled_position(
@@ -717,9 +818,13 @@ async def test_locally_managed_registration_is_skipped_when_monitor_cannot_mutat
     assert registrations == []
     assert result.state is ProtectionState.DEGRADED
     assert "fallback-monitor-mutations-disabled" in (result.reason or "")
-    assert (result.reason or "").endswith("-locally-managed")
+    # No durable row was written, so the verdict must not claim local ownership.
+    assert not (result.reason or "").endswith("-locally-managed")
     assert client.close_calls == []
     assert adapter.degraded is True
+    capability = capabilities.get("bitget", "DEMO", "BTCUSDT")
+    assert capability is not None
+    assert capability.last_error == result.reason
 
 
 @pytest.mark.asyncio
@@ -762,11 +867,15 @@ async def test_locally_managed_registration_failure_never_propagates(
     # No authenticated environment: the identity proof must fail, and the failure
     # must be contained into the result instead of escaping protect_filled_position.
     client = NativeProtectionClient(position_qty="0.008", plans=[])
+    capabilities = InMemoryProtectionCapabilityRepository()
     intent = _proven_entry_intent()
     store = InMemoryLiveIntentStore()
     store.save(intent)
     adapter = AsyncBitgetExecution(
-        client, AsyncBitgetVenue(client), fallback_protection_enabled=True
+        client,
+        AsyncBitgetVenue(client),
+        fallback_protection_enabled=True,
+        capability_repository=capabilities,
     )
 
     result = await adapter.protect_filled_position(intent, _plan(), store)
@@ -774,9 +883,13 @@ async def test_locally_managed_registration_failure_never_propagates(
     assert registrations == []
     assert result.state is ProtectionState.DEGRADED
     assert "fallback-registration-failed" in (result.reason or "")
-    assert (result.reason or "").endswith("-locally-managed")
+    # A failed registration leaves no local owner; do not emit the managed marker.
+    assert not (result.reason or "").endswith("-locally-managed")
     assert client.close_calls == []
     assert adapter.degraded is True
+    capability = capabilities.get("bitget", "DEMO", "BTCUSDT")
+    assert capability is not None
+    assert capability.last_error == result.reason
 
 
 @pytest.mark.asyncio

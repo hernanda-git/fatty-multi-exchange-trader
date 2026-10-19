@@ -81,20 +81,43 @@ to establish), via `register_fallback` with proven identity:
 unhealthy until the WLD position is flat; the dispatch then needs the usual settlement/baseline
 path if no close fill lands under its root intents.
 
-## Recommended fixes (not implemented here)
+## Implemented fixes (local branch, NOT deployed)
 
-1. Verification: accept a matching live `pos_loss`/`pos_profit` plan as proof for position-level
-   SL/TP when the position row omits the IDs — **after** the `marginMode` echo question is answered
-   (venue canary: does a `crossed`-echoed plan trigger an isolated position? ask Bitget if needed).
-2. Make registration failure durable: persist the exception type/reason on the capability row (and
-   in the recovery evidence), and never emit the `-locally-managed` suffix for a registration that
-   did not persist.
-3. Make `GetOnlyProtectionRecovery.inventory()` fallback-aware: an open position owned by an
-   `active`/`closing` `fallback_protection` row (environment-matching) must count as resolved, not
-   as `provider-position-not-uniquely-owned-and-protected`.
-4. Call `worker_progress()` on the blocked-lane branch so health evidence reflects the worker
-   (badge the blocked state separately, e.g. keep the `state=recovery-blocked` log line as the
-   signal, or have the healthcheck distinguish it).
+1. **Plan evidence verifies when the position row omits IDs**
+   (`exchanges/bitget/reconciliation_live.py`). A null `stopLossId`/`takeProfitId` no longer
+   short-circuits; the live position-level plan (type `pos_loss`/`pos_profit`, matching order id
+   and client OID, trigger, `mark_price`, `live`) is the authority. A plan search that finds
+   nothing while the position ID is absent still reports `missing-stop-loss`/`missing-take-profit`
+   so the alert vocabulary is unchanged. An exposed position ID that disagrees with the placement
+   response still fails `*-id-mismatch`.
+2. **The venue margin echo is not proof for position-level plans**
+   (same module, `_verify_exact_leg`). `place-pos-tpsl` has no `marginMode` request field and the
+   venue echoes account metadata (`crossed`) on `pos_loss`/`pos_profit` rows even for an isolated
+   account and position (live evidence above); the position row is the margin authority. Partial
+   plans (`loss_plan`/`profit_plan`) keep the strict `isolated` check.
+3. **The `-locally-managed` marker is reserved for a durable row**
+   (`exchanges/bitget/async_execution.py`). Lane-disabled, missing entry price and registration
+   failure now return an unmarked verdict (the dispatcher classifies them `UNPROTECTED` /
+   `missing-protection-escalated`) and persist the exact failure reason on the capability row.
+   A registration that succeeded keeps the marker and the pre-containment `|grace:N` evidence.
+4. **Account inventory honours local management**
+   (`execution/bitget_protection_recovery.py`, `execution/bitget_dispatch_repository.py`). An open
+   position owned by an `active`/`closing`, environment-matching `fallback_protection` row is not
+   flagged `provider-position-not-uniquely-owned-and-protected`; the seam fails closed when the
+   registry cannot be read.
+5. **Blocked cycles refresh worker progress** (`service.py`). `worker_progress()` runs on the
+   `recovery-blocked` branch before the sleep, so a live blocked worker no longer reports a false
+   `runtime-progress` health failure; the blocked issue set stays visible in the log line and the
+   owner alert.
+
+Tests: new `tests/unit/test_bitget_live_reconciliation.py` cases (missing position IDs, margin
+echo, partial-plan strictness), `tests/unit/test_bitget_native_protection.py`
+(`PositionWithoutPlanIdsClient` end-to-end through the adapter; failure verdicts are unmarked and
+durable), `tests/unit/test_get_only_protection_recovery.py` (fallback-aware inventory), and
+`tests/unit/test_bitget_operator_gateway.py` (margin echo on a legitimate stop modification).
+The outdated "crossed echo is a mismatch" invariants were replaced by the live-evidence contract.
+Local checks: `ruff` clean, `mypy src` clean (125 files), full suite green except one pre-existing
+Windows-only websocket heartbeat test (unrelated module, fails identically without these edits).
 
 ## Non-claims
 

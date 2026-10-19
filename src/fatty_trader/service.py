@@ -959,6 +959,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                         # One owner alert per distinct issue set; a blocked lane used to
                         # be visible only in container logs.
                         alert_blocked()
+                    # A blocked lane is a live worker making progress; without this the
+                    # health file ages past WORKER_HEALTH_MAX_AGE_SECONDS and the
+                    # container reports a false `runtime-progress` failure.  The blocked
+                    # issue set stays visible through the log line and the owner alert.
+                    worker_progress()
                     await asyncio.sleep(interval)
                     continue
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)

@@ -777,16 +777,12 @@ class AsyncBitgetExecution:
             return await self._contain(intent, store, report)
         base = report.reason or "native-protection-unconfirmed"
         if not self._fallback_protection_enabled:
-            return AsyncProtectionResult(
-                ProtectionState.DEGRADED,
-                report.observed_quantity,
-                f"{base}:fallback-monitor-mutations-disabled-locally-managed",
+            return self._unmanaged_verdict(
+                plan, report, f"{base}:fallback-monitor-mutations-disabled"
             )
         if intent.avg_price is None or intent.avg_price <= 0:
-            return AsyncProtectionResult(
-                ProtectionState.DEGRADED,
-                report.observed_quantity,
-                f"{base}:fallback-entry-price-unavailable-locally-managed",
+            return self._unmanaged_verdict(
+                plan, report, f"{base}:fallback-entry-price-unavailable"
             )
         try:
             from fatty_trader.execution.bitget_fallback_protection import register_fallback
@@ -805,13 +801,33 @@ class AsyncBitgetExecution:
                 position_key=intent.client_oid,
             )
         except Exception as exc:
-            return AsyncProtectionResult(
-                ProtectionState.DEGRADED,
-                report.observed_quantity,
-                f"{base}:fallback-registration-failed:{type(exc).__name__}-locally-managed",
+            return self._unmanaged_verdict(
+                plan, report, f"{base}:fallback-registration-failed:{type(exc).__name__}"
             )
         return AsyncProtectionResult(
             ProtectionState.DEGRADED, report.observed_quantity, f"{base}-locally-managed"
+        )
+
+    def _unmanaged_verdict(
+        self, plan: ProtectionPlan, report: ProtectionReport, reason: str
+    ) -> AsyncProtectionResult:
+        """Degraded result for a fill that neither native nor local protection owns.
+
+        The ``-locally-managed`` marker is reserved for a durable fallback row:
+        recovery and the monitor treat the marker as ownership evidence, so emitting
+        it after a failed registration hides an unprotected position (LIVE
+        2026-10-19 WLDUSDT: no row was written, yet the dispatch read
+        ``locally-managed-protection``).  The failure stays durable on the
+        capability row instead.
+        """
+        self._persist_capability(
+            plan.symbol,
+            native_state=NativeProtectionState.FAILED,
+            last_error=reason,
+        )
+        self._degraded = True
+        return AsyncProtectionResult(
+            ProtectionState.DEGRADED, report.observed_quantity, reason
         )
 
     async def _fallback_identity(

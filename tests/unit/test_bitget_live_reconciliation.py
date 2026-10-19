@@ -198,6 +198,75 @@ def test_exact_native_confirmation_requires_all_provider_protection_fields() -> 
     assert report.reason is None
 
 
+def test_exact_native_confirmation_accepts_live_plans_when_position_ids_are_absent() -> None:
+    """LIVE 2026-10-19: Bitget left stopLossId/takeProfitId null while both plans were live."""
+
+    async def position() -> list[dict[str, str | None]]:
+        rows = _exact_position()
+        rows[0]["stopLossId"] = None
+        rows[0]["takeProfitId"] = None
+        return rows
+
+    async def plans() -> list[dict[str, str]]:
+        return _exact_plans()
+
+    report = asyncio.run(confirm_native_protection(position, plans, expectation=_expectation()))
+
+    assert report.state is ProtectionState.VENUE_PROTECTED
+    assert report.reason is None
+
+
+def test_position_level_plan_margin_echo_is_not_proof() -> None:
+    """The venue echoes account margin metadata on position plans (isolated account, "crossed")."""
+
+    async def position() -> list[dict[str, str | None]]:
+        rows = _exact_position()
+        rows[0]["stopLossId"] = None
+        rows[0]["takeProfitId"] = None
+        return rows
+
+    async def plans() -> list[dict[str, str]]:
+        rows = _exact_plans()
+        for row in rows:
+            row["marginMode"] = "crossed"
+            row["posMode"] = "one_way_mode"
+            row["posSide"] = "net"
+            row["side"] = "sell"
+            row["size"] = "0"
+        return rows
+
+    report = asyncio.run(confirm_native_protection(position, plans, expectation=_expectation()))
+
+    assert report.state is ProtectionState.VENUE_PROTECTED
+
+
+def test_partial_plan_keeps_strict_margin_mode_check() -> None:
+    async def position() -> list[dict[str, str | None]]:
+        rows = _exact_position()
+        rows[0]["stopLossId"] = None
+        rows[0]["takeProfitId"] = None
+        return rows
+
+    async def plans() -> list[dict[str, str]]:
+        rows = _exact_plans()
+        rows[0]["planType"] = "loss_plan"
+        rows[0]["size"] = "91"
+        rows[0]["marginMode"] = "crossed"
+        rows[1]["marginMode"] = "crossed"
+        return rows
+
+    report = asyncio.run(
+        confirm_native_protection(
+            position,
+            plans,
+            expectation=_expectation(stop_loss_size=Decimal("91")),
+        )
+    )
+
+    assert report.state is ProtectionState.DEGRADED
+    assert report.reason == "stop-loss-margin-mode-mismatch"
+
+
 def test_exact_native_confirmation_rejects_wrong_trigger_and_market_mode() -> None:
     async def position() -> list[dict[str, str]]:
         return _exact_position()
@@ -403,7 +472,6 @@ def test_partial_stop_does_not_claim_the_entire_position_is_protected():
     [
         ("orderType", "limit", "stop-loss-execute-mode-mismatch"),
         ("posMode", "hedge_mode", "stop-loss-position-mode-mismatch"),
-        ("marginMode", "crossed", "stop-loss-margin-mode-mismatch"),
     ],
 )
 def test_pending_metadata_cannot_contradict_native_exit_contract(field, value, reason):

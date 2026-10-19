@@ -376,6 +376,17 @@ def test_source_stop_modifies_exact_owned_sl_preserves_full_tp_and_rounds_tick()
     gateway.close()
 
 
+def test_source_stop_accepts_venue_margin_echo_on_position_level_plans() -> None:
+    """The venue echoes account margin metadata on pos plans; it is not a mismatch."""
+    gateway, client, store = stop_gateway()
+    for plan in client.plans:
+        plan["marginMode"] = "crossed"
+    move_stop(gateway)
+    assert any(name == "modify_position_stop_loss" for name, _ in client.calls)
+    assert store.get("management-sl").state == "reconciled"
+    gateway.close()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -385,7 +396,6 @@ def test_source_stop_modifies_exact_owned_sl_preserves_full_tp_and_rounds_tick()
         ("holdSide", "short"),
         ("symbol", "ETHUSDT"),
         ("posMode", "hedge_mode"),
-        ("marginMode", "crossed"),
         ("size", "0.01"),
         ("planStatus", "cancelled"),
         ("triggerPrice", "58000"),

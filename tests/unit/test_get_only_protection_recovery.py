@@ -123,6 +123,33 @@ async def test_new_pass_cannot_use_last_pass_owned_inventory_truth():
 
 
 @pytest.mark.asyncio
+async def test_locally_managed_position_does_not_veto_account_inventory():
+    from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
+
+    calls: list[tuple[str, str, Decimal, str]] = []
+
+    def locally_managed(symbol, direction, quantity, environment):
+        calls.append((symbol, direction, quantity, environment))
+        return symbol == "BTCUSDT" and direction == "LONG" and quantity == Decimal("2")
+
+    client = Reads()
+    reader = GetOnlyProtectionRecovery(
+        client,
+        SimpleNamespace(
+            inventory_issues=lambda env: [],
+            locally_managed_position=locally_managed,
+        ),
+        environment="DEMO",
+    )
+    reader.begin()
+
+    issues = await reader.inventory()
+
+    assert "provider-position-not-uniquely-owned-and-protected" not in issues
+    assert calls == [("BTCUSDT", "LONG", Decimal("2"), "DEMO")]
+
+
+@pytest.mark.asyncio
 async def test_current_canonical_quantity_must_equal_proven_owned_fills():
     from fatty_trader.execution.bitget_protection_recovery import GetOnlyProtectionRecovery
 

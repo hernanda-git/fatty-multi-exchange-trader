@@ -318,6 +318,34 @@ class PostgresBitgetDispatchRepository:
             connection.rollback()
             raise
 
+    def locally_managed_position(
+        self, symbol: str, direction: str, quantity: Decimal, environment: str
+    ) -> bool:
+        """Whether a durable close-capable fallback row owns this open position.
+
+        The local price lane closes such a position at the signal stop, so account
+        inventory readiness must not demand a native venue readback for it.  Only
+        rows with a proven provider epoch and environment are close-capable.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT EXISTS(
+                SELECT 1 FROM fallback_protection
+                WHERE exchange='bitget' AND symbol=%s AND direction=%s
+                  AND quantity >= %s AND state IN ('active', 'closing')
+                  AND environment=%s
+            )""",
+                (symbol, direction, quantity, environment),
+            )
+            managed = cursor.fetchone()[0]
+            connection.commit()
+            return bool(managed)
+        except Exception:
+            connection.rollback()
+            raise
+
     def unresolved_protection_issues(self) -> list[str]:
         """Durable account admission veto; independent of optional capability gate.
 

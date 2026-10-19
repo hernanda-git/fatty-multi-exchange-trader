@@ -163,7 +163,9 @@ class GetOnlyProtectionRecovery:
             side = sides.get(row.get("holdSide"))
             key = (row.get("symbol"), side, quantity)
             observed.append(key)
-            if verified.count(key) != 1:
+            if verified.count(key) != 1 and not self._locally_managed_position(
+                row.get("symbol"), side, quantity
+            ):
                 issues.append("provider-position-not-uniquely-owned-and-protected")
         for key in self._verified.values():
             if observed.count(key) != 1:
@@ -184,6 +186,31 @@ class GetOnlyProtectionRecovery:
         if any(intent.client_oid not in matched for intent in owned):
             issues.append("owned-pending-entry-inventory-mismatch")
         return tuple(sorted(set(issues)))
+
+    def _locally_managed_position(
+        self, symbol: Any, side: str | None, quantity: Decimal
+    ) -> bool:
+        """Whether a durable fallback row already owns this open position.
+
+        The F-9 exit policy routes positions whose venue stop cannot be confirmed to
+        the local price lane.  Such a position never enters ``_verified`` (there is
+        no native readback to promote it), so without this seam one locally managed
+        position would veto account inventory forever.  Fail closed: an unreadable
+        registry cannot adopt a position.
+        """
+        check = getattr(self._repository, "locally_managed_position", None)
+        if not callable(check):
+            return False
+        direction = {"buy": "LONG", "sell": "SHORT"}.get(side or "")
+        symbol_text = str(symbol or "").strip()
+        if direction is None or not symbol_text:
+            return False
+        try:
+            return bool(
+                check(symbol_text, direction, quantity, self._environment)
+            )
+        except Exception:
+            return False
 
     async def position_is_flat(self, symbol: str) -> bool:
         """Read-only: True only when the venue proves no open position for the symbol."""

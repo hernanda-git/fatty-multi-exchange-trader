@@ -260,7 +260,17 @@ def _verify_exact_leg(
         return f"{leg_name}-execute-mode-mismatch"
     if plan.get("posMode") is not None and str(plan["posMode"]).strip().lower() != "one_way_mode":
         return f"{leg_name}-position-mode-mismatch"
-    if plan.get("marginMode") is not None and str(plan["marginMode"]).strip().lower() != "isolated":
+    # A position-level plan (pos_loss/pos_profit, no explicit size) executes against
+    # the whole position; the venue echoes account-level margin metadata on that row
+    # and `place-pos-tpsl` has no marginMode request field (LIVE 2026-10-19: isolated
+    # account and position, plan echo "crossed").  The position row above is the
+    # margin authority.  Partial plans keep the strict check.
+    position_plan = expectation.position_level and expected_size is None
+    if (
+        not position_plan
+        and plan.get("marginMode") is not None
+        and str(plan["marginMode"]).strip().lower() != "isolated"
+    ):
         return f"{leg_name}-margin-mode-mismatch"
 
     if expectation.position_level and expected_size is None:
@@ -340,15 +350,26 @@ async def _confirm_exact_native_protection(
     tp_position_level = expectation.position_level and expectation.take_profit_size is None
     observed_sl_id = str(position.get("stopLossId") or "").strip() or None
     observed_tp_id = str(position.get("takeProfitId") or "").strip() or None
-    if sl_position_level and expectation.stop_loss is not None and observed_sl_id is None:
-        return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, "missing-stop-loss")
-    if tp_position_level and expectation.take_profit is not None and observed_tp_id is None:
-        return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, "missing-take-profit")
-    if sl_position_level and expected_sl_id is not None and observed_sl_id != expected_sl_id:
+    # Bitget can keep position-level plan IDs off the position row while the live
+    # pos_loss/pos_profit plans already exist (LIVE WLDUSDT 2026-10-19: both IDs
+    # null for hours, both plans live).  A null position ID is therefore not, by
+    # itself, missing protection; the pending-plan read below is the authority.
+    # An ID that is exposed must still agree with the placement response.
+    if (
+        sl_position_level
+        and expected_sl_id is not None
+        and observed_sl_id is not None
+        and observed_sl_id != expected_sl_id
+    ):
         return ProtectionReport(
             ProtectionState.DEGRADED, observed_quantity, "stop-loss-id-mismatch"
         )
-    if tp_position_level and expected_tp_id is not None and observed_tp_id != expected_tp_id:
+    if (
+        tp_position_level
+        and expected_tp_id is not None
+        and observed_tp_id is not None
+        and observed_tp_id != expected_tp_id
+    ):
         return ProtectionReport(
             ProtectionState.DEGRADED, observed_quantity, "take-profit-id-mismatch"
         )
@@ -377,6 +398,10 @@ async def _confirm_exact_native_protection(
             provider_order_id=sl_plan_id,
         )
         if stop_loss_plan is None:
+            if sl_position_level and observed_sl_id is None:
+                # No position ID and no live matching plan is the naked-position
+                # case the alert/readiness vocabulary expects.
+                reason = "missing-stop-loss"
             return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, reason)
         reason = _verify_exact_leg(
             stop_loss_plan,
@@ -398,6 +423,8 @@ async def _confirm_exact_native_protection(
             provider_order_id=tp_plan_id,
         )
         if take_profit_plan is None:
+            if tp_position_level and observed_tp_id is None:
+                reason = "missing-take-profit"
             return ProtectionReport(ProtectionState.DEGRADED, observed_quantity, reason)
         reason = _verify_exact_leg(
             take_profit_plan,
