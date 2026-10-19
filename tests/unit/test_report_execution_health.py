@@ -341,3 +341,60 @@ def test_codex_auth_failure_is_not_an_account_failure_or_admission_gate():
     assert "AUTH_FAILED" in text
     assert "HTTP 401" in text
     assert "provider account read failed" not in text
+
+
+def _provider_position(**overrides):
+    row = {
+        "symbol": "WLDUSDT",
+        "direction": "SHORT",
+        "qty": "10",
+        "entry_price": "0.5078",
+        "mark_price": "0.5031",
+        "unrealized_pl": "0.047",
+        "margin_used": "0.2539",
+        "leverage": "20",
+        "margin_mode": "isolated",
+        "liquidation_price": "0.52937847498",
+    }
+    row.update(overrides)
+    return row
+
+
+def _provider_sltp(**overrides):
+    row = {"has_sl": True, "has_tp": True, "native_sl": "0.5192", "native_tp": "0.4509"}
+    row.update(overrides)
+    return {"WLDUSDT": row}
+
+
+def _position_report(position):
+    return format_report(
+        [position],
+        [],
+        _provider_sltp(),
+        {},
+        [],
+        {"kill_switch": "INACTIVE", "active_kill_switches": []},
+        {
+            "equity": "9.17387227",
+            "available": "8.87297227",
+            "read_status": "OK",
+            "unrealized_pl": "0.047",
+        },
+        {"mode": "LIVE", "venue_mode": "LIVE", "execution_enabled": "1"},
+        {"status": "LIVE"},
+        {"status": "OK", "total": 1, "running": 1, "healthy": 1},
+    )
+
+
+def test_position_block_reports_pnl_at_each_protective_level():
+    text = _position_report(_provider_position())
+    assert "At SL" in text and "-0.114 USDT (Δ -0.161)" in text
+    assert "At TP" in text and "+0.569 USDT (Δ +0.522)" in text
+    assert "At liq" in text and "-0.2158 USDT (Δ -0.2628)" in text
+    assert "estimate from the venue uPnL slope" in text
+
+
+def test_position_block_omits_scenario_lines_when_slope_is_undefined():
+    text = _position_report(_provider_position(mark_price="0.5078"))
+    assert "USDT (Δ" not in text
+    assert "SL gap" in text

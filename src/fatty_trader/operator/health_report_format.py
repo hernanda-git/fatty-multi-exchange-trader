@@ -142,6 +142,42 @@ def _position_range_state(position: dict[str, Any], protection: dict[str, Any]) 
     return "BETWEEN SL / TP"
 
 
+def _signed_amount(value: Decimal) -> str:
+    text = f"{value:,.4f}".rstrip("0").rstrip(".")
+    return f"+{text}" if value > 0 else text
+
+
+def _scenario_lines(position: dict[str, Any], protection: dict[str, Any]) -> list[str]:
+    """Estimated PnL at each protective level, calibrated by the venue's own uPnL.
+
+    Provider quantities are contracts, not guaranteed to equal base units, so the
+    per-price slope comes from the venue uPnL instead of an assumed contract size.
+    No line is emitted when entry/mark/uPnL are unknown or mark equals entry.
+    """
+    entry = _decimal(position.get("entry_price"))
+    mark = _decimal(position.get("mark_price"))
+    upnl = _decimal(position.get("unrealized_pl"))
+    if entry is None or mark is None or upnl is None or mark == entry:
+        return []
+    slope = upnl / (mark - entry)
+    sl = protection.get("native_sl") if protection.get("has_sl") else protection.get("fallback_sl")
+    tp = protection.get("native_tp") if protection.get("has_tp") else protection.get("fallback_tp")
+    if isinstance(tp, str) and "," in tp:
+        tp = tp.split(",", 1)[0].strip()
+    lines: list[str] = []
+    for label, raw in (
+        ("At SL", sl),
+        ("At TP", tp),
+        ("At liq", position.get("liquidation_price")),
+    ):
+        level = _decimal(raw)
+        if level is None:
+            continue
+        pnl = slope * (level - entry)
+        lines.append(f"{label:<10} {_signed_amount(pnl)} USDT (Δ {_signed_amount(pnl - upnl)})")
+    return lines
+
+
 def _position_risk_lines(position: dict[str, Any], protection: dict[str, Any]) -> list[str]:
     mark = position.get("mark_price")
     liquidation = position.get("liquidation_price")
@@ -165,6 +201,7 @@ def _position_risk_lines(position: dict[str, Any], protection: dict[str, Any]) -
         lines.append(f"SL gap     {fmt_gap(mark, sl)}")
     if tp not in (None, "", "N/A"):
         lines.append(f"TP gap     {fmt_gap(mark, tp)}")
+    lines.extend(_scenario_lines(position, protection))
     return lines
 
 
@@ -551,6 +588,7 @@ def format_report(
         f"Fallback rows  {_html(metrics.get('fallback_positions', 'UNKNOWN'))} registered</pre>"
     )
     L.append("<i>Signals/analyzer output are not provider fills; triggers are not execution.</i>")
+    L.append("<i>At SL/TP/liq is an estimate from the venue uPnL slope; fees excluded.</i>")
     L.append("")
 
     # ── Risk controls ──────────────────────────────────────────────────
