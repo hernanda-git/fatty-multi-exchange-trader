@@ -22,9 +22,17 @@ def _management(connection, age, *, state="queued", claimed_close=False):
     )
     connection.execute(
         """INSERT INTO source_management_updates
-        (id,source_message_id,revision,symbol,action,state,updated_at)
-        VALUES (%s,%s,%s,'BTCUSDT','CLOSE',%s,%s)""",
-        (update_id, message_id, revision, state, observed),
+        (id,source_message_id,revision,symbol,action,state,updated_at,deadline_at)
+        VALUES (%s,%s,%s,'BTCUSDT','CLOSE',%s,%s,%s)""",
+        (
+            update_id,
+            message_id,
+            revision,
+            state,
+            observed,
+            # A parked instruction carries its retry deadline; a queued one has none.
+            observed if state == "reconciliation-pending" else None,
+        ),
     )
     if claimed_close:
         connection.execute(
