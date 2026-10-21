@@ -32,9 +32,7 @@ def _management(connection, age, *, state="queued", claimed_close=False):
             observed,
             # A parked instruction carries its retry deadline and is claimable again
             # once it passes; a queued one carries its execution budget.
-            observed
-            if state == "reconciliation-pending"
-            else observed + timedelta(minutes=30),
+            observed if state == "reconciliation-pending" else observed + timedelta(minutes=30),
         ),
     )
     if claimed_close:
