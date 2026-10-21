@@ -79,10 +79,24 @@ class PostgresSourceManagementStore:
             )
             cursor.execute(
                 """
+                UPDATE source_management_updates u SET state='failed',
+                    last_error='management-execution-budget-expired',
+                    updated_at=clock_timestamp()
+                WHERE u.state IN ('queued', 'claimed')
+                  AND u.deadline_at IS NOT NULL AND u.deadline_at <= now()
+                  AND NOT EXISTS (SELECT 1 FROM source_management_provider_intents p
+                      WHERE p.management_update_id=u.id)
+                  AND NOT EXISTS (SELECT 1 FROM live_order_intents i
+                      WHERE i.cancel_requested_by=u.id)
+                """
+            )
+            cursor.execute(
+                """
                 WITH candidate AS (
                   SELECT id FROM source_management_updates
                   WHERE state IN ('queued', 'claimed', 'reconciliation-pending')
-                    AND (deadline_at IS NULL OR deadline_at <= now())
+                    AND (state <> 'reconciliation-pending'
+                         OR deadline_at IS NULL OR deadline_at <= now())
                   ORDER BY updated_at, id FOR UPDATE SKIP LOCKED LIMIT 1
                 )
                 UPDATE source_management_updates u SET state = 'claimed', claimed_by = %s,

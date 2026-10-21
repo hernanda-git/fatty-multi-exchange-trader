@@ -30,8 +30,11 @@ def _management(connection, age, *, state="queued", claimed_close=False):
             revision,
             state,
             observed,
-            # A parked instruction carries its retry deadline; a queued one has none.
-            observed if state == "reconciliation-pending" else None,
+            # A parked instruction carries its retry deadline and is claimable again
+            # once it passes; a queued one carries its execution budget.
+            observed
+            if state == "reconciliation-pending"
+            else observed + timedelta(minutes=30),
         ),
     )
     if claimed_close:
@@ -81,3 +84,25 @@ def test_edited_revision_is_not_new_management_permission(postgres_schema):
         )
     store = PostgresSourceManagementStore(lambda: _connect(dsn, schema))
     assert not store.management_is_eligible(update_id)
+
+
+def test_an_instruction_past_its_execution_budget_is_retired_not_executed_late(
+    postgres_schema,
+):
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    with _connect(dsn, schema) as connection:
+        expired = _management(connection, timedelta(minutes=45))
+        fresh = _management(connection, timedelta(seconds=1))
+    store = PostgresSourceManagementStore(lambda: _connect(dsn, schema))
+
+    claimed = store.claim("source-management")
+
+    # The instruction whose budget is spent is retired, never executed late.
+    assert claimed.id == fresh
+    with _connect(dsn, schema) as connection:
+        state, error = connection.execute(
+            "SELECT state, last_error FROM source_management_updates WHERE id=%s", (expired,)
+        ).fetchone()
+    assert state == "failed"
+    assert error == "management-execution-budget-expired"
