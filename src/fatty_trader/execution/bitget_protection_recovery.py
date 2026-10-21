@@ -187,9 +187,7 @@ class GetOnlyProtectionRecovery:
             issues.append("owned-pending-entry-inventory-mismatch")
         return tuple(sorted(set(issues)))
 
-    def _locally_managed_position(
-        self, symbol: Any, side: str | None, quantity: Decimal
-    ) -> bool:
+    def _locally_managed_position(self, symbol: Any, side: str | None, quantity: Decimal) -> bool:
         """Whether a durable fallback row already owns this open position.
 
         The F-9 exit policy routes positions whose venue stop cannot be confirmed to
@@ -206,9 +204,7 @@ class GetOnlyProtectionRecovery:
         if direction is None or not symbol_text:
             return False
         try:
-            return bool(
-                check(symbol_text, direction, quantity, self._environment)
-            )
+            return bool(check(symbol_text, direction, quantity, self._environment))
         except Exception:
             return False
 

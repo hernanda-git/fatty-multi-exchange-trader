@@ -208,6 +208,12 @@ class LiveIntentStoreProtocol(Protocol):
     def record_fills(self, record: LiveIntentRecord, fills: tuple[dict[str, Any], ...]) -> None: ...
     def claim_split(self, market: LiveIntentRecord, limit: LiveIntentRecord) -> bool: ...
     def claim_protection(self, records: tuple[LiveIntentRecord, ...]) -> bool: ...
+    def protection_intent_by_provider_order_id(
+        self, exchange: str, provider_order_id: str
+    ) -> LiveIntentRecord | None: ...
+    def bind_native_close(
+        self, root_oid: str, close_oid: str, plan_oid: str, executed_order_id: str
+    ) -> None: ...
     def claim_entry_post(self, client_oid: str) -> bool: ...
     def pending_entries(
         self, symbol: str | None = None, management_id: UUID | None = None
@@ -326,6 +332,19 @@ class InMemoryLiveIntentStore:
             for r in self._records.values()
             if r.protection_root_oid == root_oid and r.role in {"SL", "TP"}
         )
+
+    def protection_intent_by_provider_order_id(
+        self, exchange: str, provider_order_id: str
+    ) -> LiveIntentRecord | None:
+        """Find the owned protection leg the venue issued this plan id for."""
+        for record in self._records.values():
+            if (
+                record.exchange == exchange
+                and record.provider_order_id == provider_order_id
+                and record.role in {"SL", "TP"}
+            ):
+                return replace(record)
+        return None
 
     def remaining_owned_quantity(self, root_oid: str) -> Decimal:
         root = self._records[root_oid]

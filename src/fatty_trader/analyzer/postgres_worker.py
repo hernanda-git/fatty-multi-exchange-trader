@@ -64,9 +64,7 @@ ON CONFLICT (dedup_key) DO NOTHING
 """
 
 
-def _enroll_management(
-    cursor: Any, message_uuid: Any, revision: str, management: Any
-) -> None:
+def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management: Any) -> None:
     """Durably enroll one deterministic management instruction.
 
     Migration 35 requires every non-terminal row to carry a deadline; an insert
@@ -361,9 +359,7 @@ def process_received_batch(
                             else parse_source_management(message.raw_text)
                         )
                         if fallback_management is not None:
-                            _enroll_management(
-                                cursor, message_uuid, revision, fallback_management
-                            )
+                            _enroll_management(cursor, message_uuid, revision, fallback_management)
                     # Never silent: one durable card per failed message revision.
                     with suppress(Exception):
                         cursor.execute(

@@ -64,6 +64,7 @@ class BitgetDispatchExecution:
             [LiveIntentRecord, ProtectionPlan], Awaitable[AsyncProtectionResult]
         ]
         | None = None,
+        native_close_resolver: Callable[[LiveIntentRecord], Awaitable[bool]] | None = None,
     ) -> None:
         self._execution = execution
         self._store = store
@@ -71,6 +72,7 @@ class BitgetDispatchExecution:
         self._dispatch_repository = dispatch_repository
         self._kill_switch = kill_switch
         self._recovery_protection = recovery_protection
+        self._native_close_resolver = native_close_resolver
         self.recovery_ready = False
         self.recovery_issues: tuple[str, ...] = ()
         self.console_cancel_claim: Callable[[str], bool] | None = None
@@ -127,6 +129,7 @@ class BitgetDispatchExecution:
                 intent = self._aggregate_split(intent, limit)
                 result = self._aggregate_result(intent)
                 await self._reconcile_post_fill(intent, result)
+            await self._resolve_native_close(intent)
             settlement = (
                 await self._closed_lifecycle_reason(intent, dispatch, reader)
                 if result.filled_qty > 0
@@ -229,6 +232,24 @@ class BitgetDispatchExecution:
         self.recovery_ready = not self.recovery_issues
         return count
 
+    async def _resolve_native_close(self, intent: LiveIntentRecord) -> bool:
+        """Bind a venue-executed native plan close to this entry lifecycle.
+
+        The venue runs a position TP/SL plan as its own order, so the close never
+        carries the intent's client order id and the ledger could not see it: the
+        lifecycle stayed open, the dispatch spun in recovery and realized P&L stayed
+        understated. The resolver is read-only against the venue and only writes the
+        owned close it can prove.
+        """
+        resolver = self._native_close_resolver
+        if resolver is None:
+            return False
+        try:
+            return bool(await resolver(intent))
+        except Exception:
+            # An unproven close never settles a lifecycle; the next cycle retries.
+            return False
+
     async def _closed_lifecycle_reason(
         self, intent: LiveIntentRecord, dispatch: BitgetDispatch, reader: Any
     ) -> str | None:
@@ -249,6 +270,7 @@ class BitgetDispatchExecution:
         records = [
             self._store.get(f"{intent.client_oid}-emergency"),
             self._store.get(f"{intent.client_oid}-close"),
+            self._store.get(f"{intent.client_oid}-native-close"),
         ]
         protection = getattr(self._store, "protection_intents", None)
         if callable(protection):

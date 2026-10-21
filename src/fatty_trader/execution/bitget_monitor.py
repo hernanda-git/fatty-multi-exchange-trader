@@ -22,7 +22,7 @@ from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
     reconcile_provider_exit,
 )
 from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
-from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_protection
+from fatty_trader.exchanges.bitget.reconciliation_live import confirm_native_stop_protection
 from fatty_trader.execution.async_storage import _run_sync_storage
 from fatty_trader.execution.protection import ProtectionReport, ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
@@ -38,9 +38,7 @@ _ALERT_ONLY_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-p
 #: still latched the next day while the venue read -28 ms). Durable divergences
 #: (reconciliation mismatches, kill-switch policy) are NOT in this set and never
 #: self-clear.
-_AUTO_RELEASABLE_KILL_SWITCH_REASONS = frozenset(
-    {"clock-skew-unavailable", "clock-skew-exceeded"}
-)
+_AUTO_RELEASABLE_KILL_SWITCH_REASONS = frozenset({"clock-skew-unavailable", "clock-skew-exceeded"})
 
 #: Audit reference recorded on an automatic release.
 _AUTO_RELEASE_REFERENCE = "auto:clock-check-recovered"
@@ -483,9 +481,10 @@ class BitgetMonitor:
             async def read_pending_plans(target: Any = symbol) -> Any:
                 return await self._client.get_pending_plan_orders(target)
 
-            report = await confirm_native_protection(
+            report = await confirm_native_stop_protection(
                 read_position,
                 read_pending_plans,
+                symbol=symbol,
                 expected_quantity=quantity,
             )
             if report.state is not ProtectionState.VENUE_PROTECTED:

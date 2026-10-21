@@ -514,6 +514,7 @@ def build_bitget_execution_runtime(
         dispatch_repository=dispatch_repository,
         kill_switch=PostgresReconciliationRepository(psycopg.connect),
         recovery_protection=recovery_reader,
+        native_close_resolver=_bitget_native_close_resolver(client, intent_store),
     )
     return BitgetExecutionRuntime(
         execution=execution,
@@ -522,6 +523,39 @@ def build_bitget_execution_runtime(
         ),
         client=client,
     )
+
+
+def _bitget_native_close_resolver(client: Any, store: Any) -> Any:
+    """Bind venue-executed native plan closes to the entry lifecycle that owns them.
+
+    The venue runs a position TP/SL plan as its own order; that order never carries
+    the intent's client order id, so without this step the close is invisible to the
+    ledger and the dispatch never settles.
+    """
+
+    async def resolve(intent: Any) -> bool:
+        from fatty_trader.exchanges.bitget.native_close import (
+            reconcile_native_plan_close,
+            resolve_native_plan_close,
+        )
+
+        owner = getattr(store, "protection_intent_by_provider_order_id", None)
+        if not callable(owner):
+            return False
+        native = await resolve_native_plan_close(
+            intent=intent,
+            read_fills=lambda symbol: client.get_fills(symbol),
+            read_order_detail=lambda symbol, order_id: client.get_order_detail(
+                symbol, order_id=order_id
+            ),
+            plan_owner=lambda client_oid: owner("bitget", client_oid),
+        )
+        if native is None:
+            return False
+        reconcile_native_plan_close(store, native)
+        return True
+
+    return resolve
 
 
 def _bitget_fallback_mutations_enabled(environ: Mapping[str, str]) -> bool:

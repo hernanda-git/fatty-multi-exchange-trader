@@ -29,6 +29,9 @@ class SourceManagementStore(Protocol):
     def claim(self, worker_id: str) -> SourceManagementUpdate | None: ...
     def get(self, update_id: UUID) -> SourceManagementUpdate: ...
     def update_state(self, update_id: UUID, state: str) -> None: ...
+    def alert_outcome(
+        self, update: SourceManagementUpdate, state: str, error: str | None = None
+    ) -> None: ...
     def park(
         self, update_id: UUID, *, error: str, retry_seconds: int, max_attempts: int
     ) -> str: ...
@@ -72,6 +75,7 @@ class InMemorySourceManagementStore:
         self._provider_intents: set[tuple[UUID, str]] = set()
         self.eligible = True
         self.claimed_cancellations: set[UUID] = set()
+        self.outcomes: list[tuple[str, str]] = []
 
     def claim(self, worker_id: str) -> SourceManagementUpdate | None:
         if not worker_id:
@@ -89,6 +93,12 @@ class InMemorySourceManagementStore:
     def update_state(self, update_id: UUID, state: str) -> None:
         update = self._updates.pop(update_id)
         self._updates[update_id] = replace(update, state=state)
+
+    def alert_outcome(
+        self, update: SourceManagementUpdate, state: str, error: str | None = None
+    ) -> None:
+        del error
+        self.outcomes.append((update.symbol, state))
 
     def park(self, update_id: UUID, *, error: str, retry_seconds: int, max_attempts: int) -> str:
         del error, retry_seconds
@@ -135,13 +145,20 @@ class SourceManagementExecutor:
         self._max_attempts = max(1, max_attempts)
         self._retry_seconds = max(0, retry_seconds)
 
+    def _finish(self, update: SourceManagementUpdate, state: str, error: str | None = None) -> None:
+        """Record a terminal outcome and make it visible to the operator."""
+        self._store.update_state(update.id, state)
+        alert = getattr(self._store, "alert_outcome", None)
+        if callable(alert):
+            alert(update, state, error)
+
     def run_once(self, worker_id: str) -> str:
         update = self._store.claim(worker_id)
         if update is None:
             return "idle"
         try:
             if not self._mutations_enabled:
-                self._store.update_state(update.id, "failed")
+                self._finish(update, "failed", "venue mutations are disabled")
                 return "mutations-disabled"
             sl_oid = f"source-management-{update.id.hex}-sl"
             if update.action in {
@@ -151,7 +168,7 @@ class SourceManagementExecutor:
                 # This is GET-only even when the position is now flat. Flat
                 # cannot prove which protection plan a previous POST changed.
                 self._gateway.reconcile_stop_loss(sl_oid)
-                self._store.update_state(update.id, "reconciled")
+                self._finish(update, "reconciled")
                 return "reconciled"
             if not self._store.management_is_eligible(update.id):
                 close_oid = f"source-management-{update.id.hex}-close"
@@ -196,14 +213,14 @@ class SourceManagementExecutor:
                         raise SourceManagementReconciliationPending(
                             "existing close intent requires execution reconciliation"
                         )
-                    self._store.update_state(update.id, "cancelled-flat")
+                    self._finish(update, "cancelled-flat")
                     return "cancelled-flat"
-                self._store.update_state(update.id, "failed")
+                self._finish(update, "failed", "no open position for this instruction")
                 return "failed"
             if update.action is ManagementAction.TP_BOOKED:
                 # A generic/later booking stops re-entry; it is not authority to
                 # invent an additional position allocation or claim a TP fill.
-                self._store.update_state(update.id, "entries-cancelled")
+                self._finish(update, "entries-cancelled")
                 return "entries-cancelled"
             position = self._one_position(update.symbol, positions)
             if update.action is ManagementAction.CLOSE:
@@ -238,7 +255,7 @@ class SourceManagementExecutor:
                 self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, sl_oid):
                     self._gateway.reconcile_stop_loss(sl_oid)
-                    self._store.update_state(update.id, "reconciled")
+                    self._finish(update, "reconciled")
                     return "reconciled"
                 self._gateway.replace_stop_loss(
                     symbol=update.symbol,
@@ -252,7 +269,7 @@ class SourceManagementExecutor:
                 self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, sl_oid):
                     self._gateway.reconcile_stop_loss(sl_oid)
-                    self._store.update_state(update.id, "reconciled")
+                    self._finish(update, "reconciled")
                     return "reconciled"
                 self._gateway.replace_stop_loss(
                     symbol=update.symbol,
@@ -270,10 +287,10 @@ class SourceManagementExecutor:
                 retry_seconds=self._retry_seconds,
                 max_attempts=self._max_attempts,
             )
-        except (ValueError, KeyError, TypeError):
-            self._store.update_state(update.id, "failed")
+        except (ValueError, KeyError, TypeError) as exc:
+            self._finish(update, "failed", str(exc) or type(exc).__name__)
             return "failed"
-        self._store.update_state(update.id, "reconciled")
+        self._finish(update, "reconciled")
         return "reconciled"
 
     def _retire_unreconcilable_close_claim(
@@ -298,7 +315,7 @@ class SourceManagementExecutor:
             return False
         if orders or not owned_entries_terminal:
             return False
-        self._store.update_state(update.id, "reconciled")
+        self._finish(update, "reconciled")
         return True
 
     def _require_eligible(self, update: SourceManagementUpdate) -> None:

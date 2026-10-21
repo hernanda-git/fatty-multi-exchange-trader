@@ -343,6 +343,32 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             connection.rollback()
             raise
 
+    def protection_intent_by_provider_order_id(
+        self, exchange: str, provider_order_id: str
+    ) -> LiveIntentRecord | None:
+        """Find the owned protection leg the venue issued this plan id for."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT client_order_id FROM live_order_intents
+                WHERE exchange = %s AND provider_order_id = %s AND role IN ('SL','TP')
+                ORDER BY created_at
+                LIMIT 1
+                """,
+                (exchange, provider_order_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            client_oid = str(row["client_order_id"] if isinstance(row, dict) else row[0])
+            return self._get_with_cursor(client_oid, cursor)
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
     def protection_intents(self, root_oid: str) -> tuple[LiveIntentRecord, ...]:
         connection = self._connection_factory()
         cursor = connection.cursor()

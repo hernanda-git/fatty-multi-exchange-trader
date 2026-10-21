@@ -441,6 +441,92 @@ async def _confirm_exact_native_protection(
     return ProtectionReport(ProtectionState.VENUE_PROTECTED, observed_quantity)
 
 
+async def confirm_native_stop_protection(
+    read_position: Callable[[], Awaitable[Any]],
+    read_pending_plans: Callable[[], Awaitable[Any]],
+    *,
+    symbol: str,
+    expected_quantity: Decimal,
+) -> ProtectionReport:
+    """Confirm a live stop from the venue's own plan list, without a position id.
+
+    The venue keeps position-level plan ids off the position row, so a reader that
+    trusts ``position.stopLossId`` reports ``missing-stop-loss`` for a position whose
+    stop is resting at the venue. The plan list is the authority for "is this position
+    protected", and it is the same source the entry path verifies against.
+
+    The monitor has no intended trigger price to compare against, so this confirms
+    the venue's own active stop for exactly this symbol, side and size. It never
+    invents a trigger and never claims a take-profit it cannot see.
+    """
+    try:
+        raw_position = await read_position()
+    except Exception:
+        return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-read-failed")
+    if not isinstance(raw_position, list) or not all(
+        isinstance(row, dict) and _positive_decimal(row, "total", "size", "quantity") is not None
+        for row in raw_position
+    ):
+        return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "provider-position-invalid")
+    expected_symbol = symbol.strip().upper()
+    open_positions = [
+        row
+        for row in raw_position
+        if (_positive_decimal(row, "total", "size", "quantity") or Decimal("0")) > 0
+        and str(row.get("symbol", "")).strip().upper() == expected_symbol
+    ]
+    if len(open_positions) != 1:
+        return ProtectionReport(ProtectionState.FAILED, Decimal("0"), "position-not-open")
+    position = open_positions[0]
+    observed_quantity = _positive_decimal(position, "total", "size", "quantity")
+    assert observed_quantity is not None
+    if str(position.get("marginMode", "")).strip().lower() != "isolated":
+        return ProtectionReport(
+            ProtectionState.DEGRADED, observed_quantity, "margin-mode-not-isolated"
+        )
+    if observed_quantity != expected_quantity:
+        return ProtectionReport(
+            ProtectionState.DEGRADED, observed_quantity, "position-quantity-mismatch"
+        )
+    hold_side = _canonical_hold_side(position.get("holdSide", position.get("side")))
+    try:
+        raw_plans = await read_pending_plans()
+    except Exception as exc:
+        return ProtectionReport(
+            ProtectionState.DEGRADED if "400172" in str(exc) else ProtectionState.FAILED,
+            observed_quantity,
+            "provider-plans-unavailable" if "400172" in str(exc) else "provider-plans-read-failed",
+        )
+    if not isinstance(raw_plans, list) or not all(isinstance(plan, dict) for plan in raw_plans):
+        return ProtectionReport(ProtectionState.FAILED, observed_quantity, "provider-plans-invalid")
+    stops = [
+        plan
+        for plan in raw_plans
+        if _plan_type(plan) == "pos_loss"
+        and str(plan.get("symbol", "")).strip().upper() == expected_symbol
+        and (hold_side is None or _plan_hold_side(plan) == hold_side)
+        and str(plan.get("planStatus", plan.get("status", ""))).strip().lower()
+        in _ACTIVE_PLAN_STATUSES
+    ]
+    if len(stops) != 1:
+        return ProtectionReport(
+            ProtectionState.DEGRADED,
+            observed_quantity,
+            "missing-stop-loss" if not stops else "stop-loss-plan-not-unique",
+        )
+    size = _parse_decimal(stops[0], "size", zero_if_empty=True)
+    if size is not None and size != Decimal("0") and size < observed_quantity:
+        return ProtectionReport(
+            ProtectionState.DEGRADED, observed_quantity, "stop-loss-size-does-not-cover-position"
+        )
+    trigger = _parse_decimal(stops[0], "stopLossTriggerPrice", "triggerPrice")
+    if trigger is None or trigger <= 0:
+        return ProtectionReport(
+            ProtectionState.DEGRADED, observed_quantity, "stop-loss-trigger-unreadable"
+        )
+    return ProtectionReport(ProtectionState.VENUE_PROTECTED, observed_quantity)
+
+
 async def confirm_native_protection(
     read_position: Callable[[], Awaitable[Any]],
     read_pending_plans: Callable[[], Awaitable[Any]],

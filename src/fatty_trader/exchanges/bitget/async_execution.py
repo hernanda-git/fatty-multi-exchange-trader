@@ -591,17 +591,16 @@ class AsyncBitgetExecution:
                     expectation=expectation,
                 )
                 return AsyncProtectionResult(report.state, report.observed_quantity, report.reason)
-            placement = await self._client.place_position_tpsl(
+            # The durable claim above already fences this placement: the legs exist
+            # before the POST, so a crash can never authorize a second plan.
+            placement = await self._place_protection_with_retry(
                 symbol=plan.symbol,
                 hold_side="buy" if plan.direction.value == "LONG" else "sell",
                 quantity=str(filled_quantity),
                 stop_loss=str(plan.stop_loss),
-                stop_loss_execute_price="0",
                 take_profit=str(take_profit) if take_profit is not None else None,
-                take_profit_execute_price="0" if take_profit is not None else None,
                 stop_loss_client_oid=stop_loss_client_oid,
                 take_profit_client_oid=take_profit_client_oid,
-                omit_market_execute_prices=True,
             )
             if not isinstance(placement, list) or not all(
                 isinstance(row, dict) for row in placement
@@ -781,9 +780,7 @@ class AsyncBitgetExecution:
                 plan, report, f"{base}:fallback-monitor-mutations-disabled"
             )
         if intent.avg_price is None or intent.avg_price <= 0:
-            return self._unmanaged_verdict(
-                plan, report, f"{base}:fallback-entry-price-unavailable"
-            )
+            return self._unmanaged_verdict(plan, report, f"{base}:fallback-entry-price-unavailable")
         try:
             from fatty_trader.execution.bitget_fallback_protection import register_fallback
 
@@ -826,9 +823,7 @@ class AsyncBitgetExecution:
             last_error=reason,
         )
         self._degraded = True
-        return AsyncProtectionResult(
-            ProtectionState.DEGRADED, report.observed_quantity, reason
-        )
+        return AsyncProtectionResult(ProtectionState.DEGRADED, report.observed_quantity, reason)
 
     async def _fallback_identity(
         self, intent: LiveIntentRecord, plan: ProtectionPlan, store: LiveIntentStoreProtocol
@@ -945,6 +940,52 @@ class AsyncBitgetExecution:
                 last_stream_at=current.last_stream_at if current is not None else None,
             )
         )
+
+    async def _place_protection_with_retry(
+        self,
+        *,
+        symbol: str,
+        hold_side: str,
+        quantity: str,
+        stop_loss: str,
+        take_profit: str | None,
+        stop_loss_client_oid: str,
+        take_profit_client_oid: str | None,
+    ) -> Any:
+        """Place the venue plan, retrying a transient failure inside one claim.
+
+        A position TP/SL plan is venue-held and replaced by the next placement for
+        the same position, so a retry cannot duplicate a stop. The durable claim is
+        held across every attempt, so no other actor can place the same plan.
+        Parameter rejections are never retried.
+        """
+        attempts = 3
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return await self._client.place_position_tpsl(
+                    symbol=symbol,
+                    hold_side=hold_side,
+                    quantity=quantity,
+                    stop_loss=stop_loss,
+                    stop_loss_execute_price="0",
+                    take_profit=take_profit,
+                    take_profit_execute_price="0" if take_profit is not None else None,
+                    stop_loss_client_oid=stop_loss_client_oid,
+                    take_profit_client_oid=take_profit_client_oid,
+                    omit_market_execute_prices=True,
+                )
+            except BitgetApiError as exc:
+                last_error = exc
+                if exc.code == "43011" or "43011" in str(exc):
+                    # A parameter rejection is a decision, not a transient failure.
+                    break
+            except Exception as exc:
+                last_error = exc
+            if attempt + 1 < attempts:
+                await asyncio.sleep(1.0)
+        assert last_error is not None
+        raise last_error
 
     async def _await_native_protection(
         self,

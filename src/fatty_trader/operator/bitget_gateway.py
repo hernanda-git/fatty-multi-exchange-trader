@@ -463,9 +463,7 @@ class BitgetOperatorGateway:
                 environment=getattr(self._client, "environment", None),
             )
         except Exception as exc:  # noqa: BLE001 - the retry repeats only GET readbacks
-            raise SourceManagementReconciliationPending(
-                "local lane level sync failed"
-            ) from exc
+            raise SourceManagementReconciliationPending("local lane level sync failed") from exc
 
     def reconcile_stop_loss(self, client_oid: str) -> None:
         """Recover a previous management claim using GET evidence only."""

@@ -109,12 +109,10 @@ def test_genuine_sql_failure_rolls_back_only_bad_message_and_siblings_commit_onc
         assert conn.execute("SELECT count(*) FROM dispatches").fetchone() == (4,)
         assert conn.execute("SELECT count(*) FROM notifications_outbox").fetchone() == (3,)
         assert conn.execute(
-            "SELECT count(*) FROM notifications_outbox "
-            "WHERE payload->>'kind'='signal-analysis'"
+            "SELECT count(*) FROM notifications_outbox WHERE payload->>'kind'='signal-analysis'"
         ).fetchone() == (2,)
         assert conn.execute(
-            "SELECT count(*) FROM notifications_outbox "
-            "WHERE payload->>'kind'='system-event'"
+            "SELECT count(*) FROM notifications_outbox WHERE payload->>'kind'='system-event'"
         ).fetchone() == (1,)
         assert conn.execute(
             "SELECT count(*) FROM canonical_signals s JOIN telegram_messages m ON "

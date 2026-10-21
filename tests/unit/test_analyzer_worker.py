@@ -386,9 +386,7 @@ def test_management_enrollment_failure_is_durable_and_alerted() -> None:
 
     assert processed == 1
     failed = [
-        params
-        for statement, params in cursor.executed
-        if "intake_state='FAILED'" in statement
+        params for statement, params in cursor.executed if "intake_state='FAILED'" in statement
     ]
     assert len(failed) == 1
     values = cast(tuple[Any, ...], failed[0])

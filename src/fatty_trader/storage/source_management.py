@@ -30,6 +30,31 @@ def _dead_letter_payload(update_id: UUID, attempts: int, error: str) -> str:
     )
 
 
+def _outcome_payload(update: SourceManagementUpdate, state: str, error: str | None = None) -> str:
+    """One operator-visible outcome for a manual management instruction.
+
+    A manual instruction is only trustworthy when its result is visible: the
+    operator must be able to see that the venue closed the position, moved the
+    stop, or refused the request, without reading the database.
+    """
+    action = getattr(update.action, "value", update.action)
+    message = f"{update.symbol} {action} → {state}"
+    if error:
+        message = f"{message} ({error[:160]})"
+    return json.dumps(
+        {
+            "kind": "system-event",
+            "update_id": str(update.id),
+            "symbol": update.symbol,
+            "action": str(action),
+            "state": state,
+            "error": (error or "")[:200],
+            "message": message,
+        },
+        sort_keys=True,
+    )
+
+
 class PostgresSourceManagementStore:
     def __init__(self, connection_factory: Callable[[], Any]) -> None:
         self._connection_factory = connection_factory
@@ -57,6 +82,7 @@ class PostgresSourceManagementStore:
                 WITH candidate AS (
                   SELECT id FROM source_management_updates
                   WHERE state IN ('queued', 'claimed', 'reconciliation-pending')
+                    AND (deadline_at IS NULL OR deadline_at <= now())
                   ORDER BY updated_at, id FOR UPDATE SKIP LOCKED LIMIT 1
                 )
                 UPDATE source_management_updates u SET state = 'claimed', claimed_by = %s,
@@ -134,6 +160,25 @@ class PostgresSourceManagementStore:
                 """UPDATE source_management_updates SET state = %s, updated_at = CURRENT_TIMESTAMP
                    WHERE id = %s""",
                 (state, update_id),
+            )
+            connection.commit()
+
+    def alert_outcome(
+        self, update: SourceManagementUpdate, state: str, error: str | None = None
+    ) -> None:
+        """Tell the operator how a manual management instruction ended."""
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO notifications_outbox (id, dedup_key, payload)
+                VALUES (%s, %s, %s::jsonb)
+                ON CONFLICT (dedup_key) DO NOTHING
+                """,
+                (
+                    uuid4(),
+                    f"source-update-outcome:{update.id}",
+                    _outcome_payload(update, state, error),
+                ),
             )
             connection.commit()
 
