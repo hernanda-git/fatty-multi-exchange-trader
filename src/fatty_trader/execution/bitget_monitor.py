@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
 from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
+from fatty_trader.exchanges.bitget.native_close import bind_native_plan_close_from_fill
 from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
     ProviderFillReconciliationError,
     reconcile_provider_exit,
@@ -28,6 +29,8 @@ from fatty_trader.execution.protection import ProtectionReport, ProtectionState
 from fatty_trader.storage.reconciliation import ReconciliationRepository
 
 _ALERT_ONLY_PROTECTION_REASONS = frozenset({"missing-stop-loss", "missing-take-profit"})
+# How far back a venue fill is still worth resolving against our own plans.
+_NATIVE_CLOSE_LOOKBACK_SECONDS = 900
 
 #: Latch reasons that describe a *transient* condition and are therefore released
 #: automatically once the check passes again.
@@ -75,7 +78,9 @@ class BitgetMonitorClient(Protocol):
     async def get_pending_orders(self) -> Any: ...
     async def get_pending_plan_orders(self, symbol: str) -> Any: ...
     async def get_single_position(self, symbol: str) -> Any: ...
-    async def get_order_detail(self, symbol: str, *, client_oid: str) -> Any: ...
+    async def get_order_detail(
+        self, symbol: str, *, client_oid: str | None = None, order_id: str | None = None
+    ) -> Any: ...
     async def get_fills(self, symbol: str | None = None) -> Any: ...
     async def get_clock_skew_ms(self) -> int: ...
 
@@ -416,6 +421,11 @@ class BitgetMonitor:
             return 0
         reconciled = 0
         for fill in raw_fills:
+            if await self._bind_native_plan_close(fill):
+                # This fill is our own protection plan executing. It belongs to the
+                # entry that owns the plan, not to the generic provider-exit path.
+                reconciled += 1
+                continue
             if not _looks_like_external_exit(fill):
                 continue
             try:
@@ -426,6 +436,36 @@ class BitgetMonitor:
             if result.created:
                 reconciled += 1
         return reconciled
+
+    async def _bind_native_plan_close(self, fill: Mapping[str, Any]) -> bool:
+        """Bind a venue fill that executed one of our own protection plans.
+
+        The venue fill carries no client order id, so the executed order is read
+        once: its client order id is the provider id the venue issued for our
+        plan. Only recent fills are examined, so a cycle never reads the whole
+        venue history.
+        """
+        store = self._live_intent_store
+        if store is None:
+            return False
+        owner = getattr(store, "protection_intent_by_provider_order_id", None)
+        if not callable(owner):
+            return False
+        if not _is_recent_fill(fill, _NATIVE_CLOSE_LOOKBACK_SECONDS):
+            return False
+        try:
+            return bool(
+                await bind_native_plan_close_from_fill(
+                    store=store,
+                    fill=fill,
+                    read_order_detail=lambda symbol, order_id: self._client.get_order_detail(
+                        symbol, order_id=order_id
+                    ),
+                    plan_owner=lambda client_oid: owner(self._scope, client_oid),
+                )
+            )
+        except Exception:
+            return False
 
     async def _read_rows(
         self,
@@ -605,3 +645,19 @@ def _looks_like_external_exit(fill: dict[str, Any]) -> bool:
     trade_side = str(fill.get("tradeSide", "")).strip().lower()
     reduce_only = str(fill.get("reduceOnly", "")).strip().upper()
     return source == "SYS" or trade_side.startswith("burst_") or reduce_only in {"YES", "TRUE"}
+
+
+def _is_recent_fill(fill: Mapping[str, Any], lookback_seconds: int) -> bool:
+    """Whether a venue fill is recent enough to be worth resolving against our plans."""
+    raw = fill.get("cTime", fill.get("fillTime", fill.get("uTime")))
+    if raw is None:
+        return False
+    try:
+        stamp = int(str(raw))
+    except (TypeError, ValueError):
+        return False
+    if stamp > 10_000_000_000:
+        stamp //= 1000
+    if stamp <= 0:
+        return False
+    return (datetime.now(UTC).timestamp() - stamp) <= lookback_seconds

@@ -229,6 +229,63 @@ async def resolve_native_plan_close(
     return None
 
 
+async def bind_native_plan_close_from_fill(
+    *,
+    store: LiveIntentStoreProtocol,
+    fill: Any,
+    read_order_detail: Callable[[str, str], Awaitable[Any]],
+    plan_owner: Callable[[str], LiveIntentRecord | None],
+) -> bool:
+    """Bind one venue fill that executed one of our own protection plans.
+
+    The venue fill carries no client order id, so ownership is proven by reading
+    the executed order: its client order id is the provider id the venue issued
+    for our plan. A fill that belongs to another actor is left untouched for the
+    provider-exit reconciler.
+    """
+    try:
+        facts = normalize_plan_close_fill(fill)
+    except NativeCloseResolutionError:
+        return False
+    try:
+        detail = await read_order_detail(facts["symbol"], facts["provider_order_id"])
+    except Exception:
+        return False
+    client_oid = _order_client_oid(detail)
+    if client_oid is None:
+        return False
+    plan = plan_owner(client_oid)
+    if plan is None or plan.role not in {"SL", "TP"}:
+        return False
+    root_oid = plan.protection_root_oid
+    if root_oid is None:
+        return False
+    root = store.get(root_oid)
+    if root is None or root.role != "ENTRY":
+        return False
+    if plan.provider_order_id != client_oid:
+        return False
+    if plan.symbol.strip().upper() != root.symbol.strip().upper():
+        return False
+    native = NativePlanClose(
+        exchange=root.exchange,
+        symbol=root.symbol.strip().upper(),
+        side=facts["side"],
+        root_oid=root.client_oid,
+        plan_oid=plan.client_oid,
+        close_oid=f"{root.client_oid}-native-close",
+        executed_order_id=facts["provider_order_id"],
+        provider_fill_id=facts["provider_fill_id"],
+        quantity=facts["quantity"],
+        price=facts["price"],
+        fee=facts["fee"],
+        realized_pnl=facts["realized_pnl"],
+        payload=facts["payload"],
+    )
+    reconcile_native_plan_close(store, native)
+    return True
+
+
 def reconcile_native_plan_close(
     store: LiveIntentStoreProtocol,
     native: NativePlanClose,
