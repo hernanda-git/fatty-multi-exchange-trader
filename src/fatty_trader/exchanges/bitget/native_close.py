@@ -330,6 +330,7 @@ def reconcile_native_plan_close(
             merged = replace(
                 existing,
                 state="filled",
+                requested_qty=existing.requested_qty + native.quantity,
                 filled_qty=existing.filled_qty + native.quantity,
                 provider_fill_ids=(*existing.provider_fill_ids, native.provider_fill_id),
                 provider_fills=(*existing.provider_fills, native.payload),

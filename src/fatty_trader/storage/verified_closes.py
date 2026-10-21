@@ -11,7 +11,10 @@ if TYPE_CHECKING:
 
 from fatty_trader.exchanges.bitget.live import normalize_fill
 from fatty_trader.execution.async_storage import _run_sync_storage
-from fatty_trader.storage.balance_reservations import PostgresBitgetMarginReservationRepository
+from fatty_trader.storage.balance_reservations import (
+    CLOSING_TRADE_SIDES,
+    PostgresBitgetMarginReservationRepository,
+)
 
 
 class VerifiedCloseClient(Protocol):
@@ -160,7 +163,21 @@ class PostgresVerifiedCloseLifecycle:
                 raw = raw.get("fillList")
             if not isinstance(raw, list) or not all(isinstance(f, dict) for f in raw):
                 continue
-            matches = [f for f in raw if f.get("clientOid") == close_oid]
+            # A venue-executed TP/SL plan closes through the venue's own order, and
+            # that fill carries no client order id at all: the executed order id is
+            # the only link, and the close intent records it.  A fill that does name
+            # a client order id must name ours, so a fill belonging to another
+            # client order is never treated as our close.
+            provider_order_id = str(record.provider_order_id or "")
+            matches: list[dict[str, Any]] = []
+            for fill in raw:
+                client_oid = fill.get("clientOid")
+                if client_oid is not None:
+                    if client_oid == close_oid:
+                        matches.append(fill)
+                    continue
+                if provider_order_id and str(fill.get("orderId", "")) == provider_order_id:
+                    matches.append(fill)
             if not matches:
                 continue
             evidence = []
@@ -206,7 +223,7 @@ class PostgresVerifiedCloseLifecycle:
                     if (
                         item["symbol"] != symbol
                         or item["side"] != record.side
-                        or item["trade_side"] != "close"
+                        or item["trade_side"] not in CLOSING_TRADE_SIDES
                         or not item["provider_fill_id"]
                         or str(item["provider_fill_id"]).startswith("status-derived:")
                         or not item["provider_order_id"]

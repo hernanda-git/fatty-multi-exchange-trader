@@ -11,6 +11,20 @@ from uuid import UUID, uuid4
 
 from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL, expire_source_dispatch
 
+# Bitget reports a one-way-mode fill as buy_single/sell_single; only a hedge-mode
+# close carries the literal "close".  The executed order id is the ownership proof
+# and the close intent's own side carries the direction, so every reducing fill
+# shape the venue can report is accepted.
+CLOSING_TRADE_SIDES = frozenset(
+    {
+        "close",
+        "buy_single",
+        "sell_single",
+        "burst_buy_single",
+        "burst_sell_single",
+    }
+)
+
 
 class Cursor(Protocol):
     def execute(self, statement: str, params: tuple[Any, ...] = ()) -> object: ...
@@ -383,7 +397,7 @@ class PostgresBitgetMarginReservationRepository:
                     or supplied.get("provider_order_id") != close_intent[7]
                     or supplied.get("symbol") != symbol
                     or supplied.get("side") != close_intent[2]
-                    or supplied.get("trade_side") != "close"
+                    or supplied.get("trade_side") not in CLOSING_TRADE_SIDES
                     or any(
                         not isinstance(supplied.get(k), Decimal)
                         or not supplied[k].is_finite()

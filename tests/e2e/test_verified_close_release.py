@@ -538,3 +538,59 @@ def test_other_contradictory_bound_exit_vetoes_release_and_new_close(postgres_sc
             (new_oid,),
         ).fetchone() == (0,)
         assert connection.execute("SELECT * FROM fills ORDER BY id").fetchall() == before
+
+
+@pytest.mark.asyncio
+async def test_venue_plan_close_without_a_client_oid_releases_the_reservation(postgres_schema):
+    """A venue-executed TP/SL plan closes through the venue's own order.
+
+    Its fill carries the executed order id instead of our client order id, and a
+    one-way-mode venue reports the trade side as ``sell_single`` rather than
+    ``close``.  The release path must recognise both, or the symbol stays owned
+    after every trade and every later signal for it is refused.
+    """
+    dsn, schema = postgres_schema
+    _migrate(dsn, schema)
+    repository, admission, evidence = owned_close(dsn, schema)
+    close_oid = evidence["close_client_order_id"]
+
+    from fatty_trader.storage.live_intents import PostgresLiveIntentStore
+
+    store = PostgresLiveIntentStore(lambda: _connect(dsn, schema))
+
+    class PlanCloseVenue:
+        environment = evidence["environment"]
+
+        async def get_fills(self, symbol=None):
+            return {
+                "fillList": [
+                    {
+                        "tradeId": "real-close-fill",
+                        "orderId": "close-order",
+                        "symbol": "BTCUSDT",
+                        "side": "sell",
+                        "tradeSide": "sell_single",
+                        "baseVolume": "1",
+                        "price": "100",
+                        "feeDetail": [{"feeCoin": "USDT", "totalFee": "-0.1"}],
+                        "profit": "2",
+                    }
+                ],
+                "endId": "real-close-fill",
+            }
+
+        async def get_all_positions(self):
+            return [{"symbol": "BTCUSDT", "holdSide": "long", "total": "0"}]
+
+    await store.verified_close_lifecycle.reconcile(PlanCloseVenue())
+
+    with _connect(dsn, schema) as c:
+        assert c.execute(
+            "SELECT state,resolution_reason FROM bitget_margin_reservations WHERE id=%s",
+            (admission.reservation_id,),
+        ).fetchone() == ("released", f"verified-close:{close_oid}")
+        assert c.execute(
+            "SELECT state,filled_qty,provider_fill_ids FROM live_order_intents "
+            "WHERE client_order_id=%s",
+            (close_oid,),
+        ).fetchone() == ("filled", Decimal(1), ["real-close-fill"])
