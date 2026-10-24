@@ -224,7 +224,7 @@ class LiveIntentStoreProtocol(Protocol):
         self, symbol: str, root_oid: str, stop: Decimal, management_id: str
     ) -> None: ...
     def remaining_owned_quantity(self, root_oid: str) -> Decimal: ...
-
+    def symbol_close_intents(self, symbol: str) -> tuple[LiveIntentRecord, ...]: ...
 
 class InMemoryLiveIntentStore:
     """In-memory intent store (tests / wiring seam for a durable backend)."""
@@ -262,6 +262,15 @@ class InMemoryLiveIntentStore:
     def get(self, client_oid: str) -> LiveIntentRecord | None:
         record = self._records.get(client_oid)
         return replace(record) if record is not None else None
+
+    def symbol_close_intents(self, symbol: str) -> tuple[LiveIntentRecord, ...]:
+        return tuple(
+            replace(record)
+            for record in self._records.values()
+            if record.symbol == symbol
+            and record.role in {"CLOSE", "EMERGENCY_CLOSE"}
+            and record.state in {"filled", "reconciled"}
+        )
 
     def claim_split(self, market: LiveIntentRecord, limit: LiveIntentRecord) -> bool:
         if market.client_oid in self._records:

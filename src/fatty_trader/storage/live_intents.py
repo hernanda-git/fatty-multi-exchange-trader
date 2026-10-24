@@ -662,28 +662,9 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             if callable(close):
                 close()
 
-    def _get_with_cursor(self, client_oid: str, cursor: Cursor) -> LiveIntentRecord | None:
-        cursor.execute(
-            """
-            SELECT exchange, client_order_id, symbol, side, role, state,
-                   requested_qty, filled_qty, filled_price, fee, provider_order_id,
-                   provider_fill_ids, leverage, planned_margin_usdt, planned_notional_usdt,
-                   margin_mode, balance_snapshot_id, margin_reservation_id,
-                   planned_stop_loss, planned_take_profits, dispatch_id, entry_leg,
-                   order_type, limit_price, cancel_requested_by, provider_terminal,
-                   cancel_post_claimed, active_stop_loss_price, stop_mutation_root_oid,
-                   stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price
-            FROM live_order_intents
-            WHERE client_order_id = %s
-            """,
-            (client_oid,),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return None
+    @staticmethod
+    def _record_from_row(row: Any) -> LiveIntentRecord:
         values = list(row.values()) if isinstance(row, dict) else list(row)
-        # Preserve compatibility with legacy row fakes and pre-admission snapshots;
-        # production SELECTs include all admission columns.
         values.extend([None] * (32 - len(values)))
         raw_fill_ids = values[11] or []
         if isinstance(raw_fill_ids, str):
@@ -729,6 +710,57 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             protection_root_oid=values[30],
             active_take_profit_price=Decimal(str(values[31])) if values[31] is not None else None,
         )
+
+    def _get_with_cursor(self, client_oid: str, cursor: Cursor) -> LiveIntentRecord | None:
+        cursor.execute(
+            """
+            SELECT exchange, client_order_id, symbol, side, role, state,
+                   requested_qty, filled_qty, filled_price, fee, provider_order_id,
+                   provider_fill_ids, leverage, planned_margin_usdt, planned_notional_usdt,
+                   margin_mode, balance_snapshot_id, margin_reservation_id,
+                   planned_stop_loss, planned_take_profits, dispatch_id, entry_leg,
+                   order_type, limit_price, cancel_requested_by, provider_terminal,
+                   cancel_post_claimed, active_stop_loss_price, stop_mutation_root_oid,
+                   stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price
+            FROM live_order_intents
+            WHERE client_order_id = %s
+            """,
+            (client_oid,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._record_from_row(row)
+
+    def symbol_close_intents(self, symbol: str) -> tuple[LiveIntentRecord, ...]:
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT exchange, client_order_id, symbol, side, role, state,
+                       requested_qty, filled_qty, filled_price, fee, provider_order_id,
+                       provider_fill_ids, leverage, planned_margin_usdt, planned_notional_usdt,
+                       margin_mode, balance_snapshot_id, margin_reservation_id,
+                       planned_stop_loss, planned_take_profits, dispatch_id, entry_leg,
+                       order_type, limit_price, cancel_requested_by, provider_terminal,
+                       cancel_post_claimed, active_stop_loss_price, stop_mutation_root_oid,
+                       stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price
+                FROM live_order_intents
+                WHERE exchange = 'bitget' AND symbol = %s
+                  AND role IN ('CLOSE', 'EMERGENCY_CLOSE')
+                  AND state IN ('filled', 'reconciled')
+                """,
+                (symbol,),
+            )
+            records = []
+            while (row := cursor.fetchone()) is not None:
+                records.append(self._record_from_row(row))
+            return tuple(records)
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
 
     def update(self, record: LiveIntentRecord) -> None:
         connection = self._connection_factory()

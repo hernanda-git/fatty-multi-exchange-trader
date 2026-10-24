@@ -275,6 +275,9 @@ class BitgetDispatchExecution:
         protection = getattr(self._store, "protection_intents", None)
         if callable(protection):
             records.extend(protection(intent.client_oid))
+        symbol_closes = getattr(self._store, "symbol_close_intents", None)
+        if callable(symbol_closes):
+            records.extend(symbol_closes(intent.symbol))
         moved = sum((record.filled_qty for record in records if record is not None), Decimal("0"))
         if moved < intent.filled_qty:
             return None

@@ -271,6 +271,7 @@ class BitgetOperatorGateway:
         if self.get_positions(symbol):
             return {"closed": symbol, "state": "reconciliation-pending"}
         intent.state = "reconciled"
+        intent.filled_qty = position["size"]
         self._intent_store.update(intent)
         return {"closed": symbol, "state": "closed"}
 

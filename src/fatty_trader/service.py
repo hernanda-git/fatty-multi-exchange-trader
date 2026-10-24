@@ -853,8 +853,36 @@ def _bitget_dispatch_preflight(
             or decision.margin_usdt is None
             or decision.notional_usdt is None
         ):
-            raise ValueError(f"Bitget live sizing rejected: {decision.reason}")
-        entry_route = routed(decision.quantity)
+            if split:
+                fallback_decision = plan_live_position(
+                    LiveSizingInput(
+                        meta=metadata,
+                        risk=risk,
+                        available_usdt=available_balance,
+                        desired_leverage=requested_leverage or desired_leverage,
+                        entry=normalized_entry,
+                        direction=Direction(dispatch.direction),
+                        active_positions=active_positions,
+                        stop_loss=planned_stop,
+                        split_market_price=None,
+                        split_limit_price=None,
+                    )
+                )
+                if fallback_decision.accepted and fallback_decision.quantity is not None:
+                    decision = fallback_decision
+                    split = False
+            if (
+                not decision.accepted
+                or decision.quantity is None
+                or decision.leverage is None
+                or decision.margin_usdt is None
+                or decision.notional_usdt is None
+            ):
+                raise ValueError(f"Bitget live sizing rejected: {decision.reason}")
+        if not split:
+            entry_route = EntryRoute(EntryMode.FULL_MARKET, decision.quantity, Decimal("0"), None)
+        else:
+            entry_route = routed(decision.quantity)
         if entry_route.limit_quantity > 0:
             for quantity, price, maximum in (
                 (
@@ -983,23 +1011,30 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                 await runtime.execution.recover_entry_lifecycles()  # type: ignore[attr-defined]
                 if runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
                     issues = runtime.execution.recovery_issues  # type: ignore[attr-defined]
-                    print(
-                        "service=dispatcher-bitget state=recovery-blocked "
-                        f"issues={','.join(issues) or 'unconfirmed'}",
-                        flush=True,
-                    )
-                    alert_blocked = getattr(runtime.execution, "alert_recovery_blocked", None)
-                    if callable(alert_blocked):
-                        # One owner alert per distinct issue set; a blocked lane used to
-                        # be visible only in container logs.
-                        alert_blocked()
-                    # A blocked lane is a live worker making progress; without this the
-                    # health file ages past WORKER_HEALTH_MAX_AGE_SECONDS and the
-                    # container reports a false `runtime-progress` failure.  The blocked
-                    # issue set stays visible through the log line and the owner alert.
-                    worker_progress()
-                    await asyncio.sleep(interval)
-                    continue
+                    blocking_issues = [
+                        issue
+                        for issue in issues
+                        if not issue.endswith("owned-flat-close-fill-unproven")
+                        and not issue.startswith("recovery-closed")
+                    ]
+                    if blocking_issues:
+                        print(
+                            "service=dispatcher-bitget state=recovery-blocked "
+                            f"issues={','.join(blocking_issues)}",
+                            flush=True,
+                        )
+                        alert_blocked = getattr(runtime.execution, "alert_recovery_blocked", None)
+                        if callable(alert_blocked):
+                            alert_blocked()
+                        worker_progress()
+                        await asyncio.sleep(interval)
+                        continue
+                    elif issues:
+                        print(
+                            "service=dispatcher-bitget state=recovery-warning "
+                            f"issues={','.join(issues)}",
+                            flush=True,
+                        )
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
             worker_progress()
             print(
