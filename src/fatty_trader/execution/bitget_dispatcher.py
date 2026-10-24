@@ -124,6 +124,12 @@ class BitgetDispatcher:
         dispatch = self._repository.claim(worker_id, lease_seconds)
         if dispatch is None:
             return "idle"
+        print(
+            f"[DISPATCH-CLAIMED] id={dispatch.id} symbol={dispatch.pair_token} "
+            f"dir={dispatch.direction} entry={dispatch.entry_price} sl={dispatch.stop_loss} "
+            f"targets={dispatch.take_profits}",
+            flush=True,
+        )
         audit = dispatch_evidence(dispatch)
         audit["source_symbol"] = dispatch.pair_token
         stage = "gates"
@@ -132,6 +138,13 @@ class BitgetDispatcher:
 
         def transition(expected: str, target: str, reason: str | None = None) -> None:
             assert dispatch is not None
+            elapsed = round((monotonic() - stage_started) * 1000, 3)
+            print(
+                f"[DISPATCH] transition id={dispatch.id} symbol={dispatch.pair_token} "
+                f"from={expected} to={target} stage={stage} reason={reason or 'none'} "
+                f"elapsed_ms={elapsed}",
+                flush=True,
+            )
             self._repository.transition(
                 dispatch.id,
                 expected_state=expected,
@@ -157,6 +170,11 @@ class BitgetDispatcher:
                 audit.update(_exception_evidence(exc))
                 if isinstance(diagnostics.get("stage"), str):
                     stage = diagnostics["stage"]
+            print(
+                f"[DISPATCH-REJECT] id={dispatch.id} symbol={dispatch.pair_token} "
+                f"from={current} stage={stage} reason={reason} error={exc or 'none'}",
+                flush=True,
+            )
             transition(current, "REJECTED", reason)
             if reason != "cutover-gated":
                 self._repository.alert(dispatch.id, reason)
@@ -242,6 +260,14 @@ class BitgetDispatcher:
                 }
                 if submission.entry_route is not None:
                     audit["routing"] = _route_evidence(submission.entry_route)
+                print(
+                    f"[DISPATCH-SIZED] id={dispatch.id} symbol={dispatch.pair_token} "
+                    f"qty={submission.quantity} leverage={submission.effective_leverage}x "
+                    f"margin={submission.planned_margin_usdt} "
+                    f"notional={submission.planned_notional_usdt} "
+                    f"route={submission.entry_route.mode if submission.entry_route else 'default'}",
+                    flush=True,
+                )
             else:
                 spec, risk = preflight
                 plan = minimum_safe_plan(
@@ -368,6 +394,11 @@ class BitgetDispatcher:
             return "unknown"
         provider_effect = "provider_response_observed"
         audit["provider_status"] = status
+        print(
+            f"[DISPATCH-EXECUTED] id={dispatch.id} symbol={dispatch.pair_token} "
+            f"status={status} target={target}",
+            flush=True,
+        )
         transition(
             "SUBMITTING",
             target,

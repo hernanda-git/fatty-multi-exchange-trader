@@ -256,6 +256,11 @@ def process_received_batch(
                         management = management_from_image_json(image_result)
                     if management is not None:
                         _enroll_management(cursor, message_uuid, revision, management)
+                        print(
+                            f"[ANALYZER] msg_id={message_id} MANAGEMENT "
+                            f"symbol={management.symbol} action={management.action.value}",
+                            flush=True,
+                        )
                     signal_id = None
                     dispatches = 0
                     if result.signal is not None:
@@ -294,6 +299,19 @@ def process_received_batch(
                             # is how three signals lost their fan-out unnoticed.
                             if cursor.fetchone() is not None:
                                 dispatches += 1
+                        print(
+                            f"[ANALYZER] msg_id={message_id} SIGNAL symbol={signal.pair_token} "
+                            f"dir={signal.direction.value} entry={signal.entry_price} "
+                            f"sl={signal.stop_loss} targets={signal.take_profits} "
+                            f"dispatches={dispatches}",
+                            flush=True,
+                        )
+                    if management is None and result.signal is None:
+                        preview = message.raw_text.replace("\n", " ")[:60]
+                        print(
+                            f"[ANALYZER] msg_id={message_id} NO_ACTION text={preview!r}",
+                            flush=True,
+                        )
                     cursor.execute(
                         _ANALYSIS_NOTIFICATION_INSERT,
                         (

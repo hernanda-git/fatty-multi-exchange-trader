@@ -151,11 +151,21 @@ class SourceManagementExecutor:
         alert = getattr(self._store, "alert_outcome", None)
         if callable(alert):
             alert(update, state, error)
+        print(
+            f"[SOURCE-MANAGEMENT-FINISH] update_id={update.id} symbol={update.symbol} "
+            f"action={update.action} state={state} error={error or 'none'}",
+            flush=True,
+        )
 
     def run_once(self, worker_id: str) -> str:
         update = self._store.claim(worker_id)
         if update is None:
             return "idle"
+        print(
+            f"[SOURCE-MANAGEMENT-CLAIM] update_id={update.id} symbol={update.symbol} "
+            f"action={update.action} worker={worker_id}",
+            flush=True,
+        )
         try:
             if not self._mutations_enabled:
                 self._finish(update, "failed", "venue mutations are disabled")
