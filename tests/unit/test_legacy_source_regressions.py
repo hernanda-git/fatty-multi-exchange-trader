@@ -36,6 +36,19 @@ def test_longing_sentence_with_stop_only_is_fallback_parseable() -> None:
     assert signal.take_profits == ()
 
 
+def test_placing_limit_entry_syntax_is_parseable() -> None:
+    signal = parse_explicit_signal(
+        "$PUMP placing short limit at 0.004195\n\nSl: 0.004285",
+        message_id=16358,
+    )
+    assert signal is not None
+    assert signal.pair_token == "PUMP"
+    assert signal.direction.value == "SHORT"
+    assert signal.entry_price == Decimal("0.004195")
+    assert signal.stop_loss == Decimal("0.004285")
+    assert signal.take_profits == ()
+
+
 def test_single_character_ticker_explicit_setup_is_fallback_parseable() -> None:
     signal = parse_explicit_signal(
         "#Q $Q SHORT TRADE\n\nENTRY: 0.0707\n\nTARGET: 0.0494\n\nSTOPLOSS: 0.0733",

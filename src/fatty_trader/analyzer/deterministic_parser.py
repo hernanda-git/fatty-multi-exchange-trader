@@ -27,6 +27,13 @@ _RIGID = re.compile(
     r"SL\s+(?P<sl>\d+(?:\.\d+)?)\s+TP\s+(?P<tp>\d+(?:\.\d+)?)\s*$",
     re.IGNORECASE,
 )
+_LIMIT_ENTRY = re.compile(
+    r"^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+[\$#](?P<pair2>[A-Z0-9]{1,20}))?\s+"
+    r"(?:placing\s+)?(?P<direction>LONG|SHORT)\s+(?:limit\s+)?(?:at|around|near|@)?\s*"
+    r"(?P<entry>\d+(?:\.\d+)?).*?"
+    r"(?:STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 # The source also posts the same idea without any scalp/here marker:
 #   "$ENA long, sl below 0.27845"
 # so the shape required is: pair + a long/short verb first, and a stop-loss clause with a
@@ -53,7 +60,12 @@ def parse_explicit_signal(
     """
     if entry_stands_down(text):
         return None
-    match = _CHANNEL.match(text) or _NATURAL_STOP_ONLY.match(text) or _RIGID.match(text)
+    match = (
+        _CHANNEL.match(text)
+        or _NATURAL_STOP_ONLY.match(text)
+        or _RIGID.match(text)
+        or _LIMIT_ENTRY.match(text)
+    )
     if match is None:
         return _scalp_market_signal(
             text, message_id=message_id, market_price_lookup=market_price_lookup

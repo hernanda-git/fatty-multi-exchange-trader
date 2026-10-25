@@ -787,12 +787,25 @@ def _bitget_dispatch_preflight(
             else snapshot.current_price
         )
 
+        canonical_targets = dispatch.take_profits
+        if not canonical_targets:
+            risk_distance = abs(sizing_price - dispatch.stop_loss)
+            sign = (
+                Decimal("1")
+                if Direction(dispatch.direction) is Direction.LONG
+                else Decimal("-1")
+            )
+            derived_tp = round_price_to_tick(
+                sizing_price + (sign * risk_distance * Decimal("1.5")), metadata.price_tick
+            )
+            if (derived_tp - sizing_price) * sign >= metadata.price_tick and derived_tp > 0:
+                canonical_targets = (derived_tp,)
         planned_stop, planned_targets = normalized_protection_prices(
             direction=Direction(dispatch.direction),
             entry=sizing_price,
             canonical_entry=dispatch.entry_price,
             stop_loss=dispatch.stop_loss,
-            take_profits=dispatch.take_profits,
+            take_profits=canonical_targets,
             price_tick=metadata.price_tick,
         )
 
