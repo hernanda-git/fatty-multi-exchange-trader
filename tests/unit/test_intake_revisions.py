@@ -58,6 +58,30 @@ def test_edited_caption_revokes_every_revision_of_the_message():
     assert reasons == ["edited-source-message", "edited-source-message"]
 
 
+def test_cosmetic_typo_edit_preserves_entry_eligibility():
+    repository = InMemoryRawMessageRepository()
+    adapter = TelegramIntake(repository)
+    first_msg = SimpleNamespace(
+        id=42,
+        message="#PUMP $PUMP placing short limit at 0.004195\n\nSl: 0.004285",
+        date=datetime.now(UTC),
+        media=None,
+        edit_date=None,
+    )
+    adapter.ingest(channel_id=7, message=first_msg)
+    cosmetic_edit = SimpleNamespace(
+        id=42,
+        message="$PUMP placing short limit at 0.004195\n\nSl: 0.004285",
+        date=datetime.now(UTC),
+        media=None,
+        edit_date=datetime.now(UTC),
+    )
+    adapter.ingest(channel_id=7, message=cosmetic_edit)
+    reasons = [item.entry_rejection_reason for item in repository._messages.values()]
+    assert "edited-source-message" not in reasons
+    assert any(reason is None for reason in reasons)
+
+
 def test_same_caption_media_replacement_has_distinct_revision_identity():
     repository = InMemoryRawMessageRepository()
     adapter = TelegramIntake(repository)

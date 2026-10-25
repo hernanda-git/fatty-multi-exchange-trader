@@ -1016,7 +1016,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         kill_switch=PostgresReconciliationRepository(cast(Any, psycopg.connect)),
         protection_admission=protection_admission,
     )
-    interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "30"))
+    interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "10"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
     try:
         while True:
