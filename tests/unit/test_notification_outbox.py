@@ -555,3 +555,73 @@ def test_outbox_database_failures_rollback_close_and_remain_visible(operation):
             enqueue_notification(lambda: connection, dedup_key="test", payload={"kind": "test"})
     assert connection.rollbacks == 1
     assert connection.closes == 1
+
+
+def test_should_deliver_to_telegram_filters_internal_spam_and_chatter() -> None:
+    from fatty_trader.notifications import should_deliver_to_telegram
+
+    assert not should_deliver_to_telegram({"kind": "source-forward"})
+    assert not should_deliver_to_telegram({"kind": "signal-analysis", "canonical_signal": False})
+    assert should_deliver_to_telegram({"kind": "signal-analysis", "canonical_signal": True})
+    assert should_deliver_to_telegram(
+        {"kind": "signal-analysis", "canonical_signal": False, "management_action": "TP1_BOOKED"}
+    )
+    assert not should_deliver_to_telegram({"kind": "execution-event", "to_state": "PREFLIGHT"})
+    assert not should_deliver_to_telegram({"kind": "execution-event", "to_state": "SIZED"})
+    assert not should_deliver_to_telegram({"kind": "execution-event", "to_state": "SUBMITTING"})
+    assert not should_deliver_to_telegram(
+        {"kind": "execution-event", "to_state": "FILLED", "reason": "recovery-protection-verified"}
+    )
+    assert should_deliver_to_telegram(
+        {"kind": "execution-event", "from_state": "SUBMITTING", "to_state": "FILLED", "reason": "none"}
+    )
+    assert should_deliver_to_telegram({"kind": "execution-event", "to_state": "REJECTED"})
+    assert not should_deliver_to_telegram({"kind": "system-event", "state": "cancelled-flat"})
+    assert should_deliver_to_telegram({"kind": "system-event", "state": "reconciled", "action": "TP1_BOOKED"})
+
+
+def test_rich_order_filled_notification_card() -> None:
+    html = format_notification_html(
+        {
+            "kind": "execution-event",
+            "to_state": "FILLED",
+            "dispatch_id": "86d1cd33-4f23-4abc-9f00-5d954c482df9",
+            "evidence": {
+                "symbol": "PUMPUSDT",
+                "direction": "LONG",
+                "sizing": {
+                    "quantity": "5164",
+                    "planned_margin_usdt": "1.10",
+                    "effective_leverage": 20,
+                    "margin_mode": "ISOLATED",
+                    "planned_stop_loss": "0.004185",
+                    "planned_take_profits": ["0.00444"],
+                    "planned_notional_usdt": "22.00",
+                },
+            },
+        }
+    )
+    assert "<b>ORDER FILLED · PUMPUSDT (LONG)</b>" in html
+    assert "5164" in html
+    assert "<code>1.10 USDT</code> (20x Isolated)" in html
+    assert "<code>0.004185</code> 🛡 Native Bitget" in html
+    assert "<code>0.00444</code> 🎯 Native Bitget" in html
+    assert "Bitget Futures" in html
+
+
+def test_system_event_management_cards() -> None:
+    tp1_html = format_notification_html(
+        {"kind": "system-event", "action": "TP1_BOOKED", "symbol": "WLDUSDT", "state": "reconciled"}
+    )
+    assert "<b>TP1 EXECUTED · WLDUSDT</b>" in tp1_html
+    assert "50% closed in profit" in tp1_html
+
+    close_html = format_notification_html(
+        {"kind": "system-event", "action": "CLOSE", "symbol": "PUMPUSDT", "state": "reconciled"}
+    )
+    assert "<b>POSITION CLOSED · PUMPUSDT</b>" in close_html
+
+    limit_html = format_notification_html(
+        {"kind": "system-event", "action": "CLOSE", "symbol": "ONDOUSDT", "state": "entries-cancelled"}
+    )
+    assert "<b>LIMIT ORDER CANCELLED · ONDOUSDT</b>" in limit_html

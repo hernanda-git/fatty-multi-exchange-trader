@@ -554,13 +554,36 @@ def _format_system_event_html(payload: Mapping[str, Any]) -> str:
             f"💰 <b>TP1 EXECUTED · {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"50% closed in profit.\n"
-            f"Stop Loss updated for remaining position."
+            f"Stop Loss updated to entry breakeven."
+        )
+    if action == "SL_TO_ENTRY" and state in {"reconciled", "closed"}:
+        return (
+            f"🛡 <b>STOP LOSS TO ENTRY · {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Status: Stop Loss moved to entry price.\n"
+            f"Trade is now risk-free (Breakeven)."
         )
     if action == "CLOSE" and state in {"reconciled", "closed"}:
         return (
             f"🔴 <b>POSITION CLOSED · {symbol}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Position flattened on Bitget."
+            f"Status: Posisi ditutup penuh di market.\n"
+            f"Akun kini flat untuk pasangan ini."
+        )
+    if action == "CLOSE" and state == "entries-cancelled":
+        return (
+            f"🚫 <b>LIMIT ORDER CANCELLED · {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Status: Unfilled limit order removed.\n"
+            f"Position is flat on Bitget."
+        )
+    if action in {"TP1_BOOKED", "CLOSE", "SL_TO_ENTRY"} and state == "failed":
+        error = escape(_safe_text(payload.get("error", "Unknown error"), limit=200))
+        return (
+            f"⚠️ <b>MANAGEMENT FAILED · {symbol} ({action})</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Reason: <code>{error}</code>\n"
+            f"Please verify position on Bitget."
         )
     message = escape(_safe_text(payload.get("message", ""), limit=1000))
     return f"🤖 <b>System Event</b>\n━━━━━━━━━━━━━━━━━━━━\n{message}"
