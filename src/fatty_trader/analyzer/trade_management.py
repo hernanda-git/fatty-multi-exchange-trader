@@ -51,7 +51,9 @@ _SL_TO_ENTRY = re.compile(
 )
 
 _CLOSE = re.compile(
-    r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+\d+(?:\.\d+)?R(?:\+)?(?:\s+profit)?)\b"
+    r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|now|challenge|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+(?:\d+(?:\.\d+)?R|\w+)(?:\+)?(?:\s+profit)?|\+\$?\d+|\$\d+)\b"
+    r"|\b(?:close|closed|exit|exited)\s+[\$#]?[A-Z0-9]{2,15}\b"
+    r"|\b[\$#]?[A-Z0-9]{2,15}\s+(?:is\s+)?(?:close|closed|exit|exited)\b"
     r"|\b(?:fully\s+closed|trade\s+closed)\b",
     re.I,
 )

@@ -124,6 +124,10 @@ def test_channel_sl_to_entry_variations_are_recognized(text: str, expected_symbo
         ("$WLD close here", "WLDUSDT"),
         ("$JASMY TRADE CLOSED", "JASMYUSDT"),
         ("$BONK trade Closed for 4R profit", "BONKUSDT"),
+        ("closed $PUMP for challenge\n\n+20$", "PUMPUSDT"),
+        ("closed $PUMP", "PUMPUSDT"),
+        ("exit $ENA", "ENAUSDT"),
+        ("$SOL closed +50$", "SOLUSDT"),
     ],
 )
 def test_channel_close_variations_are_recognized(text: str, expected_symbol: str) -> None:

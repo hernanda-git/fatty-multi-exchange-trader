@@ -229,6 +229,35 @@ def enqueue_notification(
         connection.close()
 
 
+def should_deliver_to_telegram(payload: Mapping[str, Any]) -> bool:
+    """Filter out internal transition noise, heartbeats, and non-trade chatter from Telegram pushes."""
+    kind = payload.get("kind")
+    if kind == "source-forward":
+        return False
+    if kind == "signal-analysis":
+        return bool(payload.get("canonical_signal") or payload.get("management_action"))
+    if kind == "execution-event":
+        reason = str(payload.get("reason", ""))
+        to_state = str(payload.get("to_state", ""))
+        from_state = str(payload.get("from_state", ""))
+        if reason.startswith(("recovery-missing-protection:", "recovery-filled-protection-unverified", "cutover-gated")):
+            return True
+        if reason == "approved-provider-flat-readback-no-order-or-intent":
+            return True
+        if to_state in {"PREFLIGHT", "SIZED", "VALIDATED", "SUBMITTING", "QUEUED"}:
+            return False
+        if reason == "recovery-protection-verified" or (to_state == "FILLED" and from_state == "FILLED"):
+            return False
+        if to_state in {"FILLED", "REJECTED", "EXPIRED", "CANCELLED"}:
+            return True
+        return False
+    if kind == "system-event":
+        if payload.get("state") == "cancelled-flat":
+            return False
+        return True
+    return True
+
+
 class NotificationWorker:
     """Deliver one row at a time, retaining retries and terminal failures durably."""
 
@@ -268,6 +297,9 @@ class NotificationWorker:
             except Exception:
                 print("service=notification-sender event=push-fanout-error", flush=True)
         claim_token = notification.claim_token or worker_id
+        if not should_deliver_to_telegram(notification.payload):
+            owned = self._outbox.mark_sent(notification.id, claim_token)
+            return "sent" if owned else "claim-lost"
         try:
             try:
                 async with asyncio.timeout(_DELIVERY_TIMEOUT_SECONDS):
@@ -449,6 +481,34 @@ def _format_execution_event_html(payload: Mapping[str, Any]) -> str:
             "LIVE     : Gate boleh berjalan setelah approval\n"
             f"Ref      : <code>{dispatch_id}</code>"
         )
+    to_state = str(payload.get("to_state", ""))
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), Mapping) else {}
+    if to_state == "FILLED" and evidence:
+        symbol = escape(_safe_value(evidence.get("symbol") or payload.get("symbol", "")))
+        direction = escape(_safe_value(evidence.get("direction") or payload.get("direction", ""))).upper()
+        if symbol and direction:
+            dir_icon = "🟢" if direction in {"BUY", "LONG"} else "🔴"
+            sizing = evidence.get("sizing") if isinstance(evidence.get("sizing"), Mapping) else {}
+            qty = escape(_safe_value(sizing.get("quantity") or evidence.get("filled_quantity", "?")))
+            margin = escape(_safe_value(sizing.get("planned_margin_usdt", "?")))
+            leverage = escape(_safe_value(sizing.get("effective_leverage", "20")))
+            margin_mode = escape(_safe_value(sizing.get("margin_mode", "ISOLATED"))).title()
+            sl = escape(_safe_value(sizing.get("planned_stop_loss", "?")))
+            tp_list = sizing.get("planned_take_profits") or []
+            tp = escape(", ".join(str(p) for p in tp_list)) if tp_list else "?"
+            notional = escape(_safe_value(sizing.get("planned_notional_usdt", "")))
+            notional_str = f" (~${notional} notional)" if notional and notional != "?" else ""
+            return (
+                f"{dir_icon} <b>ORDER FILLED · {symbol} ({direction})</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Quantity</b> : <code>{qty}</code>{notional_str}\n"
+                f"<b>Margin</b>   : <code>{margin} USDT</code> ({leverage}x {margin_mode})\n"
+                f"<b>Stop Loss</b> : <code>{sl}</code> 🛡 Native Bitget\n"
+                f"<b>Take Profit</b>: <code>{tp}</code> 🎯 Native Bitget\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Exchange: <code>Bitget Futures</code>\n"
+                f"Dispatch: <code>#{dispatch_id[:8]}</code>"
+            )
     state = escape(_safe_text(_safe_value(payload.get("to_state", "diperbarui")), limit=32))
     return (
         f"📈 <b>Status Eksekusi</b>\n"
@@ -486,9 +546,24 @@ def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
 
 
 def _format_system_event_html(payload: Mapping[str, Any]) -> str:
+    action = payload.get("action")
+    symbol = escape(_safe_value(payload.get("symbol", "")))
+    state = payload.get("state")
+    if action == "TP1_BOOKED" and state in {"reconciled", "closed"}:
+        return (
+            f"💰 <b>TP1 EXECUTED · {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"50% closed in profit.\n"
+            f"Stop Loss updated for remaining position."
+        )
+    if action == "CLOSE" and state in {"reconciled", "closed"}:
+        return (
+            f"🔴 <b>POSITION CLOSED · {symbol}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Position flattened on Bitget."
+        )
     message = escape(_safe_text(payload.get("message", ""), limit=1000))
     return f"🤖 <b>System Event</b>\n━━━━━━━━━━━━━━━━━━━━\n{message}"
-
 
 def _format_kaka_digest_html(payload: Mapping[str, Any]) -> str:
     """Render the paper-lane digest. Paper results only: no venue, no live PnL."""
