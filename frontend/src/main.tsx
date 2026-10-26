@@ -146,6 +146,8 @@ function App() {
   // Command modal state
   const [actionModalOpen, setActionModalOpen] = useState(false);
   const [actionModalAction, setActionModalAction] = useState('');
+  const [actionModalArgs, setActionModalArgs] = useState<RecordData>({});
+  const [actionModalTargets, setActionModalTargets] = useState<string[]>([]);
 
   const eventCursor = useRef<string>('');
   const liveRefresh = useRef<number | undefined>(undefined);
@@ -426,8 +428,6 @@ function App() {
   const currentTabs = TABS[currentRoute.destination] || [];
   const scopeData = envelope?.scope || safety?.scope || {};
 
-  const [actionModalArgs, setActionModalArgs] = useState<RecordData>({});
-  const [actionModalTargets, setActionModalTargets] = useState<string[]>([]);
 
   const handleOpenAction = (action: string, initialArgs?: RecordData, initialTargets?: string[]) => {
     setActionModalAction(action);
