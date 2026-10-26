@@ -187,7 +187,7 @@ export function OrdersTable({
             const reqQty = String(row.requested_qty ?? row.quantity ?? '0');
             const fillQty = String(row.filled_qty ?? row.filled_quantity ?? '0');
             const state = String(row.state || 'WORKING').toUpperCase();
-            const isWorking = state === 'WORKING' || state === 'LIVE';
+            const isWorking = ['WORKING', 'LIVE', 'SUBMITTED', 'ACKNOWLEDGED', 'REQUESTED'].includes(state);
 
             return (
               <tr key={String(row.id ?? i)}>
@@ -232,7 +232,17 @@ export function OrdersTable({
                     <button
                       type="button"
                       className="btn btn-danger btn-sm"
+                      style={{
+                        background: '#dc2626',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        padding: '4px 10px',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                      }}
                       onClick={() => onCancel(row)}
+                      title="Cancel this order on Bitget"
                     >
                       Cancel
                     </button>

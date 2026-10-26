@@ -195,15 +195,15 @@ export function TradingPage({
       <div className="card">
         <div className="card-header">
           <div>
-            <span className="eyebrow">TRADING DESK</span>
+            <span className="eyebrow">{readSection === 'orders' ? 'ORDER MANAGEMENT' : 'TRADING DESK'}</span>
             <h2>
               {readSection === 'positions'
-                ? 'Active Positions (UX02)'
+                ? 'Active Positions'
                 : readSection === 'orders'
-                ? 'Working Orders & Intents (UX03)'
+                ? 'Pending & Working Orders'
                 : readSection === 'fills'
-                ? 'Execution Fills (UX03)'
-                : 'SL / TP Protection (UX04)'}
+                ? 'Execution Fills & History'
+                : 'SL / TP Protection'}
             </h2>
           </div>
           {readSection === 'positions' && (
@@ -213,6 +213,24 @@ export function TradingPage({
               onClick={() => onOpenAction('trade.open')}
             >
               + New Position
+            </button>
+          )}
+          {readSection === 'orders' && (
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              style={{
+                background: '#dc2626',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                padding: '6px 12px',
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+              onClick={() => onOpenAction('entry.cancel_owned', {symbol: 'ALL'})}
+            >
+              Cancel All Orders
             </button>
           )}
         </div>

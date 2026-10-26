@@ -128,6 +128,8 @@ export function ActionPanel({
   onChanged,
   principalId,
   initialAction = '',
+  initialArgs = {},
+  initialTargets = [],
   isOpen,
   onClose,
 }: {
@@ -138,14 +140,16 @@ export function ActionPanel({
   onChanged: () => void;
   principalId: string;
   initialAction?: string;
+  initialArgs?: RecordData;
+  initialTargets?: string[];
   isOpen: boolean;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const [action, setAction] = useState(initialAction);
-  const [args, setArgs] = useState<RecordData>({});
-  const [targets, setTargets] = useState<string[]>([]);
+  const [args, setArgs] = useState<RecordData>(initialArgs);
+  const [targets, setTargets] = useState<string[]>(initialTargets);
   const [reason, setReason] = useState('');
   const [preview, setPreview] = useState<RecordData | null>(null);
   const [phrase, setPhrase] = useState('');
@@ -159,8 +163,10 @@ export function ActionPanel({
   useEffect(() => {
     if (initialAction) {
       setAction(initialAction);
+      setArgs(initialArgs || {});
+      setTargets(initialTargets || []);
     }
-  }, [initialAction]);
+  }, [initialAction, initialArgs, initialTargets]);
 
   useEffect(() => {
     if (isOpen) {

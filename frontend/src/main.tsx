@@ -28,10 +28,12 @@ const TABS: Record<string, {label: string; path: string}[]> = {
   ],
   trading: [
     {label: 'Positions', path: '/positions'},
-    {label: 'Orders & Intents', path: '/orders'},
-    {label: 'Fills & Ledger', path: '/orders?view=fills'},
-    {label: 'Protection', path: '/protection'},
+    {label: 'Protection (SL/TP)', path: '/protection'},
     {label: 'New Trade', path: '/trading'},
+  ],
+  orders: [
+    {label: 'Pending Orders', path: '/orders'},
+    {label: 'Fills & History', path: '/orders?view=fills'},
   ],
   signals: [
     {label: 'Signals Inbox', path: '/signals'},
@@ -424,8 +426,13 @@ function App() {
   const currentTabs = TABS[currentRoute.destination] || [];
   const scopeData = envelope?.scope || safety?.scope || {};
 
-  const handleOpenAction = (action: string) => {
+  const [actionModalArgs, setActionModalArgs] = useState<RecordData>({});
+  const [actionModalTargets, setActionModalTargets] = useState<string[]>([]);
+
+  const handleOpenAction = (action: string, initialArgs?: RecordData, initialTargets?: string[]) => {
     setActionModalAction(action);
+    setActionModalArgs(initialArgs || {});
+    setActionModalTargets(initialTargets || []);
     setActionModalOpen(true);
   };
 
@@ -618,7 +625,7 @@ function App() {
                   render={(v) => <Value value={v} />}
                 />
               )}
-              {currentRoute.destination === 'trading' && (
+              {(currentRoute.destination === 'trading' || currentRoute.destination === 'orders') && (
                 <TradingPage
                   envelope={envelope}
                   readSection={currentRoute.readSection}
@@ -670,6 +677,8 @@ function App() {
               onClose={() => setActionModalOpen(false)}
               principalId={principal.id}
               initialAction={actionModalAction}
+              initialArgs={actionModalArgs}
+              initialTargets={actionModalTargets}
               capabilities={caps}
               scope={scopeData}
               section={currentRoute.readSection}

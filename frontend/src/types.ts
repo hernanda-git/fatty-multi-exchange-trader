@@ -2,7 +2,7 @@ import type {RecordData, Principal, Envelope, Capability, ApiError} from './api'
 
 export type {RecordData, Principal, Envelope, Capability, ApiError};
 
-export type PrimaryDestination = 'overview' | 'trading' | 'signals' | 'activity' | 'settings';
+export type PrimaryDestination = 'overview' | 'trading' | 'orders' | 'signals' | 'activity' | 'settings';
 
 export type RouteInfo = {
   destination: PrimaryDestination;
