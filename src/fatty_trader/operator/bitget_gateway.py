@@ -338,6 +338,15 @@ class BitgetOperatorGateway:
             intent.provider_order_id = str(submitted["orderId"])
         intent.state = "submitted"
         self._intent_store.update(intent)
+        if lifecycle is not None and hasattr(lifecycle, "reconcile"):
+            import time
+
+            for _ in range(5):
+                self._run(lifecycle.reconcile(self._client))
+                rechecked = self._intent_store.get(client_oid)
+                if rechecked is not None and rechecked.state in {"filled", "reconciled"}:
+                    break
+                time.sleep(0.2)
 
     def normalize_tp1_close_quantity(self, symbol: str, quantity: Decimal) -> Decimal:
         """Floor the existing half policy to lot steps; never close the residual."""
@@ -537,8 +546,18 @@ class BitgetOperatorGateway:
             or root.entry_leg == "limit"
             or root.planned_stop_loss is None
             or not root.planned_take_profits
-            or self._intent_store.remaining_owned_quantity(root_oid) != quantity
         ):
+            raise ValueError("native SL ownership does not match the live residual")
+        remaining_owned = self._intent_store.remaining_owned_quantity(root_oid)
+        if remaining_owned != quantity:
+            lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
+            if lifecycle is not None and hasattr(lifecycle, "reconcile"):
+                self._run(lifecycle.reconcile(self._client))
+                try:
+                    remaining_owned = self._intent_store.remaining_owned_quantity(root_oid)
+                except Exception:
+                    pass
+        if remaining_owned != quantity:
             raise ValueError("native SL ownership does not match the live residual")
         old_stop = root.active_stop_loss_price or root.planned_stop_loss
         expectation = NativeProtectionExpectation(

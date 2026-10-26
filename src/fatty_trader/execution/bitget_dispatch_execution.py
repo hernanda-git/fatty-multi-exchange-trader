@@ -158,10 +158,17 @@ class BitgetDispatchExecution:
             status = _dispatcher_status(result.status)
             reason = "recovery-entry-" + status.lower()
             if result.filled_qty > 0:
-                protection = await self._read_recovery_protection(intent, dispatch)
+                expected_quantity = (
+                    self._store.remaining_owned_quantity(client_oid)
+                    if hasattr(self._store, "remaining_owned_quantity")
+                    else result.filled_qty
+                )
+                protection = await self._read_recovery_protection(
+                    intent, dispatch, expected_quantity
+                )
                 if (
                     protection.state is ProtectionState.VENUE_PROTECTED
-                    and protection.observed_quantity == result.filled_qty
+                    and protection.observed_quantity == expected_quantity
                 ):
                     reason = "recovery-protection-verified"
                 elif self._is_locally_managed(intent):
@@ -309,23 +316,27 @@ class BitgetDispatchExecution:
         return bool(check(intent.client_oid))
 
     async def _read_recovery_protection(
-        self, intent: LiveIntentRecord, dispatch: BitgetDispatch
+        self,
+        intent: LiveIntentRecord,
+        dispatch: BitgetDispatch,
+        quantity: Decimal | None = None,
     ) -> AsyncProtectionResult:
+        target_qty = quantity if quantity is not None else intent.filled_qty
         if intent.planned_stop_loss is None or intent.planned_take_profits is None:
             return AsyncProtectionResult(
-                ProtectionState.DEGRADED, intent.filled_qty, "recovery-validated-plan-missing"
+                ProtectionState.DEGRADED, target_qty, "recovery-validated-plan-missing"
             )
-        plan = self._protection_plan(dispatch, intent, intent.filled_qty)
+        plan = self._protection_plan(dispatch, intent, target_qty)
         if self._recovery_protection is None:
             return AsyncProtectionResult(
-                ProtectionState.DEGRADED, intent.filled_qty, "recovery-reader-unwired"
+                ProtectionState.DEGRADED, target_qty, "recovery-reader-unwired"
             )
         try:
             return await self._recovery_protection(intent, plan)
         except Exception as exc:
             return AsyncProtectionResult(
                 ProtectionState.DEGRADED,
-                intent.filled_qty,
+                target_qty,
                 f"recovery-read-error:{type(exc).__name__}",
             )
 
@@ -921,8 +932,10 @@ class BitgetDispatchExecution:
             return
         reconcile = getattr(self._execution, "reconcile_post_fill", None)
         if callable(reconcile):
-            await cast(Any, reconcile)(intent, result)
-
+            try:
+                await cast(Any, reconcile)(intent, result, store=self._store)
+            except TypeError:
+                await cast(Any, reconcile)(intent, result)
     def _persist_readback(self, intent: LiveIntentRecord, result: AsyncExecutionResult) -> None:
         if result.client_oid != intent.client_oid:
             raise ValueError("Bitget readback client OID does not match durable intent")

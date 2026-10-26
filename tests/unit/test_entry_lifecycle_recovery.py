@@ -309,3 +309,60 @@ async def test_unmanaged_entry_keeps_blocking_recovery_verdict():
         adapter._dispatch_repository.events[-1]["reason"]
         == "recovery-missing-protection:missing-native-protection"
     )
+
+
+@pytest.mark.asyncio
+async def test_restart_recovery_protection_verifies_against_owned_residual_after_partial_close():
+    dispatch = _dispatch()
+    intent = replace(
+        BitgetDispatchExecution._intent(dispatch, _submission()),
+        filled_qty=Decimal("0.002"),
+        planned_stop_loss=dispatch.stop_loss,
+        planned_take_profits=dispatch.take_profits,
+    )
+    close_intent = replace(
+        BitgetDispatchExecution._intent(dispatch, _submission()),
+        client_oid="close-oid",
+        role="CLOSE",
+        side="SELL",
+        filled_qty=Decimal("0.001"),
+        provider_order_id="venue-close-1",
+        provider_fill_ids=("fill-c-1",),
+        state="filled",
+    )
+    store = InMemoryLiveIntentStore()
+    store.save(intent)
+    store.save(close_intent)
+    store.close_bindings["close-oid"] = intent.client_oid
+    store.fills.append(("close-oid", {
+        "fillId": "fill-c-1",
+        "orderId": "venue-close-1",
+        "symbol": "BTCUSDT",
+        "side": "sell",
+        "price": "50000",
+        "size": "0.001",
+        "fee": "0.01",
+        "feeDetail": [{"totalFee": "0.01"}],
+    }))
+
+    assert store.remaining_owned_quantity(intent.client_oid) == Decimal("0.001")
+
+    execution = Execution(result=_result())
+    repo = Repository(dispatch, intent.client_oid)
+    plans = []
+
+    async def read_protection(entry, plan):
+        plans.append(plan)
+        assert plan.quantity == Decimal("0.001")
+        return AsyncProtectionResult(
+            ProtectionState.VENUE_PROTECTED,
+            Decimal("0.001"),
+            "none",
+        )
+
+    adapter = BitgetDispatchExecution(
+        execution, store, dispatch_repository=repo, recovery_protection=read_protection
+    )
+    assert await adapter.recover_entry_lifecycles() == 1
+    assert adapter.recovery_ready is True
+    assert repo.events[-1]["reason"] == "recovery-protection-verified"

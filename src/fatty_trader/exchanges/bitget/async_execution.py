@@ -306,13 +306,19 @@ class AsyncBitgetExecution:
         return await self.reconcile_intent(intent)
 
     async def reconcile_post_fill(
-        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+        self,
+        intent: LiveIntentRecord,
+        result: AsyncExecutionResult,
+        store: Any | None = None,
     ) -> None:
         """Apply the same provider observation to GET-only replayed fills."""
-        await self._reconcile_post_fill(intent, result)
+        await self._reconcile_post_fill(intent, result, store=store)
 
     async def _reconcile_post_fill(
-        self, intent: LiveIntentRecord, result: AsyncExecutionResult
+        self,
+        intent: LiveIntentRecord,
+        result: AsyncExecutionResult,
+        store: Any | None = None,
     ) -> None:
         if (
             result.status not in {LiveOrderStatus.FILLED, LiveOrderStatus.PARTIAL}
@@ -344,6 +350,12 @@ class AsyncBitgetExecution:
                 )
             else:
                 mode = position.margin_mode.upper()
+                expected_quantity = intent.filled_qty
+                if store is not None and hasattr(store, "remaining_owned_quantity"):
+                    try:
+                        expected_quantity = store.remaining_owned_quantity(intent.client_oid)
+                    except Exception:
+                        expected_quantity = intent.filled_qty
                 if (
                     position.leverage != Decimal(intent.planned_leverage)
                     or mode != intent.margin_mode
@@ -351,7 +363,7 @@ class AsyncBitgetExecution:
                     status, reason = "mismatch", "leverage-or-margin-mode-mismatch"
                 elif position.margin_usdt is None:
                     status, reason = "unavailable", "provider-margin-unavailable"
-                elif intent.dispatch_id is not None and position.quantity != intent.filled_qty:
+                elif intent.dispatch_id is not None and position.quantity != expected_quantity:
                     status, reason = "mismatch", "split-position-quantity-mismatch"
                 elif (
                     intent.dispatch_id is not None
