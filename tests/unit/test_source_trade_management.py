@@ -128,10 +128,31 @@ def test_channel_sl_to_entry_variations_are_recognized(text: str, expected_symbo
         ("closed $PUMP", "PUMPUSDT"),
         ("exit $ENA", "ENAUSDT"),
         ("$SOL closed +50$", "SOLUSDT"),
+        ("cancelling our LTF $BTC plan", "BTCUSDT"),
     ],
 )
 def test_channel_close_variations_are_recognized(text: str, expected_symbol: str) -> None:
     update = parse_source_management(text)
+
+    assert update is not None
+    assert update.symbol == expected_symbol
+    assert update.action is ManagementAction.CLOSE
+
+
+@pytest.mark.parametrize(
+    ("text", "fallback", "expected_symbol"),
+    [
+        ("limit missed cancel the trade", "ONDOUSDT", "ONDOUSDT"),
+        ("cancel limit", "PUMP", "PUMPUSDT"),
+        ("order missed cancel", "SOLUSDT", "SOLUSDT"),
+        ("limit missed", "NEARUSDT", "NEARUSDT"),
+        ("cancelling our LTF BTC plan", "BTCUSDT", "BTCUSDT"),
+    ],
+)
+def test_symbol_less_limit_cancellation_uses_fallback_symbol(
+    text: str, fallback: str, expected_symbol: str
+) -> None:
+    update = parse_source_management(text, fallback_symbol=fallback)
 
     assert update is not None
     assert update.symbol == expected_symbol

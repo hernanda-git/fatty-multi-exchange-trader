@@ -58,6 +58,13 @@ _CLOSE = re.compile(
     re.I,
 )
 
+_LIMIT_CANCEL = re.compile(
+    r"\b(?:limit|entry|order)\s+(?:missed|miss)\b.*\b(?:cancel|exit|close)\b"
+    r"|\b(?:cancel|cancelled|cancelling)\b.*\b(?:limit|order|trade|entry|plan)\b"
+    r"|\blimit\s+missed\b",
+    re.I,
+)
+
 _NEGATED_CLOSE = re.compile(
     r"(?<![$#])\b(?:do\s+not|don['’]?t|dont|never|not)\s+(?:close|exit)\b", re.I
 )
@@ -81,7 +88,9 @@ class SourceManagement:
     action: ManagementAction
 
 
-def parse_source_management(text: str) -> SourceManagement | None:
+def parse_source_management(
+    text: str, fallback_symbol: str | None = None
+) -> SourceManagement | None:
     """Return a high-confidence management instruction, otherwise None."""
     candidates = [match.group(1).upper() for match in _EXPLICIT_SYMBOL.finditer(text or "")]
     candidates.extend(match.group(1).upper() for match in _FULL_SYMBOL.finditer(text or ""))
@@ -90,7 +99,14 @@ def parse_source_management(text: str) -> SourceManagement | None:
         for token in candidates
         if _is_symbol_candidate(token)
     }
-    if len(normalized) != 1:
+    target_symbol = None
+    if len(normalized) == 1:
+        target_symbol = normalized.pop()
+    elif not normalized and fallback_symbol and _LIMIT_CANCEL.search(text):
+        target_symbol = (
+            fallback_symbol if fallback_symbol.endswith("USDT") else f"{fallback_symbol}USDT"
+        )
+    else:
         return None
     if re.search(r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", text, re.I):
         return None
@@ -101,14 +117,14 @@ def parse_source_management(text: str) -> SourceManagement | None:
     elif _SL_TO_ENTRY.search(text):
         action = ManagementAction.SL_TO_ENTRY
     elif (
-        _CLOSE.search(text)
+        (_CLOSE.search(text) or _LIMIT_CANCEL.search(text))
         and not _NEGATED_CLOSE.search(text)
         and not _CANDLE_ANALYSIS_CLOSE.search(text)
     ):
         action = ManagementAction.CLOSE
     else:
         return None
-    return SourceManagement(symbol=normalized.pop(), action=action)
+    return SourceManagement(symbol=target_symbol, action=action)
 
 
 def _is_symbol_candidate(token: str) -> bool:

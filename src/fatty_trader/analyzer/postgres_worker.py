@@ -246,6 +246,27 @@ def process_received_batch(
                     if source_veto:
                         result = AnalysisResult(result.status, None, "source caption stands down")
                     management = None if source_veto else parse_source_management(message.raw_text)
+                    if management is None and not source_veto:
+                        cursor.execute(
+                            """SELECT symbol FROM live_order_intents
+                               WHERE role = 'ENTRY' AND entry_leg = 'limit'
+                                 AND state IN ('requested', 'acknowledged', 'submitted')
+                               ORDER BY created_at DESC LIMIT 1"""
+                        )
+                        fallback_row = cursor.fetchone()
+                        fallback_sym = str(fallback_row[0]) if fallback_row else None
+                        if fallback_sym is None:
+                            cursor.execute(
+                                """SELECT pair_token FROM canonical_signals
+                                   WHERE created_at > now() - interval '2 hours'
+                                   ORDER BY created_at DESC LIMIT 1"""
+                            )
+                            fallback_row = cursor.fetchone()
+                            fallback_sym = str(fallback_row[0]) if fallback_row else None
+                        if fallback_sym is not None:
+                            management = parse_source_management(
+                                message.raw_text, fallback_symbol=fallback_sym
+                            )
                     # None from the source parser is not permission to resurrect a negated
                     # instruction via image JSON. Captioned management requires explicit text.
                     if (
