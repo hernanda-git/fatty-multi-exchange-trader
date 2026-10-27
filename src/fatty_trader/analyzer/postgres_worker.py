@@ -164,6 +164,21 @@ def process_received_batch(
                             (message_uuid,),
                         )
                         if cursor.fetchone() is None:
+                            source_veto = entry_stands_down(message.raw_text)
+                            management = (
+                                None if source_veto else parse_source_management(message.raw_text)
+                            )
+                            if management is not None:
+                                _enroll_management(cursor, message_uuid, revision, management)
+                                print(
+                                    f"[ANALYZER] msg_id={message_id} MANAGEMENT "
+                                    f"symbol={management.symbol} action={management.action.value}",
+                                    flush=True,
+                                )
+                                cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
+                                cursor.execute("RELEASE SAVEPOINT analyzer_message")
+                                processed += 1
+                                continue
                             cursor.execute(
                                 "UPDATE telegram_messages SET intake_state='EXPIRED', "
                                 "entry_rejection_reason=COALESCE(entry_rejection_reason, "
@@ -233,6 +248,21 @@ def process_received_batch(
                             (message_uuid,),
                         )
                         if cursor.fetchone() is None:
+                            source_veto = entry_stands_down(message.raw_text)
+                            management = (
+                                None if source_veto else parse_source_management(message.raw_text)
+                            )
+                            if management is not None:
+                                _enroll_management(cursor, message_uuid, revision, management)
+                                print(
+                                    f"[ANALYZER] msg_id={message_id} MANAGEMENT "
+                                    f"symbol={management.symbol} action={management.action.value}",
+                                    flush=True,
+                                )
+                                cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
+                                cursor.execute("RELEASE SAVEPOINT analyzer_message")
+                                processed += 1
+                                continue
                             cursor.execute(
                                 "UPDATE telegram_messages SET intake_state='EXPIRED', "
                                 "entry_rejection_reason=COALESCE(entry_rejection_reason, "
@@ -246,29 +276,6 @@ def process_received_batch(
                     if source_veto:
                         result = AnalysisResult(result.status, None, "source caption stands down")
                     management = None if source_veto else parse_source_management(message.raw_text)
-                    if management is None and not source_veto:
-                        cursor.execute(
-                            """SELECT symbol FROM live_order_intents
-                               WHERE role = 'ENTRY' AND entry_leg = 'limit'
-                                 AND state IN ('requested', 'acknowledged', 'submitted')
-                               ORDER BY created_at DESC LIMIT 1"""
-                        )
-                        fallback_row = cursor.fetchone()
-                        fallback_sym = str(fallback_row[0]) if fallback_row else None
-                        if fallback_sym is None:
-                            cursor.execute(
-                                """SELECT pair_token FROM canonical_signals
-                                   WHERE created_at > now() - interval '2 hours'
-                                   ORDER BY created_at DESC LIMIT 1"""
-                            )
-                            fallback_row = cursor.fetchone()
-                            fallback_sym = str(fallback_row[0]) if fallback_row else None
-                        if fallback_sym is not None:
-                            management = parse_source_management(
-                                message.raw_text, fallback_symbol=fallback_sym
-                            )
-                    # None from the source parser is not permission to resurrect a negated
-                    # instruction via image JSON. Captioned management requires explicit text.
                     if (
                         management is None
                         and image_result is not None

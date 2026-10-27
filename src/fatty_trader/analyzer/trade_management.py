@@ -51,17 +51,9 @@ _SL_TO_ENTRY = re.compile(
 )
 
 _CLOSE = re.compile(
-    r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|now|challenge|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+(?:\d+(?:\.\d+)?R|\w+)(?:\+)?(?:\s+profit)?|\+\$?\d+|\$\d+)\b"
-    r"|\b(?:close|closed|exit|exited)\s+[\$#]?[A-Z0-9]{2,15}\b"
-    r"|\b[\$#]?[A-Z0-9]{2,15}\s+(?:is\s+)?(?:close|closed|exit|exited)\b"
+    r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+\d+(?:\.\d+)?R(?:\+)?(?:\s+profit)?)\b"
+    r"|\b(?:close|closed|closing|exit|exited)\s+(?:all\s+|fully\s+)?[$#]?[A-Z0-9]{1,15}\b"
     r"|\b(?:fully\s+closed|trade\s+closed)\b",
-    re.I,
-)
-
-_LIMIT_CANCEL = re.compile(
-    r"\b(?:limit|entry|order)\s+(?:missed|miss)\b.*\b(?:cancel|exit|close)\b"
-    r"|\b(?:cancel|cancelled|cancelling)\b.*\b(?:limit|order|trade|entry|plan)\b"
-    r"|\blimit\s+missed\b",
     re.I,
 )
 
@@ -72,6 +64,9 @@ _NEGATED_CLOSE = re.compile(
 _CANDLE_ANALYSIS_CLOSE = re.compile(
     r"\b(?:daily|candle|session|weekly|monthly|4h|1h|2h|15m)\s+close\b|\bclose\s+(?:above|below)\b",
     re.I,
+)
+_CONDITIONAL = re.compile(
+    r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", re.I
 )
 
 
@@ -88,9 +83,7 @@ class SourceManagement:
     action: ManagementAction
 
 
-def parse_source_management(
-    text: str, fallback_symbol: str | None = None
-) -> SourceManagement | None:
+def parse_source_management(text: str) -> SourceManagement | None:
     """Return a high-confidence management instruction, otherwise None."""
     candidates = [match.group(1).upper() for match in _EXPLICIT_SYMBOL.finditer(text or "")]
     candidates.extend(match.group(1).upper() for match in _FULL_SYMBOL.finditer(text or ""))
@@ -99,32 +92,41 @@ def parse_source_management(
         for token in candidates
         if _is_symbol_candidate(token)
     }
-    target_symbol = None
-    if len(normalized) == 1:
-        target_symbol = normalized.pop()
-    elif not normalized and fallback_symbol and _LIMIT_CANCEL.search(text):
-        target_symbol = (
-            fallback_symbol if fallback_symbol.endswith("USDT") else f"{fallback_symbol}USDT"
-        )
-    else:
+    if len(normalized) != 1:
         return None
-    if re.search(r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", text, re.I):
-        return None
-    if _TP1.search(text):
-        action = ManagementAction.TP1_BOOKED
-    elif _TP_BOOKED.search(text):
-        action = ManagementAction.TP_BOOKED
-    elif _SL_TO_ENTRY.search(text):
-        action = ManagementAction.SL_TO_ENTRY
-    elif (
-        (_CLOSE.search(text) or _LIMIT_CANCEL.search(text))
-        and not _NEGATED_CLOSE.search(text)
-        and not _CANDLE_ANALYSIS_CLOSE.search(text)
-    ):
-        action = ManagementAction.CLOSE
-    else:
-        return None
-    return SourceManagement(symbol=target_symbol, action=action)
+    symbol = normalized.pop()
+
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    for line in lines:
+        if _CONDITIONAL.search(line):
+            continue
+        if _TP1.search(line):
+            return SourceManagement(symbol=symbol, action=ManagementAction.TP1_BOOKED)
+        if _TP_BOOKED.search(line):
+            return SourceManagement(symbol=symbol, action=ManagementAction.TP_BOOKED)
+        if _SL_TO_ENTRY.search(line):
+            return SourceManagement(symbol=symbol, action=ManagementAction.SL_TO_ENTRY)
+        if (
+            _CLOSE.search(line)
+            and not _NEGATED_CLOSE.search(line)
+            and not _CANDLE_ANALYSIS_CLOSE.search(line)
+        ):
+            return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
+
+    if not _CONDITIONAL.search(text):
+        if _TP1.search(text):
+            return SourceManagement(symbol=symbol, action=ManagementAction.TP1_BOOKED)
+        if _TP_BOOKED.search(text):
+            return SourceManagement(symbol=symbol, action=ManagementAction.TP_BOOKED)
+        if _SL_TO_ENTRY.search(text):
+            return SourceManagement(symbol=symbol, action=ManagementAction.SL_TO_ENTRY)
+        if (
+            _CLOSE.search(text)
+            and not _NEGATED_CLOSE.search(text)
+            and not _CANDLE_ANALYSIS_CLOSE.search(text)
+        ):
+            return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
+    return None
 
 
 def _is_symbol_candidate(token: str) -> bool:
