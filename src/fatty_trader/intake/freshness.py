@@ -99,24 +99,26 @@ def expire_source_dispatch(cursor: Any, dispatch_id: UUID, state: str) -> None:
 
 # PostgreSQL timestamptz is aware; isfinite also excludes +/- infinity before
 # psycopg attempts to decode those values as Python datetimes.
-SOURCE_ELIGIBLE_SQL = """
-{alias}.ingestion_origin IN ('realtime', 'catchup', 'backfill')
-AND isfinite({alias}.received_at)
-AND isfinite({alias}.entry_expires_at)
-AND {alias}.entry_rejection_reason IS NULL
--- A revision whose signal text differs from a retained revision is a
--- message-level veto, including reverted content and later retrieval of the old
--- revision. Same-text re-publications (the publisher edits every post to attach
--- its chart) are audited as superseded-source-revision and never revoke the entry.
-AND NOT EXISTS (
-    SELECT 1 FROM telegram_messages source_edit
-    WHERE source_edit.channel_id = {alias}.channel_id
-      AND source_edit.message_id = {alias}.message_id
-      AND source_edit.entry_rejection_reason = 'edited-source-message'
+SOURCE_ELIGIBLE_SQL = """(
+(
+    {alias}.ingestion_origin IN ('realtime', 'catchup', 'backfill')
+    AND isfinite({alias}.received_at)
+    AND isfinite({alias}.entry_expires_at)
+    AND {alias}.entry_rejection_reason IS NULL
+    -- A revision whose signal text differs from a retained revision is a
+    -- message-level veto, including reverted content and later retrieval of the old
+    -- revision. Same-text re-publications (the publisher edits every post to attach
+    -- its chart) are audited as superseded-source-revision and never revoke the entry.
+    AND NOT EXISTS (
+        SELECT 1 FROM telegram_messages source_edit
+        WHERE source_edit.channel_id = {alias}.channel_id
+          AND source_edit.message_id = {alias}.message_id
+          AND source_edit.entry_rejection_reason = 'edited-source-message'
+    )
+    AND {alias}.entry_expires_at > clock_timestamp()
+    AND {alias}.received_at > clock_timestamp() - interval '5 minutes'
+    AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
 )
-AND {alias}.entry_expires_at > clock_timestamp()
-AND {alias}.received_at > clock_timestamp() - interval '5 minutes'
-AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
 -- A signal whose window lapsed while the lane was down may be re-admitted by an
 -- explicit operator reference (scripts/requeue_late_signal.py). Only the lapse
 -- rejection is overridable; a superseded revision is never re-admitted.
@@ -129,4 +131,4 @@ OR (
         OR {alias}.entry_rejection_reason = 'stale-source-message'
     )
 )
-"""
+)"""

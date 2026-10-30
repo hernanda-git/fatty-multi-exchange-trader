@@ -107,7 +107,7 @@ async def classify_missing_detail(
         else LiveOrderStatus.PARTIAL
         if fill_evidence_safe and filled_qty > 0
         else LiveOrderStatus.REJECTED
-        if safe and missing_order_confirmed
+        if (safe or (flat and no_pending and filled_qty == 0)) and missing_order_confirmed
         else LiveOrderStatus.UNKNOWN
     )
     return AmbiguousOrderResult(

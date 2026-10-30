@@ -168,9 +168,11 @@ def _required_size(row: dict[str, Any]) -> Any:
     Defaulting to "0" would fabricate a zero-quantity order event, which reads
     downstream as a real order that filled nothing.
     """
-    for field in ("accFillSz", "fillSz", "baseVolume", "sz"):
+    for field in ("size", "origSz", "accFillSz", "fillSz", "baseVolume", "sz"):
         if row.get(field) is not None:
             return row[field]
+    if row.get("state") in {"cancelled", "canceled", "failed"}:
+        return "0"
     raise WebSocketProtocolError("Bitget websocket order row is missing a size field")
 
 
