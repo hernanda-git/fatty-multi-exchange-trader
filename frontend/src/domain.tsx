@@ -144,117 +144,184 @@ export function PositionsTable({
 // 2. Orders Table (Legitimate binding to requested_qty, filled_qty, side, filled_price)
 // --------------------------------------------------------------------------
 
+export function isPendingOrder(row: RecordData): boolean {
+  const state = String(row.state || '').toUpperCase();
+  const providerTerminal = row.provider_terminal === true || row.provider_terminal === 't' || row.provider_terminal === 'true';
+  const terminalStates = ['FILLED', 'CANCELLED', 'RECONCILED', 'REJECTED'];
+  if (terminalStates.includes(state) || providerTerminal) {
+    return false;
+  }
+  const reqQty = Number(row.requested_qty ?? row.quantity ?? 0);
+  const fillQty = Number(row.filled_qty ?? row.filled_quantity ?? 0);
+  if (reqQty > 0 && fillQty >= reqQty) {
+    return false;
+  }
+  return true;
+}
+
 export function OrdersTable({
   items,
   onCancel,
+  showAllByDefault = false,
 }: {
   items: RecordData[];
   onCancel?: (item: RecordData) => void;
+  showAllByDefault?: boolean;
 }) {
+  const [filterMode, setFilterMode] = useState<'pending' | 'all'>(showAllByDefault ? 'all' : 'pending');
+  const pendingOrders = items.filter(isPendingOrder);
+  const displayItems = filterMode === 'pending' ? pendingOrders : items;
+
   if (!items.length) {
     return (
       <div className="empty-state-box">
-        <p className="empty-title">No Working Orders</p>
-        <p className="empty-subtext">There are no pending limit or trigger orders in the orderbook.</p>
+        <p className="empty-title">No Orders Found</p>
+        <p className="empty-subtext">There are no order records in the ledger.</p>
       </div>
     );
   }
 
   return (
-    <div className="clean-table-wrapper">
-      <table className="clean-table">
-        <thead>
-          <tr>
-            <th scope="col">Time</th>
-            <th scope="col">Contract</th>
-            <th scope="col">Side</th>
-            <th scope="col">Type / Role</th>
-            <th scope="col" className="text-right">Price</th>
-            <th scope="col" className="text-right">Quantity</th>
-            <th scope="col" className="text-right">Filled</th>
-            <th scope="col">State</th>
-            <th scope="col" className="text-right">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((row, i) => {
-            const time = row.created_at ? formatDateTime(String(row.created_at)) : 'Recent';
-            const sym = String(row.symbol || 'UNKNOWN');
-            const side = String(row.side || row.direction || 'BUY').toUpperCase();
-            const orderType = String(row.order_type || 'MARKET').toUpperCase();
-            const role = String(row.role || 'ENTRY');
-            const price = String(row.filled_price || row.limit_price || row.requested_price || row.price || 'Market');
-            const reqQty = String(row.requested_qty ?? row.quantity ?? '0');
-            const fillQty = String(row.filled_qty ?? row.filled_quantity ?? '0');
-            const state = String(row.state || 'WORKING').toUpperCase();
-            const isWorking = ['WORKING', 'LIVE', 'SUBMITTED', 'ACKNOWLEDGED', 'REQUESTED'].includes(state);
+    <div className="orders-table-container">
+      <div className="orders-filter-bar" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px'}}>
+        <div style={{display: 'flex', gap: '8px'}}>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'pending' ? 'btn-primary' : 'btn-secondary'}`}
+            style={{fontWeight: 600, padding: '6px 14px'}}
+            onClick={() => setFilterMode('pending')}
+          >
+            ⚡ Pending / Working ({pendingOrders.length})
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm ${filterMode === 'all' ? 'btn-primary' : 'btn-secondary'}`}
+            style={{fontWeight: 600, padding: '6px 14px'}}
+            onClick={() => setFilterMode('all')}
+          >
+            All Order Intents ({items.length})
+          </button>
+        </div>
+        {filterMode === 'pending' && pendingOrders.length > 0 && (
+          <span className="badge badge-warn" style={{fontSize: '0.8rem', padding: '4px 8px'}}>
+            {pendingOrders.length} active order{pendingOrders.length > 1 ? 's' : ''} waiting on Bitget
+          </span>
+        )}
+      </div>
 
-            return (
-              <tr key={String(row.id ?? i)}>
-                <td className="text-muted text-xs tabular-num">{time}</td>
-                <td className="font-bold">
-                  <Link to={`/orders/${encodeURIComponent(String(row.id || ''))}`}>
-                    {sym}
-                  </Link>
-                  <div className="font-mono text-muted text-xs">
-                    {String(row.client_order_id || row.id || '').slice(0, 24)}
-                  </div>
-                </td>
-                <td>
-                  <span className={`badge ${side === 'BUY' || side === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
-                    {side}
-                  </span>
-                </td>
-                <td>
-                  <span className="badge badge-neutral">{orderType}</span>{' '}
-                  <span className="text-xs text-muted">({role})</span>
-                </td>
-                <td className="text-right tabular-num font-mono">
-                  {price === 'Market' ? 'Market' : `$${formatNumber(price)}`}
-                </td>
-                <td className="text-right tabular-num font-mono">{formatNumber(reqQty)}</td>
-                <td className="text-right tabular-num font-mono">{formatNumber(fillQty)}</td>
-                <td>
-                  <span
-                    className={`badge ${
-                      state === 'FILLED'
-                        ? 'badge-positive'
-                        : isWorking
-                        ? 'badge-warn'
-                        : 'badge-neutral'
-                    }`}
-                  >
-                    {state}
-                  </span>
-                </td>
-                <td className="text-right">
-                  {onCancel && isWorking ? (
-                    <button
-                      type="button"
-                      className="btn btn-danger btn-sm"
-                      style={{
-                        background: '#dc2626',
-                        color: '#fff',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: '4px 10px',
-                        cursor: 'pointer',
-                        fontWeight: 600,
-                      }}
-                      onClick={() => onCancel(row)}
-                      title="Cancel this order on Bitget"
-                    >
-                      Cancel
-                    </button>
-                  ) : (
-                    <span className="text-muted text-xs">—</span>
-                  )}
-                </td>
+      {filterMode === 'pending' && !pendingOrders.length ? (
+        <div className="empty-state-box" style={{padding: '36px 16px', textAlign: 'center'}}>
+          <p className="empty-title" style={{fontSize: '1.15rem', fontWeight: 600, color: '#10b981'}}>
+            ✓ No Pending Orders
+          </p>
+          <p className="empty-subtext" style={{color: '#6b7280', margin: '8px 0 16px 0'}}>
+            All limit and entry orders are filled or cancelled. There are no orders hanging or waiting in the orderbook.
+          </p>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setFilterMode('all')}
+          >
+            View All Order History ({items.length})
+          </button>
+        </div>
+      ) : (
+        <div className="clean-table-wrapper">
+          <table className="clean-table">
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Contract</th>
+                <th scope="col">Side</th>
+                <th scope="col">Type / Role</th>
+                <th scope="col" className="text-right">Price</th>
+                <th scope="col" className="text-right">Quantity</th>
+                <th scope="col" className="text-right">Filled</th>
+                <th scope="col">State</th>
+                <th scope="col" className="text-right">Action</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {displayItems.map((row, i) => {
+                const time = row.created_at ? formatDateTime(String(row.created_at)) : 'Recent';
+                const sym = String(row.symbol || 'UNKNOWN');
+                const side = String(row.side || row.direction || 'BUY').toUpperCase();
+                const orderType = String(row.order_type || 'MARKET').toUpperCase();
+                const role = String(row.role || 'ENTRY');
+                const price = String(row.filled_price || row.limit_price || row.requested_price || row.price || 'Market');
+                const reqQty = String(row.requested_qty ?? row.quantity ?? '0');
+                const fillQty = String(row.filled_qty ?? row.filled_quantity ?? '0');
+                const state = String(row.state || 'WORKING').toUpperCase();
+                const isPending = isPendingOrder(row);
+
+                return (
+                  <tr key={String(row.id ?? i)}>
+                    <td className="text-muted text-xs tabular-num">{time}</td>
+                    <td className="font-bold">
+                      <Link to={`/orders/${encodeURIComponent(String(row.id || ''))}`}>
+                        {sym}
+                      </Link>
+                      <div className="font-mono text-muted text-xs">
+                        {String(row.client_order_id || row.id || '').slice(0, 24)}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`badge ${side === 'BUY' || side === 'LONG' ? 'badge-positive' : 'badge-danger'}`}>
+                        {side}
+                      </span>
+                    </td>
+                    <td>
+                      <span className="badge badge-neutral">{orderType}</span>{' '}
+                      <span className="text-xs text-muted">({role})</span>
+                    </td>
+                    <td className="text-right tabular-num font-mono">
+                      {price === 'Market' ? 'Market' : `$${formatNumber(price)}`}
+                    </td>
+                    <td className="text-right tabular-num font-mono">{formatNumber(reqQty)}</td>
+                    <td className="text-right tabular-num font-mono">{formatNumber(fillQty)}</td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          state === 'FILLED'
+                            ? 'badge-positive'
+                            : isPending
+                            ? 'badge-warn'
+                            : 'badge-neutral'
+                        }`}
+                      >
+                        {state}
+                      </span>
+                    </td>
+                    <td className="text-right">
+                      {onCancel && isPending ? (
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          style={{
+                            background: '#dc2626',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '4px 12px',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                          }}
+                          onClick={() => onCancel(row)}
+                          title={`Cancel ${sym} pending order on Bitget`}
+                        >
+                          Cancel
+                        </button>
+                      ) : (
+                        <span className="text-muted text-xs">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

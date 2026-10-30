@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {PositionsTable, OrdersTable, FillsTable} from '../domain';
+import {PositionsTable, OrdersTable, FillsTable, isPendingOrder} from '../domain';
 import {type Envelope, type Capability, type RecordData, isObjectRecord} from '../types';
 
 export function TradingPage({
@@ -215,7 +215,7 @@ export function TradingPage({
               + New Position
             </button>
           )}
-          {readSection === 'orders' && (
+          {readSection === 'orders' && items.some(isPendingOrder) && (
             <button
               type="button"
               className="btn btn-danger btn-sm"
