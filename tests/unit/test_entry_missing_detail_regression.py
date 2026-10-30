@@ -156,3 +156,39 @@ async def test_unknown_entry_persists_provider_fills_with_open_position(quantity
     assert result.filled_qty == Decimal(quantity)
     assert result.provider_fill_ids == ("actual-fill",)
     assert result.avg_price == Decimal("50000")
+
+
+async def test_missing_detail_with_unmatched_fills_and_historical_end_id_is_rejected() -> None:
+    intent = entry_intent("ENTRY")
+
+    async def read_fills(_: str) -> Any:
+        # Exchange returns historical fills for an older trade on the same symbol with endId cursor
+        return {
+            "fillList": [
+                {
+                    "clientOid": "unrelated-historical-order",
+                    "orderId": "old-order-1",
+                    "fillId": "old-fill-1",
+                    "baseVolume": "100",
+                    "price": "100",
+                }
+            ],
+            "endId": "1473916399535263744",
+        }
+
+    async def read_position(_: str) -> Any:
+        return []
+
+    async def read_pending(_: str) -> Any:
+        return []
+
+    outcome = await classify_missing_detail(
+        intent,
+        read_fills=read_fills,
+        read_position=read_position,
+        read_pending_orders=read_pending,
+        provider_order_id=intent.provider_order_id,
+        missing_order_confirmed=True,
+    )
+    assert outcome.status is LiveOrderStatus.REJECTED
+    assert outcome.filled_qty == Decimal("0")
