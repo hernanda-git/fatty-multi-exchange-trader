@@ -276,3 +276,63 @@ Intent-before-POST with stable client order ids; never re-post an ambiguous orde
 GET-only recovery; additive migrations; the deploy gate; rollout announcements; a bound
 close intent before any containment; every parked row carries an attempt budget and a
 deadline; alerts carry real identities.
+
+
+## 2026-10-27 Forensic Audit & Execution Remediation Master Plan
+
+### Incident Summary (2026-10-27)
+- **Live State**: Lane in `LIVE/LIVE/1`. Active `POWERUSDT` long position (193 contracts @ 0.08125, isolated 14x margin = 1.12 USDT) protected by native Bitget TP (`0.0964`, ID `1498910052386856960`) and SL (`0.07645`, ID `1498910052441382912`).
+- **Lane Halt**: `venue_kill_switches` latched at `09:39:11 UTC` with `post-fill-margin-or-leverage-mismatch`, blocking all subsequent signals.
+- **Resource Burn**: `analyzer` service stuck in an uncontained infinite loop spawning OpenAI Codex (`gpt-5.6-luna`) to re-parse historical message #16326 (`#NEAR SHORT` from 2026-10-18) every few seconds.
+- **Missed Trade Close**: Telegram message #16384 (`closed $POWER 10$ profit...`) was rejected by the intake safety filter (`edited-source-message`), leaving the position open on venue.
+
+### Five Concrete Integrity Defects & Root Causes
+
+1. **SQL Operator Precedence Leak (Infinite Analyzer Loop)**
+   - *Files*: `src/fatty_trader/analyzer/postgres_worker.py:25`, `src/fatty_trader/intake/freshness.py:65-98`
+   - *Root Cause*: `_SELECT_RECEIVED` query injects `SOURCE_ELIGIBLE_SQL` without enclosing parentheses. `SOURCE_ELIGIBLE_SQL` ends with `OR ({alias}.re_admission_reference IS NOT NULL ...)`. SQL precedence gives `AND` priority over `OR`, evaluating: `(intake_state = 'RECEIVED' AND ...) OR (re_admission_reference IS NOT NULL AND ...)`.
+   - *Impact*: Any row with a non-null `re_admission_reference` (e.g. msg #16326 with `owner-approved-late-near-20261018`) matches `_SELECT_RECEIVED` perpetually, ignoring `intake_state = 'ANALYZED'`. The worker analyzes it, calls Codex CLI, commits `ANALYZED`, and immediately re-selects it.
+
+2. **1-Cent Post-Fill Margin Tolerance (False Kill Switch Latch)**
+   - *File*: `src/fatty_trader/exchanges/bitget/async_execution.py:376`
+   - *Root Cause*: Hardcoded `abs(position.margin_usdt - intent.planned_margin_usdt) <= Decimal("0.01")`.
+   - *Impact*: Market order slippage naturally shifts the actual required margin. On `POWERUSDT`, fill at `0.08125` vs planned `0.0794` shifted margin from `1.094586 USDT` to `1.120089 USDT` (delta = `0.0255 USDT`). Exceeding the 1-cent threshold triggered a `margin-mismatch`, latched the kill switch, and froze the live lane.
+
+3. **Indiscriminate Message Edit Rejection on Trade Management**
+   - *Files*: `src/fatty_trader/intake/freshness.py`, `src/fatty_trader/analyzer/trade_management.py`
+   - *Root Cause*: `edited-source-message` rejection vetoes any edited Telegram message. While necessary for new entry signals to prevent retroactive price modifications, applying this blanket rule to trade management/close instructions causes the bot to ignore manual closes if the author edits formatting or adds commentary.
+   - *Impact*: Message #16384 close directive for `POWERUSDT` was discarded.
+
+4. **Event Bridge 24-Hour Scan Overflow**
+   - *File*: `/home/valarion/.hermes/bitget-ops/event_bridge.py:100-112, 175-177`
+   - *Root Cause*: Periodic 120-tick catch-up scans `since = now - 24 hours` with `LIMIT 501`. Because `dispatcher-bitget-1` logs periodic self-transitions (`FILLED` to `FILLED` during idle readback, >1,400 rows/day), the query hits 501 events. `check_events` throws `RuntimeError` (`Event scan exceeds safe bound`), breaking `bridge-health.json`.
+
+5. **Bitget WebSocket V2 Order Missing Size Field**
+   - *File*: `src/fatty_trader/exchanges/bitget/ws_v2_models.py:174`
+   - *Root Cause*: `_required_size()` expects only `("accFillSz", "fillSz", "baseVolume", "sz")`. When Bitget pushes trigger/cancellation updates or modified order rows without those exact keys, it raises `WebSocketProtocolError: Bitget websocket order row is missing a size field`.
+
+### Remediation Roadmap
+
+#### Phase 1: Immediate Stabilization (Live Operations) — [Executing]
+- [x] Audit active position on Bitget: `POWERUSDT` long 193 contracts active with resting venue SL (`0.07645`) and TP (`0.0964`).
+- [x] Retain active `POWERUSDT` under resting native venue protection (per owner decision: let it hit SL or TP).
+- [ ] Halt analyzer burning loop by clearing/nullifying `re_admission_reference` on message #16326 (`d05122cc-9b33-48ef-8ab7-06e42f5a3d79`) in PostgreSQL.
+- [ ] Verify `analyzer-1` drops CPU to baseline and stops calling Codex CLI.
+- [ ] Unlatch `venue_kill_switches` for `scope = 'bitget'` in PostgreSQL.
+
+#### Phase 2: Isolated Engineering Worktree (Code Fixes)
+- [ ] Create isolated worktree `.worktrees/fix-bitget-stability` on branch `fix/bitget-lane-stability`.
+- [ ] Fix 1 (`freshness.py` & `postgres_worker.py`): Parenthesize `SOURCE_ELIGIBLE_SQL` and enforce `intake_state = 'RECEIVED'` across all branches.
+- [ ] Fix 2 (`async_execution.py`): Replace rigid `0.01 USDT` tolerance with a proportional slippage-bounded tolerance: `max(Decimal("0.10"), planned_margin * Decimal("0.10"))` or mark-based slippage bound.
+- [ ] Fix 3 (`trade_management.py` & `postgres_worker.py`): Allow trade close/management directives to process even if text revision occurred, provided symbol and direction match open position.
+- [ ] Fix 4 (`event_bridge.py`): Deduplicate/filter redundant readback self-transitions (`from_state = to_state`) in 24h rescan query.
+- [ ] Fix 5 (`ws_v2_models.py`): Handle non-fill order lifecycle rows gracefully without protocol abort.
+
+#### Phase 3: Verification & Test Replay
+- [ ] Run full test suite in worktree: `pytest tests/unit/test_freshness.py tests/unit/test_async_execution.py tests/unit/test_trade_management.py`.
+- [ ] Replay historical messages #16326 and #16384 against test DB.
+
+#### Phase 4: Production Deployment & Readback
+- [ ] Present git diff to owner for approval per `MANDATE.md`.
+- [ ] Rebuild and deploy Docker containers (`analyzer`, `dispatcher-bitget`, `monitor-bitget`).
+- [ ] Read back live telemetry: `bridge-health.json` observing, zero false latches on monitor.
