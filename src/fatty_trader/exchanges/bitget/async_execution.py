@@ -356,6 +356,9 @@ class AsyncBitgetExecution:
                         expected_quantity = store.remaining_owned_quantity(intent.client_oid)
                     except Exception:
                         expected_quantity = intent.filled_qty
+                margin_tolerance = max(
+                    Decimal("0.10"), intent.planned_margin_usdt * Decimal("0.10")
+                )
                 if (
                     position.leverage != Decimal(intent.planned_leverage)
                     or mode != intent.margin_mode
@@ -367,12 +370,12 @@ class AsyncBitgetExecution:
                     status, reason = "mismatch", "split-position-quantity-mismatch"
                 elif (
                     intent.dispatch_id is not None
-                    and position.margin_usdt <= intent.planned_margin_usdt + Decimal("0.01")
+                    and position.margin_usdt <= intent.planned_margin_usdt + margin_tolerance
                 ):
                     status, reason = "within_tolerance", "split-filled-margin-within-reserved-cap"
                 elif position.margin_usdt == intent.planned_margin_usdt:
                     status, reason = "matched", None
-                elif abs(position.margin_usdt - intent.planned_margin_usdt) <= Decimal("0.01"):
+                elif abs(position.margin_usdt - intent.planned_margin_usdt) <= margin_tolerance:
                     status, reason = "within_tolerance", "margin-rounding-or-fee-tolerance"
                 else:
                     status, reason = "mismatch", "margin-mismatch"
