@@ -6,13 +6,38 @@ Autonomous, production-grade copy-trading system executing Telegram signals from
 
 ## 1. Production Status: LIVE & STABLE (Verified)
 
-As of **October 25, 2026**, this project is actively running 24/7 in production on host `fspmi-hostinger`:
+As of **October 31, 2026**, this project is actively running 24/7 in production on host `fspmi-hostinger` with all services healthy, zero recovery deadlocks, and profitable autonomous live signal execution:
 
 * **Live Execution Venue**: Bitget USDT-M Futures (Account `5536885345`, Mode: `LIVE`)
-* **Fleet Health**: All 10 Docker microservices are **Up (healthy)**
-* **Dispatcher Loop**: Continuously idling (`state=idle`, polling interval: 10s), zero recovery deadlocks
-* **Web Management Console**: Deployed and serving at [`https://trade.warga-digital.com`](https://trade.warga-digital.com)
-* **Risk & Exposure Status**: Equity `8.5826 USDT`, Available `8.5826 USDT`, 0 open positions, 0 hanging orders
+* **Fleet Health**: All 10 Docker microservices are **Up (healthy)** for 33+ consecutive hours
+* **Dispatcher Loop**: Continuously idling (`state=idle`, polling interval: 10s), 100% of signals executed
+* **Web Management Console**: Deployed and serving at `http://127.0.0.1:18081` (via SSH tunnel or reverse proxy)
+* **Risk & Exposure Status**: Equity `8.20817 USDT` (growing from `7.8225 USDT`), 2 active profitable positions, 100% armed with native exchange TP & SL
+
+### Live Management Console Dashboard
+
+![Bitget Live Account & Open Positions](docs/screenshots/live-account-positions.png)
+
+#### Account Overview
+
+| Metric | Value |
+| :--- | :--- |
+| **Total Equity** | `8.20817 USDT` |
+| **Available Margin** | `5.69060 USDT` |
+| **Unrealized PnL** | `+0.40880 USDT` |
+| **Margin Mode** | Isolated (`one_way_mode`) |
+| **Kill Switches** | `bitget: OFF, protection-stream: OFF` |
+
+#### Open Positions (Live Bitget API Probe)
+
+| Symbol | Side | Leverage | Position Size | Entry Price | Mark Price | Margin Used | Unrealized PnL | Active SL | Active TP |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ZROUSDT** | LONG | 20x | 12 ZRO | `1.70705` | `1.7314` | 1.021 USDT | **+0.2922 USDT (+28.6%)** | `1.6605` | `1.9090` |
+| **EVAAUSDT** | LONG | 10x | 8 EVAA | `1.24190` | `1.2521` | 0.993 USDT | **+0.0816 USDT (+8.2%)** | `1.1985` | `1.5590` |
+
+> **Note:** Bitget native plan orders confirmed live via REST API:
+> - **EVAAUSDT**: SL order `#1500361694371635200` (`1.1985`), TP order `#1500361694321303552` (`1.5590`).
+> - **ZROUSDT**: SL order `#1500225879371407360` (`1.6605`), TP order `#1500225879321075712` (`1.9090`).
 
 ---
 
