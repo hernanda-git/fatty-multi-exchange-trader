@@ -283,6 +283,272 @@ function CapitalAndRisk({
     </div>
   );
 }
+function LiveAccountAndPositionsProbe({
+  equity,
+  available,
+  totalUpnl,
+  coin,
+  marginMode,
+  posMode,
+  latches,
+  positions,
+  plans,
+  onClose,
+}: {
+  equity: number | null;
+  available: number | null;
+  totalUpnl: number;
+  coin: string;
+  marginMode: string;
+  posMode: string;
+  latches: RecordData[];
+  positions: RecordData[];
+  plans: RecordData[];
+  onClose?: (pos: RecordData) => void;
+}) {
+  const mMode = marginMode
+    ? marginMode.charAt(0).toUpperCase() + marginMode.slice(1).toLowerCase()
+    : 'Isolated';
+  const pMode = posMode ? ` (${posMode})` : '';
+  const marginModeDisplay = `${mMode}${pMode}`;
+
+  const bitgetLatch = latches.find((l) => String(l.scope ?? '') === 'bitget');
+  const streamLatch = latches.find((l) =>
+    ['bitget-protection-stream', 'stream'].includes(String(l.scope ?? ''))
+  );
+  const bitgetStatus = bitgetLatch?.active ? 'ON' : 'OFF';
+  const streamStatus = streamLatch?.active ? 'ON' : 'OFF';
+  const killSwitchesDisplay = `bitget: ${bitgetStatus}, protection-stream: ${streamStatus}`;
+
+  const planNotes = positions
+    .map((pos) => {
+      const sym = String(pos.symbol ?? '').toUpperCase();
+      const symPlans = plans.filter((p) => String(p.symbol ?? '').toUpperCase() === sym);
+      const sl = symPlans.find((p) => String(p.planType ?? '') === 'pos_loss');
+      const tp = symPlans.find((p) => String(p.planType ?? '') === 'pos_profit');
+      const slOrderId = sl?.orderId ?? sl?.planOrderId ?? pos.stopLossId;
+      const tpOrderId = tp?.orderId ?? tp?.planOrderId ?? pos.takeProfitId;
+      const slPrice = sl?.triggerPrice ?? pos.stopLoss;
+      const tpPrice = tp?.triggerPrice ?? pos.takeProfit;
+
+      const slPart = slOrderId ? `SL order #${slOrderId} (${slPrice ?? '—'})` : 'SL: none';
+      const tpPart = tpOrderId ? `TP order #${tpOrderId} (${tpPrice ?? '—'})` : 'TP: none';
+      return {
+        symbol: sym,
+        text: `${sym}: ${slPart}, ${tpPart}.`,
+      };
+    })
+    .filter((n) => n.text.includes('#'));
+
+  return (
+    <div className="card live-probe-card" style={{ marginBottom: '24px' }}>
+      <div className="card-header">
+        <div>
+          <span className="eyebrow">BITGET API PROBE · LIVE PERSISTENCE</span>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, margin: 0 }}>
+            1. Live Account &amp; Open Positions (Bitget API Probe)
+          </h2>
+        </div>
+        <span className="text-sm text-secondary">
+          Observed live via Bitget V2 REST API · Margin Coin {coin}
+        </span>
+      </div>
+
+      {/* Account Overview Table */}
+      <div style={{ marginBottom: '24px' }}>
+        <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', color: 'var(--text-primary)' }}>
+          Account Overview
+        </h3>
+        <div className="clean-table-wrapper" style={{ maxWidth: '640px' }}>
+          <table className="clean-table">
+            <thead>
+              <tr>
+                <th style={{ width: '45%' }}>Metric</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="text-secondary font-medium">Total Equity</td>
+                <td className="font-mono font-bold tabular-num">
+                  {equity !== null ? `${equity.toFixed(5)} ${coin}` : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td className="text-secondary font-medium">Available Margin</td>
+                <td className="font-mono tabular-num">
+                  {available !== null ? `${available.toFixed(5)} ${coin}` : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td className="text-secondary font-medium">Unrealized PnL</td>
+                <td className={`font-mono tabular-num font-bold ${totalUpnl >= 0 ? 'text-success' : 'text-danger'}`}>
+                  {totalUpnl >= 0 ? '+' : ''}{totalUpnl.toFixed(5)} {coin}
+                </td>
+              </tr>
+              <tr>
+                <td className="text-secondary font-medium">Margin Mode</td>
+                <td className="font-mono">
+                  {marginModeDisplay}
+                </td>
+              </tr>
+              <tr>
+                <td className="text-secondary font-medium">Kill Switches</td>
+                <td className="font-mono">
+                  {killSwitchesDisplay}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Open Positions Table */}
+      <div style={{ marginBottom: '20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: 600, margin: 0, color: 'var(--text-primary)' }}>
+            Open Positions
+          </h3>
+          <span className="text-xs text-muted">
+            {positions.length} active position{positions.length === 1 ? '' : 's'}
+          </span>
+        </div>
+
+        {positions.length === 0 ? (
+          <div className="empty-state-box">
+            <p className="empty-title">No open position — account flat</p>
+            <p className="empty-subtext">
+              0 active positions reported by Bitget V2 account probe.
+            </p>
+          </div>
+        ) : (
+          <div className="clean-table-wrapper">
+            <table className="clean-table">
+              <thead>
+                <tr>
+                  <th scope="col">Symbol</th>
+                  <th scope="col">Side</th>
+                  <th scope="col">Leverage</th>
+                  <th scope="col" className="text-right">Position Size</th>
+                  <th scope="col" className="text-right">Entry Price</th>
+                  <th scope="col" className="text-right">Mark Price</th>
+                  <th scope="col" className="text-right">Margin Used</th>
+                  <th scope="col" className="text-right">Unrealized PnL</th>
+                  <th scope="col" className="text-right">Active SL</th>
+                  <th scope="col" className="text-right">Active TP</th>
+                  {onClose && <th scope="col" className="text-right">Action</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map((pos, idx) => {
+                  const sym = String(pos.symbol ?? 'UNKNOWN');
+                  const base = sym.replace(coin, '');
+                  const side = String(pos.holdSide ?? pos.direction ?? pos.side ?? 'LONG').toUpperCase();
+                  const isLong = side === 'LONG' || side === 'BUY';
+                  const lev = pos.leverage ? `${pos.leverage}x` : '—';
+                  const size = pos.total ?? pos.available ?? '0';
+                  const sizeDisplay = `${formatNumber(String(size))} ${base}`;
+
+                  const entryVal = toNumber(pos.openPriceAvg ?? pos.averageOpenPrice);
+                  const entryDisplay = entryVal !== null
+                    ? (entryVal < 1 ? entryVal.toFixed(5) : entryVal.toFixed(5).replace(/0+$/, '0'))
+                    : '—';
+
+                  const markVal = toNumber(pos.markPrice);
+                  const markDisplay = markVal !== null
+                    ? (markVal < 1 ? markVal.toFixed(6) : markVal.toFixed(4))
+                    : '—';
+
+                  const marginVal = toNumber(pos.marginSize);
+                  const marginDisplay = marginVal !== null ? `${marginVal.toFixed(3)} ${coin}` : '—';
+
+                  const upnlVal = toNumber(pos.unrealizedPL ?? pos.unrealized_pl) ?? 0;
+                  const roe = marginVal && marginVal > 0 ? (upnlVal / marginVal) * 100 : null;
+                  const sign = upnlVal >= 0 ? '+' : '';
+                  const roeText = roe !== null ? ` (${sign}${roe.toFixed(1)}%)` : '';
+                  const upnlDisplay = `${sign}${upnlVal.toFixed(4)} ${coin}${roeText}`;
+
+                  const symPlans = plans.filter((p) => String(p.symbol ?? '').toUpperCase() === sym.toUpperCase());
+                  const slPlan = symPlans.find((p) => String(p.planType ?? '') === 'pos_loss');
+                  const tpPlan = symPlans.find((p) => String(p.planType ?? '') === 'pos_profit');
+
+                  const slVal = toNumber(slPlan?.triggerPrice) ?? toNumber(pos.stopLoss);
+                  const slDisplay = slVal !== null
+                    ? (slVal < 1 ? slVal.toFixed(5) : slVal.toFixed(4))
+                    : '—';
+
+                  const tpVal = toNumber(tpPlan?.triggerPrice) ?? toNumber(pos.takeProfit);
+                  const tpDisplay = tpVal !== null
+                    ? (tpVal < 1 ? tpVal.toFixed(5) : tpVal.toFixed(4))
+                    : '—';
+
+                  return (
+                    <tr key={String(pos.id ?? sym) + '-' + idx}>
+                      <td className="font-bold">
+                        <Link to={`/positions/${encodeURIComponent(sym)}`}>
+                          {sym}
+                        </Link>
+                      </td>
+                      <td>
+                        <span className={`badge ${isLong ? 'badge-positive' : 'badge-danger'}`}>
+                          {side}
+                        </span>
+                      </td>
+                      <td className="font-mono text-sm">{lev}</td>
+                      <td className="text-right tabular-num font-mono">{sizeDisplay}</td>
+                      <td className="text-right tabular-num font-mono">{entryDisplay}</td>
+                      <td className="text-right tabular-num font-mono">{markDisplay}</td>
+                      <td className="text-right tabular-num font-mono">{marginDisplay}</td>
+                      <td className={`text-right tabular-num font-mono font-bold ${upnlVal >= 0 ? 'text-success' : 'text-danger'}`}>
+                        {upnlDisplay}
+                      </td>
+                      <td className="text-right tabular-num font-mono text-danger font-medium">{slDisplay}</td>
+                      <td className="text-right tabular-num font-mono text-success font-medium">{tpDisplay}</td>
+                      {onClose && (
+                        <td className="text-right">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => onClose(pos)}
+                          >
+                            Close
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Note: Bitget native plan orders confirmed live via REST API */}
+      {planNotes.length > 0 && (
+        <div style={{
+          background: 'var(--bg-subtle)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '6px',
+          padding: '12px 16px',
+          fontSize: '0.85rem',
+          lineHeight: '1.5'
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--text-primary)' }}>
+            Note: Bitget native plan orders confirmed live via REST API:
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '20px', color: 'var(--text-secondary)' }}>
+            {planNotes.map((note, idx) => (
+              <li key={idx} className="font-mono text-xs" style={{ marginBottom: '3px' }}>
+                {note.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function OverviewPage({
   envelope,
@@ -406,6 +672,20 @@ export function OverviewPage({
 
   return (
     <div className="page-content overview-page">
+      {/* 1. Live Account & Open Positions (Bitget API Probe) */}
+      <LiveAccountAndPositionsProbe
+        equity={toNumber(rawEquity)}
+        available={toNumber(rawAvailable)}
+        totalUpnl={Number.isFinite(totalUpnl) ? totalUpnl : 0}
+        coin={coin}
+        marginMode={String(provAccount?.margin_mode ?? provAccount?.marginMode ?? 'isolated')}
+        posMode={String(provPositions[0]?.posMode ?? 'one_way_mode')}
+        latches={latches}
+        positions={provPositions}
+        plans={nativePlans}
+        onClose={(pos) => onOpenAction?.('position.close', pos)}
+      />
+
       {/* 4 Clean Executive Metric Tiles with Legitimate Real Data */}
       <div className="metric-grid-4">
         <div className="metric-tile">
@@ -470,23 +750,6 @@ export function OverviewPage({
         positions={provPositions}
         plans={nativePlans}
       />
-
-      {/* Active Positions Table on Overview */}
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <span className="eyebrow">ACTIVE EXPOSURE</span>
-            <h2>Open Positions ({openPosCount})</h2>
-          </div>
-          <Link to="/trading" className="btn btn-primary btn-sm">
-            + New Trade
-          </Link>
-        </div>
-        <PositionsTable
-          items={provPositions}
-          onClose={(item) => onOpenAction?.('position.close', item)}
-        />
-      </div>
 
       {/* Recent Signals Stream */}
       {recentSignals.length > 0 && (
