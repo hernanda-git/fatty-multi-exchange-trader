@@ -350,6 +350,7 @@ class PostgresBitgetMarginReservationRepository:
             binding = cursor.fetchone()
             if binding is None or str(binding[0]) != str(reservation_id):
                 return reject("close-intent-not-bound")
+            is_native_close = str(close_client_order_id).endswith("-native-close")
             if (
                 entry[1] != symbol
                 or entry[3] != "ENTRY"
@@ -360,8 +361,8 @@ class PostgresBitgetMarginReservationRepository:
                 or close_intent[3] not in {"CLOSE", "EMERGENCY_CLOSE", "SL", "TP"}
                 or close_intent[4] not in {"filled", "reconciled"}
                 or not close_intent[7]
-                or close_intent[9] < entry[9]
-                or close_intent[9] < created_at
+                or (close_intent[9] < entry[9] and not is_native_close)
+                or (close_intent[9] < created_at and not is_native_close)
                 or close_intent[9] > observed_at
                 or not all(
                     isinstance(q, Decimal) and q.is_finite() and q > 0
@@ -392,7 +393,15 @@ class PostgresBitgetMarginReservationRepository:
                     not fill_id
                     or fill_id.startswith("status-derived:")
                     or fill_symbol != symbol
-                    or filled_at < close_intent[9]
+                    or (
+                        filled_at < close_intent[9]
+                        and not (
+                            is_native_close
+                            and filled_at >= entry[9]
+                            and filled_at >= created_at
+                            and filled_at <= observed_at
+                        )
+                    )
                     or filled_at > observed_at
                     or supplied.get("provider_order_id") != close_intent[7]
                     or supplied.get("symbol") != symbol
