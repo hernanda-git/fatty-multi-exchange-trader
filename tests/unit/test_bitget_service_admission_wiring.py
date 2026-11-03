@@ -8,8 +8,11 @@ from uuid import UUID
 
 import pytest
 
+from fatty_trader.domain.enums import Direction
+from fatty_trader.domain.models import BitgetLiveRiskConfig
 from fatty_trader.execution.bitget_dispatch_repository import BitgetDispatch
 from fatty_trader.execution.bitget_dispatcher import BitgetAdmission
+from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
 from fatty_trader.risk.sizing import MMTier, SymbolMetadata
 from fatty_trader.service import _bitget_dispatch_preflight
 
@@ -395,29 +398,64 @@ async def test_recent_departed_entry_admits_exact_legal_split_with_actual_risk_v
     assert reservations.kwargs["planned_margin_usdt"] == Decimal("1.0764")
 
 
-@pytest.mark.asyncio
-async def test_split_child_minimum_cannot_be_bypassed_by_total_notional_or_reservation():
-    from dataclasses import replace
-
-    venue = Venue()
-    venue.snapshot.current_price = Decimal("2.34")
-    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
-        update={
-            "size_step": Decimal("0.1"),
-            "min_order_qty": Decimal("0.1"),
-            # Above the 25% child (2.3 x 2.34 = 5.38) but below the total.
-            "min_notional": Decimal("6"),
-        }
+def _split_sizing_meta() -> SymbolMetadata:
+    """Metadata whose 25% child misses the venue minimum while the total clears it."""
+    return SymbolMetadata(
+        symbol="PENDLEUSDT",
+        price_precision=4,
+        price_tick=Decimal("0.0001"),
+        size_step=Decimal("0.1"),
+        min_order_qty=Decimal("0.1"),
+        min_notional=Decimal("6"),
+        max_leverage=50,
+        contract_value=Decimal("1"),
+        mm_tiers=(MMTier(upper_bound_notional=None, mmr=Decimal("0.005")),),
     )
-    dispatch = replace(_dispatch(), source_received_at=datetime.now(UTC))
-    reservations = Reservations()
-    with pytest.raises(ValueError, match="split|min-notional"):
-        await _bitget_dispatch_preflight(
-            venue,
-            {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
-            reservation_repository=reservations,
-        )(dispatch)
-    assert reservations.kwargs is None
+
+
+def _split_sizing(active_positions: int) -> LiveSizingInput:
+    return LiveSizingInput(
+        meta=_split_sizing_meta(),
+        risk=BitgetLiveRiskConfig(max_margin_per_trade_usdt=Decimal("1.1")),
+        available_usdt=Decimal("100"),
+        entry=Decimal("2.34"),
+        direction=Direction.LONG,
+        active_positions=active_positions,
+        stop_loss=Decimal("2.25"),
+        # The exact 25/75 route: the 25% child is 5.382 USDT, below min_notional=6.
+        split_market_price=Decimal("2.34"),
+        split_limit_price=Decimal("2.32"),
+    )
+
+
+def test_split_child_minimum_cannot_be_bypassed_by_total_notional() -> None:
+    """The child's own notional decides the split, never the combined total.
+
+    The total clears the venue minimum (21.996 USDT) while the 25% child does not
+    (5.382 USDT). An open position forbids the all-in retry, so the decision must be a
+    refusal that names the child, with no planned margin or quantity to submit.
+    """
+    decision = plan_live_position(_split_sizing(active_positions=1))
+
+    assert decision.accepted is False
+    assert "split-market-min-notional" in decision.reason
+    assert decision.fallback_used is False
+    assert decision.margin_usdt is None
+    assert decision.quantity is None
+
+
+def test_split_child_minimum_flat_lane_retries_all_in_instead_of_bypassing() -> None:
+    """A flat lane may retry all-in, but the illegal split itself is never accepted.
+
+    The retry widens the margin, never the child's legality: the refusal keeps the
+    split- reason and is marked fallback_used so a widened attempt is never mistaken
+    for a clean plan.
+    """
+    decision = plan_live_position(_split_sizing(active_positions=0))
+
+    assert decision.accepted is False
+    assert "split-market-min-notional" in decision.reason
+    assert decision.fallback_used is True
 
 
 @pytest.mark.asyncio
