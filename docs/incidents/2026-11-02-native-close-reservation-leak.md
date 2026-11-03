@@ -22,3 +22,24 @@ Released 5 orphaned consumed reservations with reason `manual-unblock:native-clo
 - Services restarted (dispatcher-bitget, monitor-bitget, source-management, console-worker, operator-bot)
 - No changes to non-native close paths
 
+## Deployment (2026-11-03)
+
+The fix is live. Gated rollout `scripts/rollout.py --branch main` at
+`2026-11-03T02:12:21Z` -> complete `2026-11-03T02:15:07Z` for revision
+`2b188b2461528acec7bd61d340b17e9dd9478040` (gate overridden with an explicit
+reason: 13 historical filled ENTRY intents, venue flat, 0 reservations,
+0 in-flight dispatches, 0 open entry windows).
+
+Observed readback after the rollout:
+
+- every service image is labelled `org.opencontainers.image.revision=2b188b2...`;
+- the running dispatcher's `storage/balance_reservations.py` is md5
+  `c03746b7b2b3e86120a0dd5ff3f084c2` (post-fix) and contains the
+  `is_native_close` branch;
+- `/health` readiness ready, 10/10 containers healthy, 0 restarts;
+- authenticated venue probe: equity 12.25853632 USDT, no positions, no pending
+  orders; `bitget_margin_reservations` has 0 rows in reserved/unknown/consumed;
+- both kill switches off; maintenance window closed with no missed signals.
+
+Next native TP/SL close is the acceptance event: it must release its reservation
+without `position-cap-exceeded` on the following signal.
