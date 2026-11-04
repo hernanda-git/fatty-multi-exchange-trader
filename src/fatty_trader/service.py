@@ -1160,6 +1160,7 @@ async def run_bitget_monitor_loop(
     stream: Any | None = None,
     watchdog: Any | None = None,
     watchdog_interval: float | None = None,
+    healer: Any | None = None,
     stop_event: asyncio.Event | None = None,
     heartbeat_path: str | None = None,
     cycle_timeout: float | None = None,
@@ -1191,6 +1192,7 @@ async def run_bitget_monitor_loop(
                     stop,
                     heartbeat_path=heartbeat_path,
                     cycle_timeout=cycle_timeout,
+                    healer=healer,
                 )
             )
         )
@@ -1231,6 +1233,7 @@ async def _run_bitget_watchdog_loop(
     *,
     heartbeat_path: str | None = None,
     cycle_timeout: float | None = None,
+    healer: Any | None = None,
 ) -> None:
     """Run the REST protection watchdog independently of the legacy monitor cadence."""
     while not stop_event.is_set():
@@ -1249,6 +1252,12 @@ async def _run_bitget_watchdog_loop(
             f"reasons={','.join(getattr(report, 'reasons', ())) or 'none'}",
             flush=True,
         )
+        if healer is not None:
+            print(
+                f"service=monitor-bitget component=protection-watchdog "
+                f"healer={healer.observe(report)}",
+                flush=True,
+            )
         await _wait_for_stop(stop_event, interval)
 
 
@@ -1402,6 +1411,21 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         active_symbol_source=lambda: [entry["symbol"] for entry in load_active()],
         kill_switch=repository,
     )
+    from fatty_trader.execution.latch_healer import (
+        LatchHealer,
+        healer_policy_from_environ,
+        latch_state_reader,
+    )
+
+    healer = (
+        LatchHealer(
+            healer_policy_from_environ(environ),
+            release=repository.release_kill_switch,
+            latch_state=latch_state_reader(repository),
+        )
+        if watchdog is not None
+        else None
+    )
     try:
         await run_bitget_monitor_loop(
             monitor,
@@ -1409,6 +1433,7 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
             stream=stream,
             watchdog=watchdog,
             watchdog_interval=watchdog_interval,
+            healer=healer,
             heartbeat_path=heartbeat_path,
             cycle_timeout=cycle_timeout,
             stall_timeout=stall_timeout,
