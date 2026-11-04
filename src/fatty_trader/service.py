@@ -1323,6 +1323,7 @@ def build_bitget_monitor_protection(
     # is live in every mode, silently blocking paper execution in a mixed config.
     latching_enabled = bitget_kill_switch_enforced(environ)
     stale_cycles_before_latch = 3
+    min_outage_seconds = 60.0
     if latching_enabled:
         raw_cycles = environ.get("BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH", "").strip()
         if raw_cycles:
@@ -1334,6 +1335,18 @@ def build_bitget_monitor_protection(
                 ) from exc
             if stale_cycles_before_latch < 1:
                 raise ValueError("BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH must be at least 1")
+        raw_outage = environ.get("BITGET_PROTECTION_MIN_OUTAGE_SECONDS", "").strip()
+        if raw_outage:
+            try:
+                min_outage_seconds = float(raw_outage)
+            except ValueError as exc:
+                raise ValueError(
+                    "BITGET_PROTECTION_MIN_OUTAGE_SECONDS must be a number"
+                ) from exc
+            if not math.isfinite(min_outage_seconds) or min_outage_seconds < 0:
+                raise ValueError(
+                    "BITGET_PROTECTION_MIN_OUTAGE_SECONDS must be finite and not negative"
+                )
     watchdog = BitgetProtectionWatchdog(
         stream.socket,
         stream.repository,
@@ -1343,6 +1356,7 @@ def build_bitget_monitor_protection(
         now=now or (lambda: datetime.now(UTC)),
         kill_switch=kill_switch if latching_enabled else None,
         stale_cycles_before_latch=stale_cycles_before_latch,
+        min_outage_seconds=min_outage_seconds,
     )
     return stream, watchdog, watchdog_interval
 

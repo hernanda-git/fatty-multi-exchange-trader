@@ -21,6 +21,7 @@ positions that need it. See ``PROTECTION_STREAM_SCOPE``.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -73,6 +74,7 @@ class BitgetProtectionWatchdog:
         now: Callable[[], Any],
         kill_switch: Any | None = None,
         stale_cycles_before_latch: int = 3,
+        min_outage_seconds: float = 0.0,
     ) -> None:
         self._socket = socket
         self._repository = repository
@@ -81,9 +83,13 @@ class BitgetProtectionWatchdog:
             raise ValueError("Bitget watchdog environment must be DEMO or LIVE")
         if stale_cycles_before_latch < 1:
             raise ValueError("stale_cycles_before_latch must be at least 1")
+        if not math.isfinite(min_outage_seconds) or min_outage_seconds < 0:
+            raise ValueError("min_outage_seconds must be finite and not negative")
         self._kill_switch = kill_switch
         self._stale_cycles_before_latch = stale_cycles_before_latch
+        self._min_outage_seconds = float(min_outage_seconds)
         self._consecutive_bad_cycles = 0
+        self._bad_since: Any | None = None
         self._symbols = tuple(
             dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip())
         )
@@ -225,15 +231,25 @@ class BitgetProtectionWatchdog:
         """
         if status is WatchdogStatus.HEALTHY:
             self._consecutive_bad_cycles = 0
+            self._bad_since = None
             return
         if not latchable:
             # Connected but quiet: report it, never halt on it.
             return
         self._consecutive_bad_cycles += 1
+        if self._bad_since is None:
+            self._bad_since = self._now()
         if self._kill_switch is None:
             return
         if self._consecutive_bad_cycles < self._stale_cycles_before_latch:
             return
+        if self._min_outage_seconds > 0:
+            # A cycle count is a poor outage measure: the monitor ticks every few
+            # seconds, so three bad cycles can be a 15 s reconnect. Without a
+            # wall-clock floor a routine blip halts entries until someone notices.
+            elapsed = (self._now() - self._bad_since).total_seconds()
+            if elapsed < self._min_outage_seconds:
+                return
         if await _run_sync_storage(self._is_latched):
             return
 

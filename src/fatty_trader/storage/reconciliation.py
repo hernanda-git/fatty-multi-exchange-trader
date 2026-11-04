@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import uuid4
@@ -246,7 +247,11 @@ class PostgresReconciliationRepository:
                    VALUES (%s, %s, %s::jsonb) ON CONFLICT (dedup_key) DO NOTHING""",
                 (
                     uuid4(),
-                    f"kill-switch:{scope}:{reason}",
+                    # Bucket by UTC hour: a storm inside one hour still dedupes,
+                    # but a re-latch after a release must page again. A bare
+                    # scope+reason key silently swallowed every repeat latch
+                    # (2026-11-03: latched 6h23m with no notification).
+                    f"kill-switch:{scope}:{reason}:{datetime.now(UTC):%Y%m%dT%H}",
                     json.dumps(
                         {
                             "kind": "kill-switch",
