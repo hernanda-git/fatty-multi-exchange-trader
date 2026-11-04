@@ -269,6 +269,7 @@ class NotificationWorker:
         max_attempts: int = 10,
         retry_seconds: int = 30,
         fan_out: Callable[[UUID], int] | None = None,
+        enrich: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
@@ -279,6 +280,7 @@ class NotificationWorker:
         self._max_attempts = max_attempts
         self._retry_seconds = retry_seconds
         self._fan_out = fan_out
+        self._enrich = enrich
 
     async def run_once(self, worker_id: str, lease_seconds: int) -> str:
         if lease_seconds < _MIN_LEASE_SECONDS:
@@ -303,7 +305,9 @@ class NotificationWorker:
         try:
             try:
                 async with asyncio.timeout(_DELIVERY_TIMEOUT_SECONDS):
-                    await self._sender.send(format_notification_html(notification.payload))
+                    await self._sender.send(
+                        format_notification_html(notification.payload, enrich=self._enrich)
+                    )
             except TimeoutError:
                 raise NotificationDeliveryError(retryable=True) from None
         except NotificationDeliveryError as exc:
@@ -320,8 +324,17 @@ class NotificationWorker:
         return "sent" if owned else "claim-lost"
 
 
-def format_notification_html(payload: Mapping[str, Any]) -> str:
-    """Render arbitrary outbox JSON as bounded, escaped Telegram HTML."""
+def format_notification_html(
+    payload: Mapping[str, Any],
+    *,
+    enrich: Callable[[Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
+) -> str:
+    """Render arbitrary outbox JSON as bounded, escaped Telegram HTML.
+
+    The optional enrich callable supplies read-only context (a realised trade
+    result looked up from fills). It never mutates the payload and never blocks
+    delivery.
+    """
     if payload.get("kind") == "console-health-report":
         from fatty_trader.operator.health_report_format import format_report
 
@@ -350,7 +363,17 @@ def format_notification_html(payload: Mapping[str, Any]) -> str:
     if payload.get("kind") == "signal-analysis":
         return bounded_html(_format_signal_analysis_html(payload))
     if payload.get("kind") == "execution-event":
-        return bounded_html(_format_execution_event_html(payload))
+        from fatty_trader.notifier_cards import render_execution_event
+
+        decorated: Mapping[str, Any] = payload
+        if enrich is not None:
+            try:
+                extra = enrich(payload)
+            except Exception:  # enrichment must never block delivery
+                extra = None
+            if extra:
+                decorated = {**payload, **extra}
+        return bounded_html(render_execution_event(decorated))
     if payload.get("kind") == "execution-alert":
         return bounded_html(_format_execution_alert_html(payload))
     if payload.get("kind") == "system-event":

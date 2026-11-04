@@ -39,7 +39,7 @@ def test_historical_recovery_fill_is_not_new_trade_success():
             "dispatch_id": "historical-dispatch",
         }
     )
-    assert "Recovery Diblokir" in report
-    assert "Fill historis, bukan entry baru" in report
-    assert "Penutupan/proteksi belum terverifikasi" in report
+    assert "RECOVERY BLOCKED" in report
+    assert "Not a new entry" in report
+    assert "new entries stay blocked" in report
     assert "Status Eksekusi" not in report

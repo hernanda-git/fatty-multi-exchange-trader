@@ -26,6 +26,99 @@ _PRUNE_INTERVAL_SECONDS = 86_400.0
 _DELIVERY_RETENTION_DAYS = 30
 
 
+_RESULT_SQL = """
+SELECT
+  coalesce(sum(quantity) FILTER (WHERE client_order_id = %(root)s), 0) AS entry_qty,
+  coalesce(sum(quantity * price) FILTER (WHERE client_order_id = %(root)s), 0) AS entry_value,
+  coalesce(sum(fee) FILTER (WHERE client_order_id = %(root)s), 0) AS entry_fee,
+  coalesce(sum(quantity) FILTER (WHERE client_order_id <> %(root)s), 0) AS exit_qty,
+  coalesce(sum(quantity * price) FILTER (WHERE client_order_id <> %(root)s), 0) AS exit_value,
+  coalesce(sum(fee) FILTER (WHERE client_order_id <> %(root)s), 0) AS exit_fee,
+  min(filled_at) AS first_fill,
+  max(filled_at) AS last_fill
+FROM fills
+WHERE client_order_id = %(root)s
+   OR client_order_id = %(close)s
+   OR client_order_id = %(native)s
+"""
+
+
+def _held(first: object, last: object) -> str:
+    try:
+        seconds = int((last - first).total_seconds())
+    except Exception:
+        return ""
+    if seconds <= 0:
+        return ""
+    hours, remainder = divmod(seconds, 3600)
+    minutes = remainder // 60
+    return "{}h {:02d}m".format(hours, minutes) if hours else "{}m".format(minutes)
+
+
+def _result_enrichment():
+    """Attach a realised result to CLOSED execution cards, read-only.
+
+    A failure here must never block delivery: the caller treats None as
+    "no result available" and the card still renders.
+    """
+
+    def enrich(payload):
+        try:
+            if str(payload.get("to_state") or "").upper() != "CLOSED":
+                return None
+            evidence = payload.get("evidence")
+            evidence = evidence if isinstance(evidence, Mapping) else {}
+            root = str(evidence.get("client_order_id") or "")
+            if not root:
+                return None
+            import psycopg
+            from psycopg.rows import dict_row
+
+            with psycopg.connect(row_factory=dict_row) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        _RESULT_SQL,
+                        {"root": root, "close": root + "-close", "native": root + "-native-close"},
+                    )
+                    row = cursor.fetchone()
+            if not row:
+                return None
+            entry_qty = row.get("entry_qty") or 0
+            exit_qty = row.get("exit_qty") or 0
+            if not exit_qty or not entry_qty:
+                return None
+            entry = row["entry_value"] / entry_qty
+            exit_price = row["exit_value"] / exit_qty
+            direction = str(evidence.get("direction") or "LONG").upper()
+            sign = 1 if direction == "LONG" else -1
+            gross = (exit_price - entry) * exit_qty * sign
+            fees = (row.get("entry_fee") or 0) + (row.get("exit_fee") or 0)
+            net = gross - fees
+            sizing = evidence.get("sizing")
+            sizing = sizing if isinstance(sizing, Mapping) else {}
+            try:
+                stop = float(sizing.get("planned_stop_loss"))
+            except (TypeError, ValueError):
+                stop = None
+            risk = abs(entry - stop) * float(exit_qty) if stop else None
+            return {
+                "result": {
+                    "entry": float(entry),
+                    "exit": float(exit_price),
+                    "gross": float(gross),
+                    "fees": float(fees),
+                    "net": float(net),
+                    "net_pct": float((exit_price - entry) / entry * 100 * sign),
+                    "r": float(gross / risk) if risk else None,
+                    "held": _held(row.get("first_fill"), row.get("last_fill")),
+                }
+            }
+        except Exception:
+            return None
+
+    return enrich
+
+
 def notification_settings(environ: Mapping[str, str]) -> TelegramNotificationSettings | None:
     """Return complete bot configuration, otherwise leave the Telegram lane inert."""
     try:
@@ -78,6 +171,7 @@ async def run(environ: Mapping[str, str]) -> None:
             max_attempts=_positive_int(environ, "NOTIFICATION_MAX_ATTEMPTS", 10),
             retry_seconds=_positive_int(environ, "NOTIFICATION_RETRY_SECONDS", 30),
             fan_out=push_store.fan_out if push_store is not None else None,
+            enrich=_result_enrichment(),
         )
     lease_seconds = _positive_int(environ, "NOTIFICATION_LEASE_SECONDS", 30)
     last_prune = time.monotonic()

@@ -110,8 +110,8 @@ def test_cutover_event_states_that_no_order_was_sent() -> None:
         }
     )
 
-    assert "<b>eksekusi diblokir</b>" in text.casefold()
-    assert "Tidak ada order dikirim" in text
+    assert "EXECUTION BLOCKED" in text
+    assert "No order was sent" in text
     assert "cutover-gated" not in text
     assert "577ed2b8" not in text
 
@@ -128,9 +128,9 @@ def test_provider_flat_reconciliation_explains_what_happened_and_next_state() ->
     )
 
     assert "Provider flat" in text
-    assert "Tidak ada order" in text
-    assert "Reservation dilepas" in text
-    assert "Tidak ada entry yang diulang" in text
+    assert "no local order or intent" in text
+    assert "released by the audit transition" in text
+    assert "no entry was repeated" in text
     assert "c0000000" in text
 
 
@@ -601,12 +601,15 @@ def test_rich_order_filled_notification_card() -> None:
             },
         }
     )
-    assert "<b>ORDER FILLED · PUMPUSDT (LONG)</b>" in html
+    assert "PUMP/USDT LONG" in html
+    assert "filled" in html
     assert "5164" in html
-    assert "<code>1.10 USDT</code> (20x Isolated)" in html
-    assert "<code>0.004185</code> 🛡 Native Bitget" in html
-    assert "<code>0.00444</code> 🎯 Native Bitget" in html
-    assert "Bitget Futures" in html
+    assert "1.10 USDT" in html
+    assert "20x" in html
+    assert "0.004185" in html
+    assert "0.00444" in html
+    assert "native" in html
+    assert "Bitget" in html
 
 
 def test_system_event_management_cards() -> None:
