@@ -445,9 +445,32 @@ async def _resolve_preflight(
 
 
 _BITGET_SYMBOL_ALIASES = {
-    # Bitget lists BONK perpetuals under the 1000BONK contract symbol.
+    # Bitget symbols that require 1000 / 1000000 prefix:
     "BONK": "1000BONKUSDT",
     "BONKUSDT": "1000BONKUSDT",
+    "SATS": "1000SATSUSDT",
+    "SATSUSDT": "1000SATSUSDT",
+    "RATS": "1000RATSUSDT",
+    "RATSUSDT": "1000RATSUSDT",
+    "CAT": "1000CATUSDT",
+    "CATUSDT": "1000CATUSDT",
+    "XEC": "1000XECUSDT",
+    "XECUSDT": "1000XECUSDT",
+    "MOG": "1000000MOGUSDT",
+    "MOGUSDT": "1000000MOGUSDT",
+    # Bitget symbols listed without 1000 prefix where channels may send 1000x:
+    "1000PEPE": "PEPEUSDT",
+    "1000PEPEUSDT": "PEPEUSDT",
+    "100PEPE": "PEPEUSDT",
+    "100PEPEUSDT": "PEPEUSDT",
+    "1000SHIB": "SHIBUSDT",
+    "1000SHIBUSDT": "SHIBUSDT",
+    "1000FLOKI": "FLOKIUSDT",
+    "1000FLOKIUSDT": "FLOKIUSDT",
+    "1000LUNC": "LUNCUSDT",
+    "1000LUNCUSDT": "LUNCUSDT",
+    "1000BABYDOGE": "BABYDOGEUSDT",
+    "1000BABYDOGEUSDT": "BABYDOGEUSDT",
 }
 
 

@@ -752,8 +752,24 @@ def _bitget_dispatch_preflight(
         )
         from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
         from fatty_trader.risk.sizing import round_price_to_tick
+        from fatty_trader.risk.price_scale import align_price_scale
 
-        normalized_entry = round_price_to_tick(dispatch.entry_price, metadata.price_tick)
+        aligned_entry, aligned_sl, aligned_tps, applied_scale = align_price_scale(
+            entry_price=dispatch.entry_price,
+            stop_loss=dispatch.stop_loss,
+            take_profits=dispatch.take_profits,
+            market_price=snapshot.current_price,
+            direction=dispatch.direction,
+        )
+        if applied_scale != Decimal("1"):
+            print(
+                f"[PRICE-ALIGN] symbol={symbol} detected {applied_scale}x unit multiplier mismatch; "
+                f"scaling prices: entry {dispatch.entry_price}->{aligned_entry}, "
+                f"sl {dispatch.stop_loss}->{aligned_sl}, tps {dispatch.take_profits}->{aligned_tps}",
+                flush=True,
+            )
+
+        normalized_entry = round_price_to_tick(aligned_entry, metadata.price_tick)
         source_time = getattr(dispatch, "source_received_at", None)
         recent_window = int(environ.get("BITGET_JUST_DEPARTED_WINDOW_SECONDS", "60"))
         late_threshold = Decimal(environ.get("BITGET_LATE_ENTRY_THRESHOLD_PCT", "0.005"))
@@ -800,9 +816,9 @@ def _bitget_dispatch_preflight(
             else snapshot.current_price
         )
 
-        canonical_targets = dispatch.take_profits
+        canonical_targets = aligned_tps
         if not canonical_targets:
-            risk_distance = abs(sizing_price - dispatch.stop_loss)
+            risk_distance = abs(sizing_price - aligned_sl)
             sign = (
                 Decimal("1")
                 if Direction(dispatch.direction) is Direction.LONG
@@ -816,8 +832,8 @@ def _bitget_dispatch_preflight(
         planned_stop, planned_targets = normalized_protection_prices(
             direction=Direction(dispatch.direction),
             entry=sizing_price,
-            canonical_entry=dispatch.entry_price,
-            stop_loss=dispatch.stop_loss,
+            canonical_entry=aligned_entry,
+            stop_loss=aligned_sl,
             take_profits=canonical_targets,
             price_tick=metadata.price_tick,
         )

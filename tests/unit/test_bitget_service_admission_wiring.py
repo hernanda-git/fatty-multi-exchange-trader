@@ -42,7 +42,7 @@ class Venue:
         )
 
     async def preflight(self, symbol: str):
-        assert symbol == "PENDLEUSDT"
+        assert symbol in {"PENDLEUSDT", "PEPEUSDT"}
         return self.snapshot
 
     async def active_position_snapshot(self):
@@ -430,6 +430,46 @@ async def test_longing_here_signal_always_admits_full_market_and_zero_limit():
     assert submission.entry_route.limit_quantity == Decimal("0")
     assert submission.entry_route.market_quantity == submission.quantity
 
+@pytest.mark.asyncio
+async def test_pepe_100x_multiplier_discrepancy_preflight_admission_success():
+    from dataclasses import replace
+
+    venue = Venue()
+    venue.snapshot.metadata = SymbolMetadata(
+        symbol="PEPEUSDT",
+        price_precision=10,
+        price_tick=Decimal("0.0000000001"),
+        size_step=Decimal("1000"),
+        min_order_qty=Decimal("1000"),
+        min_notional=Decimal("5"),
+        max_leverage=75,
+        contract_value=Decimal("1"),
+        mm_tiers=(MMTier(upper_bound_notional=None, mmr=Decimal("0.005")),),
+    )
+    venue.snapshot.current_price = Decimal("0.00000502")
+    # Message #16457 exact dispatch prices in 100PEPE units
+    dispatch = replace(
+        _dispatch(),
+        pair_token="PEPEUSDT",
+        direction="LONG",
+        entry_price=Decimal("0.000502"),
+        stop_loss=Decimal("0.0004902"),
+        take_profits=(Decimal("0.000575"),),
+        source_received_at=datetime.now(UTC),
+        source_text="#PEPE $PEPE LONG TRADE\n\nENTRY: 0.000502\n\nTARGET: 0.000575\n\nSTOPLOSS: 0.0004902",
+    )
+    reservations = Reservations()
+    admission = await _bitget_dispatch_preflight(
+        venue,
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
+        reservation_repository=reservations,
+    )(dispatch)
+
+    submission = admission.submission
+    assert submission.planned_stop_loss == Decimal("0.000004902")
+    assert submission.planned_take_profits == (Decimal("0.00000575"),)
+    assert submission.quantity > Decimal("0")
+    assert submission.planned_margin_usdt <= Decimal("1.1")
 def _split_sizing_meta() -> SymbolMetadata:
     """Metadata whose 25% child misses the venue minimum while the total clears it."""
     return SymbolMetadata(
