@@ -744,7 +744,12 @@ def _bitget_dispatch_preflight(
         )
         from fatty_trader.execution.bitget_dispatch_execution import BitgetDispatchExecution
         from fatty_trader.execution.bitget_dispatcher import BitgetAdmission
-        from fatty_trader.execution.entry_routing import EntryMode, EntryRoute, route_entry
+        from fatty_trader.execution.entry_routing import (
+            EntryMode,
+            EntryRoute,
+            is_explicit_market_signal,
+            route_entry,
+        )
         from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
         from fatty_trader.risk.sizing import round_price_to_tick
 
@@ -755,6 +760,8 @@ def _bitget_dispatch_preflight(
         # Keep routing and sizing on one observation; later reads must not turn
         # a split-sized total into a full-market quantity with different limits.
         route_observed_at = datetime.now(UTC)
+        source_text = getattr(dispatch, "source_text", None)
+        force_market = is_explicit_market_signal(source_text)
 
         def routed(quantity: Decimal) -> EntryRoute:
             if getattr(dispatch, "order_type", "MARKET") == "LIMIT":
@@ -765,8 +772,14 @@ def _bitget_dispatch_preflight(
                     normalized_entry,
                     "explicit-manual-limit",
                 )
-            if source_time is None:
-                return EntryRoute(EntryMode.FULL_MARKET, quantity, Decimal("0"), None)
+            if force_market or source_time is None:
+                return EntryRoute(
+                    EntryMode.FULL_MARKET,
+                    quantity,
+                    Decimal("0"),
+                    None,
+                    "explicit-market-signal" if force_market else None,
+                )
             return route_entry(
                 direction=Direction(dispatch.direction),
                 signal_entry=normalized_entry,
@@ -776,8 +789,8 @@ def _bitget_dispatch_preflight(
                 source_received_at=source_time,
                 recent_window_seconds=recent_window,
                 now=route_observed_at,
+                force_market=force_market,
             )
-
         split = routed(Decimal("4")).market_quantity > 0 and routed(Decimal("4")).limit_quantity > 0
         sizing_price = (
             max(snapshot.current_price, normalized_entry)

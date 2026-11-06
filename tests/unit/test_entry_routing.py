@@ -2,8 +2,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fatty_trader.domain.enums import Direction
-from fatty_trader.execution.entry_routing import EntryMode, LimitEntryContext, route_entry
-
+from fatty_trader.execution.entry_routing import (
+    EntryMode,
+    LimitEntryContext,
+    is_explicit_market_signal,
+    route_entry,
+)
 
 def test_long_at_or_under_entry_uses_full_market_entry() -> None:
     route = route_entry(
@@ -121,4 +125,33 @@ def test_context_without_prior_limit_does_not_split_far_adverse_move() -> None:
     )
     assert route.mode is EntryMode.LIMIT_ONLY
     assert route.market_quantity == Decimal("0")
-    assert route.limit_quantity == Decimal("10")
+
+
+def test_is_explicit_market_signal_detects_market_phrases() -> None:
+    assert is_explicit_market_signal("$SNDK longing here at daily support") is True
+    assert is_explicit_market_signal("Longing $BTC here around 64000") is True
+    assert is_explicit_market_signal("Shorting $WLD here around 0.385") is True
+    assert is_explicit_market_signal("$ENA long here") is True
+    assert is_explicit_market_signal("#Q $Q SHORT TRADE MARKET") is True
+    assert is_explicit_market_signal("$PUMP placing short limit at 0.004195") is False
+    assert is_explicit_market_signal("$PUMP placing short limit here at 0.004195") is False
+    assert is_explicit_market_signal("#XPL $XPL LONG TRADE ENTRY: 0.098") is False
+    assert is_explicit_market_signal(None) is False
+
+
+def test_force_market_always_uses_full_market_and_zero_limit() -> None:
+    # Even if market has crossed past entry within the recent window, force_market MUST yield FULL_MARKET.
+    route = route_entry(
+        direction=Direction.LONG,
+        signal_entry=Decimal("100"),
+        market_price=Decimal("105"),
+        total_quantity=Decimal("10"),
+        late_threshold_pct=Decimal("0.005"),
+        source_received_at=datetime.now(UTC),
+        force_market=True,
+    )
+    assert route.mode is EntryMode.FULL_MARKET
+    assert route.market_quantity == Decimal("10")
+    assert route.limit_quantity == Decimal("0")
+    assert route.limit_price is None
+    assert route.reason == "explicit-market-signal"

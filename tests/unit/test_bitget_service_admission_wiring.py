@@ -398,6 +398,38 @@ async def test_recent_departed_entry_admits_exact_legal_split_with_actual_risk_v
     assert reservations.kwargs["planned_margin_usdt"] == Decimal("1.0764")
 
 
+@pytest.mark.asyncio
+async def test_longing_here_signal_always_admits_full_market_and_zero_limit():
+    from dataclasses import replace
+
+    venue = Venue()
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={
+            "size_step": Decimal("0.1"),
+            "min_order_qty": Decimal("0.1"),
+            "min_notional": Decimal("1"),
+        }
+    )
+    venue.snapshot.current_price = Decimal("2.34")
+    dispatch = replace(
+        _dispatch(),
+        source_received_at=datetime.now(UTC),
+        source_text="$PENDLE longing here at daily support\n\nSl: 2.25",
+    )
+    reservations = Reservations()
+    admission = await _bitget_dispatch_preflight(
+        venue,
+        {"BITGET_MAX_MARGIN_PER_TRADE_USDT": "1.1"},
+        reservation_repository=reservations,
+    )(dispatch)
+
+    submission = admission.submission
+    from fatty_trader.execution.entry_routing import EntryMode
+
+    assert submission.entry_route.mode is EntryMode.FULL_MARKET
+    assert submission.entry_route.limit_quantity == Decimal("0")
+    assert submission.entry_route.market_quantity == submission.quantity
+
 def _split_sizing_meta() -> SymbolMetadata:
     """Metadata whose 25% child misses the venue minimum while the total clears it."""
     return SymbolMetadata(

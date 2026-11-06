@@ -66,6 +66,7 @@ class BitgetDispatch:
     source_id: UUID | None = None
     canonical_signal_id: UUID | None = None
     source_revision: str | None = None
+    source_text: str | None = None
 
 
 _CLAIM_SQL = (
@@ -99,7 +100,7 @@ FROM next_dispatch n, canonical_signals s, telegram_messages tm
 WHERE d.id = n.id AND s.id = d.source_id AND tm.id = s.message_id
 RETURNING d.id, d.state, d.claimed_by, d.attempts, s.pair_token, s.direction,
           s.entry_price, s.stop_loss, s.take_profits, tm.channel_id, tm.message_id,
-          tm.received_at, d.source_id, s.id, s.revision;
+          tm.received_at, d.source_id, s.id, s.revision, tm.raw_text;
 """
 )
 
@@ -231,7 +232,7 @@ class PostgresBitgetDispatchRepository:
                 """SELECT d.id, d.state, d.claimed_by, d.attempts,
                           s.pair_token, s.direction, s.entry_price, s.stop_loss,
                           s.take_profits, tm.channel_id, tm.message_id, i.client_order_id,
-                          tm.received_at, d.source_id, s.id, d.revision
+                          tm.received_at, d.source_id, s.id, d.revision, tm.raw_text
                    FROM live_order_intents i
                    JOIN bitget_margin_reservations m ON m.exchange = i.exchange
                        AND m.client_order_id = i.client_order_id
@@ -695,6 +696,7 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
             "source_id": row[12] if len(row) > 12 else None,
             "canonical_signal_id": row[13] if len(row) > 13 else None,
             "source_revision": row[14] if len(row) > 14 else None,
+            "source_text": row[15] if len(row) > 15 else None,
         }
     )
     raw_take_profits = values["take_profits"] or []
@@ -724,6 +726,7 @@ def _dispatch_from_row(row: Any) -> BitgetDispatch:
         source_id=values.get("source_id"),
         canonical_signal_id=values.get("canonical_signal_id"),
         source_revision=values.get("source_revision"),
+        source_text=values.get("source_text"),
     )
 
 

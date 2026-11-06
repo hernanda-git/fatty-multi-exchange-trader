@@ -1,7 +1,7 @@
 """Pure, fail-closed routing for signal entries affected by front-running."""
 
 from __future__ import annotations
-
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -45,6 +45,19 @@ class EntryRoute:
     limit_price: Decimal | None
     reason: str = "legacy-price-route"
 
+_EXPLICIT_MARKET_SIGNAL_PATTERN = re.compile(
+    r"(?is)\b(?:longing|shorting|longed|shorted|long|short|buy|buying|sell|selling|enter|entering)\b.*?\b(?:here|at\s+market|market)\b"
+    r"|\b(?:market\s+entry|market\s+order|entry\s*:\s*market|at\s+market)\b"
+)
+
+
+def is_explicit_market_signal(text: str | None) -> bool:
+    """True if source text explicitly denotes an immediate market execution ('longing here', etc.)."""
+    if not text:
+        return False
+    if re.search(r"(?i)\blimit\b", text):
+        return False
+    return bool(_EXPLICIT_MARKET_SIGNAL_PATTERN.search(text))
 
 def _split(
     total_quantity: Decimal, *, mode: EntryMode, limit_price: Decimal, reason: str
@@ -66,6 +79,7 @@ def route_entry(
     now: datetime | None = None,
     source_received_at: datetime | None = None,
     recent_window_seconds: int = 60,
+    force_market: bool = False,
 ) -> EntryRoute:
     """Route entry while requiring lifecycle evidence for near-limit splitting.
 
@@ -73,6 +87,16 @@ def route_entry(
     Production callers should provide context so a normal pullback wait cannot be
     mistaken for a limit that has just departed.
     """
+    if force_market:
+        if market_price <= 0 or total_quantity <= 0:
+            raise ValueError("market price and quantity must be positive")
+        return EntryRoute(
+            EntryMode.FULL_MARKET,
+            total_quantity,
+            Decimal("0"),
+            None,
+            "explicit-market-signal",
+        )
     if signal_entry <= 0 or market_price <= 0 or total_quantity <= 0:
         raise ValueError("entry, market price, and quantity must be positive")
     if not Decimal("0") < late_threshold_pct < Decimal("1"):
