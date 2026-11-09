@@ -227,14 +227,47 @@ def process_received_batch(
                                 str(image_failure),
                             )
                         else:
-                            result = AnalysisResult(
-                                AnalysisStatus.CODEX_SUCCEEDED,
-                                signal_from_image_json(
-                                    image_result,
-                                    message_id=message.message_id,
-                                    source_revision=revision,
-                                ),
+                            image_signal = signal_from_image_json(
+                                image_result,
+                                message_id=message.message_id,
+                                source_revision=revision,
                             )
+                            if image_signal is None and not entry_stands_down(message.raw_text):
+                                setup_action = str(
+                                    (image_result.get("setup") or {}).get("action") or ""
+                                ).upper()
+                                if setup_action == "ENTER" or not setup_action:
+                                    explicit_signal = parse_explicit_signal(
+                                        message.raw_text,
+                                        message_id=message.message_id,
+                                        market_price_lookup=lambda _: None,
+                                    )
+                                    if explicit_signal is not None:
+                                        result = AnalysisResult(
+                                            AnalysisStatus.FALLBACK_ACCEPTED,
+                                            explicit_signal,
+                                            "image produced no signal; accepted text fallback",
+                                        )
+                                    else:
+                                        result = AnalysisResult(
+                                            AnalysisStatus.CODEX_SUCCEEDED,
+                                            None,
+                                        )
+                                else:
+                                    result = AnalysisResult(
+                                        AnalysisStatus.CODEX_SUCCEEDED,
+                                        None,
+                                    )
+                            elif image_signal is None:
+                                result = AnalysisResult(
+                                    AnalysisStatus.CODEX_SUCCEEDED,
+                                    None,
+                                )
+                            else:
+                                result = AnalysisResult(
+                                    AnalysisStatus.CODEX_SUCCEEDED,
+                                    image_signal,
+                                )
                     else:
                         result = analyze_with_fallback(
                             text=message.raw_text,

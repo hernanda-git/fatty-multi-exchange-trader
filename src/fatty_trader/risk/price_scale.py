@@ -47,8 +47,14 @@ def align_price_scale(
         return entry_price, stop_loss, tuple(take_profits), Decimal("1")
 
     scaled_sl = stop_loss / scale
-    scaled_tps = tuple(tp / scale for tp in take_profits)
-
+    scaled_tps_list: list[Decimal] = []
+    for tp in take_profits:
+        if tp <= 0:
+            continue
+        tp_ratio = float(tp / market_price)
+        candidate = tp if (0.1 <= tp_ratio <= 10.0 and abs(ratio) >= 10) else (tp / scale)
+        scaled_tps_list.append(candidate)
+    scaled_tps = tuple(scaled_tps_list)
     # Geometry verification
     dir_upper = direction.upper()
     if dir_upper == "LONG":

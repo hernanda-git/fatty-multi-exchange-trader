@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
@@ -94,6 +95,34 @@ def analyze_image_json(
         return {"message": "Image analysis returned invalid JSON", "setup": {}}
 
 
+def _extract_first_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    match = re.search(r"(\d+(?:\.\d+(?:[eE][+-]?\d+)?)?)", s)
+    if not match:
+        return None
+    try:
+        return Decimal(match.group(1))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _extract_all_decimals(values: Any) -> list[Decimal]:
+    if not values:
+        return []
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    res: list[Decimal] = []
+    for item in values:
+        for match in re.finditer(r"(\d+(?:\.\d+(?:[eE][+-]?\d+)?)?)", str(item)):
+            try:
+                res.append(Decimal(match.group(1)))
+            except (InvalidOperation, ValueError):
+                pass
+    return res
+
+
 def signal_from_image_json(
     data: dict[str, Any], *, message_id: int, source_revision: str, original_text: str = ""
 ) -> CanonicalSignal | None:
@@ -109,23 +138,49 @@ def signal_from_image_json(
         pair = str(setup.get("asset") or setup.get("pair") or "").upper()
         pair = pair.replace("#", "").replace("$", "").removesuffix("USDT")
         side = str(setup.get("side") or setup.get("direction") or "").upper()
-        entry = Decimal(str(setup.get("entry") or setup.get("entry_price")))
-        stop = Decimal(str(setup.get("stop_loss")))
-        targets = setup.get("take_profits") or setup.get("targets") or []
-        if not isinstance(targets, list):
-            targets = [targets]
+        direction = Direction(side)
+
+        entry = _extract_first_decimal(setup.get("entry") or setup.get("entry_price"))
+        if entry is None and isinstance(setup.get("levels"), dict):
+            entry = _extract_first_decimal(setup["levels"].get("chart_entry_zone"))
+        stop = _extract_first_decimal(setup.get("stop_loss") or setup.get("stop"))
+        if entry is None or stop is None or entry <= 0 or stop <= 0:
+            return None
+
+        raw_targets = setup.get("take_profits") or setup.get("targets")
+        targets = _extract_all_decimals(raw_targets)
+        if not targets and isinstance(setup.get("levels"), dict):
+            level_key = "lower_marked_level" if direction is Direction.SHORT else "upper_marked_level"
+            targets = _extract_all_decimals(setup["levels"].get(level_key))
+
+        # Harmonize target scales if they were extracted in chart units (e.g. 1e-5) while entry is unscaled (e.g. 0.51)
+        aligned_targets: list[Decimal] = []
+        for target in targets:
+            if target > 0 and entry > 0:
+                ratio = float(entry / target)
+                if ratio > 0:
+                    k = round(math.log10(ratio))
+                    if k != 0 and abs(k) <= 8:
+                        candidate = target * (Decimal(10) ** k)
+                    else:
+                        candidate = target
+                    # Geometry check for direction
+                    if direction is Direction.LONG and candidate > entry:
+                        aligned_targets.append(candidate)
+                    elif direction is Direction.SHORT and candidate < entry:
+                        aligned_targets.append(candidate)
+
         return CanonicalSignal(
             source_message_id=message_id,
             source_revision=source_revision,
             pair_token=pair,
-            direction=Direction(side),
+            direction=direction,
             entry_price=entry,
             stop_loss=stop,
-            take_profits=tuple(Decimal(str(target)) for target in targets),
+            take_profits=tuple(aligned_targets),
         )
     except (InvalidOperation, TypeError, ValueError):
         return None
-
 
 def management_from_image_json(data: dict[str, Any]) -> SourceManagement | None:
     setup = data.get("setup")

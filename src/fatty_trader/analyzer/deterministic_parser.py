@@ -8,18 +8,17 @@ from fatty_trader.domain.enums import Direction
 from fatty_trader.domain.models import CanonicalSignal
 
 _CHANNEL = re.compile(
-    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+\$?(?P<pair2>[A-Z0-9]{1,20}))?\s+"
+    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+[\$#]?(?P<pair2>[A-Z0-9]{1,20}))?\s+"
     r"(?P<direction>LONG|SHORT).*?(?:ENTRY\s*:\s*|MARKET\s+)(?P<entry>\d+(?:\.\d+)?).*?"
     r"(?:TARGETS?|TPS?)\s*:?\s*(?P<tps>\d+(?:\.\d+)?(?:\s*(?:-|,|/)\s*\d+(?:\.\d+)?){0,4}).*?"
-    r"(?:STOPLOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
-    re.IGNORECASE,
+    r"(?:STOPLOSS|STOP\s*LOSS|STOPPOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\b.*?$",
+    re.IGNORECASE | re.DOTALL,
 )
 _NATURAL_STOP_ONLY = re.compile(
-    r"^\s*(?P<direction>LONGING|SHORTING|LONG|SHORT)\s+"
-    r"(?:here\s+)?\$?(?P<pair>[A-Z0-9]{1,20})\s+"
-    r"(?:here\s+)?(?:around|at|near)\s+"
+    r"(?is)^\s*(?:(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\s+(?:here\s+)?\$?(?P<pair>[A-Z0-9]{1,20})|(?:\$|#)?(?P<pair3>[A-Z0-9]{1,20})\s+(?P<direction2>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT))\s+"
+    r"(?:here\s+)?(?:around|at|near)?\s*"
     r"(?P<entry>\d+(?:\.\d+)?).*?"
-    r"(?:STOPLOSS|STOP LOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
+    r"(?:STOPLOSS|STOP\s*LOSS|STOPPOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\b.*?$",
     re.IGNORECASE | re.DOTALL,
 )
 _RIGID = re.compile(
@@ -28,10 +27,11 @@ _RIGID = re.compile(
     re.IGNORECASE,
 )
 _LIMIT_ENTRY = re.compile(
-    r"^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+[\$#](?P<pair2>[A-Z0-9]{1,20}))?\s+"
-    r"(?:placing\s+)?(?P<direction>LONG|SHORT)\s+(?:limit\s+)?(?:at|around|near|@)?\s*"
+    r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+[\$#](?P<pair2>[A-Z0-9]{1,20}))?\s+"
+    r"(?:placing\s+|placed\s+)?(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\s*(?:limits?\s*)?(?:at|around|near|@|between)?\s*"
     r"(?P<entry>\d+(?:\.\d+)?).*?"
-    r"(?:STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*(?P<sl>\d+(?:\.\d+)?)\s*$",
+    r"(?:(?:TARGETS?|TPS?)\b[^0-9]*(?P<tps>\d+(?:\.\d+)?(?:\s*(?:-|,|/)\s*\d+(?:\.\d+)?){0,4}).*?)?"
+    r"(?:STOPLOSS|STOP\s*LOSS|STOPPOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\b.*?$",
     re.IGNORECASE | re.DOTALL,
 )
 # The source also posts the same idea without any scalp/here marker:
@@ -41,9 +41,9 @@ _LIMIT_ENTRY = re.compile(
 # entry price in the text always wins (that path is tried before this one).
 _SCALP_MARKET_STOP_ONLY = re.compile(
     r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})"
-    r"(?:\s+\$?(?P<pair2>[A-Z0-9]{1,20}))?\s+"
+    r"(?:\s+[\$#](?P<pair2>[A-Z0-9]{1,20}))?\s+"
     r"(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\b.*?"
-    r"(?:STOPLOSS|STOP\s*LOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\s*$"
+    r"(?:STOPLOSS|STOP\s*LOSS|STOPPOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\s*$"
 )
 
 
@@ -71,8 +71,10 @@ def parse_explicit_signal(
             text, message_id=message_id, market_price_lookup=market_price_lookup
         )
     try:
-        direction_text = match["direction"].upper()
+        direction_text = (match.groupdict().get("direction") or match.groupdict().get("direction2") or "").upper()
         direction = {
+            "LONGED": Direction.LONG,
+            "SHORTED": Direction.SHORT,
             "LONGING": Direction.LONG,
             "SHORTING": Direction.SHORT,
             "LONG": Direction.LONG,
@@ -87,7 +89,7 @@ def parse_explicit_signal(
         )
         if not match.groupdict().get("entry") and not take_profits:
             return None
-        pair_token = (match.groupdict().get("pair2") or match["pair"]).upper().removesuffix("USDT")
+        pair_token = (match.groupdict().get("pair2") or match.groupdict().get("pair3") or match["pair"]).upper().removesuffix("USDT")
         if match.groupdict().get("entry"):
             entry = Decimal(match["entry"])
         else:
