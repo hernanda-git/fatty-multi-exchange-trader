@@ -177,9 +177,13 @@ class SourceManagementExecutor:
             } and self._store.has_provider_intent(update.id, sl_oid):
                 # This is GET-only even when the position is now flat. Flat
                 # cannot prove which protection plan a previous POST changed.
-                self._gateway.reconcile_stop_loss(sl_oid)
-                self._finish(update, "reconciled")
-                return "reconciled"
+                try:
+                    self._gateway.reconcile_stop_loss(sl_oid)
+                    self._finish(update, "reconciled")
+                    return "reconciled"
+                except SourceManagementReconciliationPending as exc:
+                    if "claimed stop intent is not available" not in str(exc):
+                        raise
             if not self._store.management_is_eligible(update.id):
                 close_oid = f"source-management-{update.id.hex}-close"
                 if self._store.has_provider_intent(update.id, close_oid):
