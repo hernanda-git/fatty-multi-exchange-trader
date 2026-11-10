@@ -514,6 +514,19 @@ MIGRATIONS: Final = [
             ADD COLUMN IF NOT EXISTS re_admitted_at TIMESTAMPTZ;
         """,
     ),
+    (
+        37,
+        """
+        -- Allow stop mutation intents to reference existing provider order IDs
+        -- while preserving uniqueness for primary entry, exit, and initial protection orders.
+        ALTER TABLE live_order_intents
+            DROP CONSTRAINT IF EXISTS live_order_intents_exchange_provider_order_id_key;
+        DROP INDEX IF EXISTS live_order_intents_exchange_provider_order_id_key;
+        CREATE UNIQUE INDEX IF NOT EXISTS live_order_intents_exchange_provider_order_id_key
+            ON live_order_intents (exchange, provider_order_id)
+            WHERE stop_mutation_root_oid IS NULL;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

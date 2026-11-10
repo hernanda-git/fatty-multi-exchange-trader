@@ -332,7 +332,7 @@ class StopModifyClient(FakeBitgetClient):
             self.position_rows[0]["takeProfitId"] = "different-tp"
         if self.modify_error is not None:
             raise self.modify_error
-        return {"orderId": "sl-plan", "clientOid": "root-entry"}
+        return {"orderId": "sl-plan", "clientOid": kwargs.get("client_oid", "root-entry")}
 
 
 def stop_gateway() -> tuple[BitgetOperatorGateway, StopModifyClient, InMemoryLiveIntentStore]:
@@ -392,6 +392,50 @@ def test_source_stop_accepts_venue_margin_echo_on_position_level_plans() -> None
     move_stop(gateway)
     assert any(name == "modify_position_stop_loss" for name, _ in client.calls)
     assert store.get("management-sl").state == "reconciled"
+    gateway.close()
+
+def test_source_stop_modifies_with_preexisting_protection_intents() -> None:
+    gateway, client, store = stop_gateway()
+    client.plans[0]["clientOid"] = "root-entry-sl"
+    client.plans[1]["clientOid"] = "root-entry-tp"
+    store.save(
+        LiveIntentRecord(
+            "bitget",
+            "root-entry-sl",
+            "BTCUSDT",
+            "SELL",
+            "SL",
+            filled_qty=Decimal("0.01"),
+            provider_order_id="sl-plan",
+            planned_stop_loss=Decimal("59000"),
+            protection_root_oid="root-entry",
+        )
+    )
+    store.save(
+        LiveIntentRecord(
+            "bitget",
+            "root-entry-tp",
+            "BTCUSDT",
+            "SELL",
+            "TP",
+            filled_qty=Decimal("0.01"),
+            provider_order_id="tp-plan",
+            planned_take_profits=(Decimal("62000"),),
+            protection_root_oid="root-entry",
+        )
+    )
+    move_stop(gateway)
+    assert (
+        "modify_position_stop_loss",
+        {
+            "symbol": "BTCUSDT",
+            "order_id": "sl-plan",
+            "client_oid": "root-entry-sl",
+            "trigger_price": "60000.0",
+        },
+    ) in client.calls
+    assert store.get("management-sl").state == "reconciled"
+    assert store.get("root-entry").active_stop_loss_price == Decimal("60000")
     gateway.close()
 
 
