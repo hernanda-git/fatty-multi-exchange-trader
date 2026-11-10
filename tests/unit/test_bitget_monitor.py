@@ -538,6 +538,20 @@ async def test_release_clears_an_old_mismatch_but_a_new_one_relatches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_post_fill_mismatch_auto_recovers_when_cleared() -> None:
+    venue = ReadOnlyVenue()
+    repository = InMemoryReconciliationRepository()
+    repository.record_post_fill_mismatch()
+    first = await BitgetMonitor(venue, repository).run_once()
+    assert first.status == "kill-switch-latched"
+    assert repository.kill_switch_active("bitget") is True
+
+    repository._unhandled_mismatches.discard("bitget")
+    recovered = await BitgetMonitor(venue, repository).run_once()
+    assert recovered.status == "ok"
+    assert repository.kill_switch_active("bitget") is False
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("positions", "orders", "plans", "clock_skew_ms", "reason"),
     [

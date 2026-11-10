@@ -41,7 +41,13 @@ _NATIVE_CLOSE_LOOKBACK_SECONDS = 900
 #: still latched the next day while the venue read -28 ms). Durable divergences
 #: (reconciliation mismatches, kill-switch policy) are NOT in this set and never
 #: self-clear.
-_AUTO_RELEASABLE_KILL_SWITCH_REASONS = frozenset({"clock-skew-unavailable", "clock-skew-exceeded"})
+_AUTO_RELEASABLE_KILL_SWITCH_REASONS = frozenset(
+    {
+        "clock-skew-unavailable",
+        "clock-skew-exceeded",
+        "post-fill-margin-or-leverage-mismatch",
+    }
+)
 
 #: Audit reference recorded on an automatic release.
 _AUTO_RELEASE_REFERENCE = "auto:clock-check-recovered"
@@ -336,17 +342,18 @@ class BitgetMonitor:
                 self._repository.kill_switch_reason, self._scope
             )
             if latched_reason in _AUTO_RELEASABLE_KILL_SWITCH_REASONS:
-                # This cycle found nothing latchable, so the transient clock condition is
+                # This cycle found nothing latchable, so the transient condition is
                 # over: release it instead of leaving the entry lane closed forever.
+                ref = f"auto:{latched_reason}-recovered"
                 await _run_sync_storage(
-                    self._repository.release_kill_switch, self._scope, _AUTO_RELEASE_REFERENCE
+                    self._repository.release_kill_switch, self._scope, ref
                 )
                 logging.getLogger(__name__).info(
                     "Bitget monitor released transient kill switch: "
                     "scope=%s reason=%s reference=%s",
                     self._scope,
                     latched_reason,
-                    _AUTO_RELEASE_REFERENCE,
+                    ref,
                 )
             else:
                 return MonitorReport(

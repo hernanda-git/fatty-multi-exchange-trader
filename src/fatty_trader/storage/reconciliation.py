@@ -305,10 +305,14 @@ class PostgresReconciliationRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """SELECT EXISTS (
-                       SELECT 1 FROM bitget_post_fill_reconciliations m
-                       WHERE m.exchange = %s
-                         AND m.status = 'mismatch'
-                         AND m.created_at > COALESCE(
+                       SELECT 1 FROM (
+                           SELECT DISTINCT ON (client_order_id) status, created_at
+                           FROM bitget_post_fill_reconciliations
+                           WHERE exchange = %s
+                           ORDER BY client_order_id, created_at DESC
+                       ) latest
+                       WHERE latest.status = 'mismatch'
+                         AND latest.created_at > COALESCE(
                              (SELECT k.updated_at FROM venue_kill_switches k WHERE k.scope = %s),
                              TIMESTAMPTZ '1970-01-01 00:00:00+00'
                          )
