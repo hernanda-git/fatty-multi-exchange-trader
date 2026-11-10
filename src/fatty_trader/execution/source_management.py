@@ -268,9 +268,13 @@ class SourceManagementExecutor:
                     )
                 self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, sl_oid):
-                    self._gateway.reconcile_stop_loss(sl_oid)
-                    self._finish(update, "reconciled")
-                    return "reconciled"
+                    try:
+                        self._gateway.reconcile_stop_loss(sl_oid)
+                        self._finish(update, "reconciled")
+                        return "reconciled"
+                    except SourceManagementReconciliationPending as exc:
+                        if "claimed stop intent is not available" not in str(exc):
+                            raise
                 self._gateway.replace_stop_loss(
                     symbol=update.symbol,
                     side=remaining["side"],
@@ -282,9 +286,13 @@ class SourceManagementExecutor:
                 sl_oid = f"source-management-{update.id.hex}-sl"
                 self._require_eligible(update)
                 if not self._store.persist_provider_intent(update.id, sl_oid):
-                    self._gateway.reconcile_stop_loss(sl_oid)
-                    self._finish(update, "reconciled")
-                    return "reconciled"
+                    try:
+                        self._gateway.reconcile_stop_loss(sl_oid)
+                        self._finish(update, "reconciled")
+                        return "reconciled"
+                    except SourceManagementReconciliationPending as exc:
+                        if "claimed stop intent is not available" not in str(exc):
+                            raise
                 self._gateway.replace_stop_loss(
                     symbol=update.symbol,
                     side=position["side"],
