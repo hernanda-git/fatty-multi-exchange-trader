@@ -205,7 +205,8 @@ async def resolve_native_plan_close(
             continue
         if plan.role not in {"SL", "TP"}:
             continue
-        if plan.protection_root_oid != intent.client_oid:
+        plan_root = plan.protection_root_oid or plan.stop_mutation_root_oid
+        if plan_root != intent.client_oid:
             continue
         if plan.provider_order_id != client_oid:
             continue
@@ -257,7 +258,7 @@ async def bind_native_plan_close_from_fill(
     plan = plan_owner(client_oid)
     if plan is None or plan.role not in {"SL", "TP"}:
         return False
-    root_oid = plan.protection_root_oid
+    root_oid = plan.protection_root_oid or plan.stop_mutation_root_oid
     if root_oid is None:
         return False
     root = store.get(root_oid)

@@ -354,7 +354,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 """
                 SELECT client_order_id FROM live_order_intents
                 WHERE exchange = %s AND provider_order_id = %s AND role IN ('SL','TP')
-                ORDER BY created_at
+                ORDER BY (protection_root_oid IS NOT NULL) DESC, created_at ASC
                 LIMIT 1
                 """,
                 (exchange, provider_order_id),
