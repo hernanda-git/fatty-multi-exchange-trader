@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -461,6 +462,53 @@ async def test_post_fill_mismatch_is_recorded_without_durable_dispatch_latch() -
 
     assert reconciliations.observations[0].status == "mismatch"
 
+
+@pytest.mark.asyncio
+async def test_split_fill_within_reserved_cap_is_within_tolerance_without_latch() -> None:
+    class SplitFillClient(FakeAsyncClient):
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            return [
+                {
+                    "symbol": symbol,
+                    "holdSide": "long",
+                    "total": "9009",
+                    "openPriceAvg": "0.0006098",
+                    "markPrice": "0.0006148",
+                    "marginSize": "0.274",
+                    "marginMode": "isolated",
+                    "leverage": "20",
+                }
+            ]
+
+    class Reconciliations:
+        def __init__(self) -> None:
+            self.observations: list[Any] = []
+
+        def record(self, observation: Any) -> None:
+            self.observations.append(observation)
+
+    client = SplitFillClient()
+    reconciliations = Reconciliations()
+    adapter = AsyncBitgetExecution(
+        client,
+        AsyncBitgetVenue(client),
+        reconciliation_repository=reconciliations,
+    )
+
+    intent = _admitted_intent()
+    intent.planned_margin_usdt = Decimal("1.10")
+    intent.planned_notional_usdt = Decimal("22.00")
+    intent.planned_leverage = 20
+    intent.margin_mode = "ISOLATED"
+    intent.dispatch_id = uuid4()
+    intent.filled_qty = Decimal("9009")
+
+    await adapter.submit_entry(intent)
+
+    assert len(reconciliations.observations) == 1
+    assert reconciliations.observations[0].status == "within_tolerance"
+    assert reconciliations.observations[0].reason == "split-filled-margin-within-reserved-cap"
+    assert adapter.degraded is False
 
 class _NativeUnsupportedClient(FakeAsyncClient):
     """Fake whose native TP/SL placement fails with Bitget 43011."""

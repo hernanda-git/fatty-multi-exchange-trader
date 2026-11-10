@@ -285,6 +285,8 @@ class AsyncBitgetExecution:
             result = await self.reconcile_intent(intent)
         else:
             result = await self.reconcile_intent(intent, submitted)
+        if result.filled_qty > intent.filled_qty:
+            intent.filled_qty = result.filled_qty
         await self._reconcile_post_fill(intent, result)
         return result
 
@@ -351,11 +353,17 @@ class AsyncBitgetExecution:
             else:
                 mode = position.margin_mode.upper()
                 expected_quantity = intent.filled_qty
+                if (
+                    result is not None
+                    and getattr(result, "filled_qty", None) is not None
+                    and result.filled_qty > expected_quantity
+                ):
+                    expected_quantity = result.filled_qty
                 if store is not None and hasattr(store, "remaining_owned_quantity"):
                     try:
                         expected_quantity = store.remaining_owned_quantity(intent.client_oid)
                     except Exception:
-                        expected_quantity = intent.filled_qty
+                        pass
                 margin_tolerance = max(
                     Decimal("0.10"), intent.planned_margin_usdt * Decimal("0.10")
                 )
@@ -366,13 +374,13 @@ class AsyncBitgetExecution:
                     status, reason = "mismatch", "leverage-or-margin-mode-mismatch"
                 elif position.margin_usdt is None:
                     status, reason = "unavailable", "provider-margin-unavailable"
-                elif intent.dispatch_id is not None and position.quantity != expected_quantity:
-                    status, reason = "mismatch", "split-position-quantity-mismatch"
                 elif (
                     intent.dispatch_id is not None
                     and position.margin_usdt <= intent.planned_margin_usdt + margin_tolerance
                 ):
                     status, reason = "within_tolerance", "split-filled-margin-within-reserved-cap"
+                elif intent.dispatch_id is not None and position.quantity != expected_quantity:
+                    status, reason = "mismatch", "split-position-quantity-mismatch"
                 elif position.margin_usdt == intent.planned_margin_usdt:
                     status, reason = "matched", None
                 elif abs(position.margin_usdt - intent.planned_margin_usdt) <= margin_tolerance:
