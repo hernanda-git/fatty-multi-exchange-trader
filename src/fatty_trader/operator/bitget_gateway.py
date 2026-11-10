@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from fatty_trader.exchanges.bitget.client import BitgetUnknownResultError
+from fatty_trader.exchanges.bitget.client import BitgetApiError, BitgetUnknownResultError
 from fatty_trader.exchanges.bitget.live import LiveIntentRecord, LiveIntentStoreProtocol
 from fatty_trader.exchanges.bitget.metadata import find_contract, metadata_from_contract
 from fatty_trader.exchanges.bitget.reconciliation_live import (
@@ -512,6 +512,16 @@ class BitgetOperatorGateway:
         if len(positions) != 1 or positions[0]["side"] != side or positions[0]["size"] != quantity:
             raise ValueError("Bitget position changed before stop-loss modification")
         position = positions[0]
+        mark = _optional_decimal(position.get("mark"), "position mark price")
+        if mark is not None and mark > 0:
+            if side == "LONG" and normalized_stop >= mark:
+                raise SourceManagementReconciliationPending(
+                    f"mark price {mark} is at or below stop {normalized_stop}"
+                )
+            if side == "SHORT" and normalized_stop <= mark:
+                raise SourceManagementReconciliationPending(
+                    f"mark price {mark} is at or above stop {normalized_stop}"
+                )
         sl_id = str(position["stop_loss_id"] or "").strip()
         tp_id = str(position["take_profit_id"] or "").strip()
         if not sl_id or not tp_id:
@@ -604,6 +614,16 @@ class BitgetOperatorGateway:
                     trigger_price=str(normalized_stop),
                 )
             )
+        except BitgetApiError as exc:
+            if isinstance(exc, BitgetUnknownResultError):
+                intent.state = "unknown"
+                self._intent_store.update(intent)
+                raise SourceManagementReconciliationPending(
+                    "stop modification result is unknown"
+                ) from exc
+            intent.state = "rejected"
+            self._intent_store.update(intent)
+            raise ValueError(f"Bitget rejected stop modification: {exc}") from exc
         except Exception as exc:
             intent.state = "unknown"
             self._intent_store.update(intent)

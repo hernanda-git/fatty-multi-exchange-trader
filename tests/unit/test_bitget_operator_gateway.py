@@ -438,6 +438,29 @@ def test_source_stop_modifies_with_preexisting_protection_intents() -> None:
     assert store.get("root-entry").active_stop_loss_price == Decimal("60000")
     gateway.close()
 
+def test_source_stop_parks_when_mark_price_worse_than_stop() -> None:
+    from fatty_trader.execution.source_management import SourceManagementReconciliationPending
+
+    gateway, client, store = stop_gateway()
+    client.position_rows[0]["markPrice"] = "59500"
+    with pytest.raises(SourceManagementReconciliationPending, match="is at or below stop"):
+        move_stop(gateway)
+    assert not any(name == "modify_position_stop_loss" for name, _ in client.calls)
+    assert store.get("management-sl") is None
+    gateway.close()
+
+
+def test_source_stop_rejects_on_definitive_venue_error() -> None:
+    from fatty_trader.exchanges.bitget.client import BitgetApiError
+
+    gateway, client, store = stop_gateway()
+    client.modify_error = BitgetApiError(
+        "40917 Stop price for long positions please < mark price", code="40917"
+    )
+    with pytest.raises(ValueError, match="Bitget rejected stop modification"):
+        move_stop(gateway)
+    assert store.get("management-sl").state == "rejected"
+    gateway.close()
 
 @pytest.mark.parametrize(
     ("field", "value"),
