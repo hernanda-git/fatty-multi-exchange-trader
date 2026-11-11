@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from fatty_trader.analyzer.trade_management import ManagementAction
 from fatty_trader.execution.source_management import SourceManagementUpdate
-from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL
+from fatty_trader.intake.freshness import MANAGEMENT_ELIGIBLE_SQL
 
 
 def _dead_letter_payload(update_id: UUID, attempts: int, error: str) -> str:
@@ -56,27 +56,24 @@ def _outcome_payload(update: SourceManagementUpdate, state: str, error: str | No
 
 
 class PostgresSourceManagementStore:
-    def __init__(self, connection_factory: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        connection_factory: Callable[[], Any],
+        *,
+        max_source_age_seconds: int = 1800,
+    ) -> None:
+        if max_source_age_seconds < 1:
+            raise ValueError("max_source_age_seconds must be positive")
         self._connection_factory = connection_factory
+        self._max_source_age_seconds = max_source_age_seconds
 
     def claim(self, worker_id: str) -> SourceManagementUpdate | None:
         if not worker_id:
             raise ValueError("worker_id is required")
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """UPDATE source_management_updates u SET state='failed',
-                    updated_at=clock_timestamp()
-                FROM telegram_messages tm
-                WHERE tm.id=u.source_message_id
-                  AND u.state IN ('queued','claimed','reconciliation-pending')
-                  AND NOT COALESCE(("""
-                + SOURCE_ELIGIBLE_SQL.format(alias="tm")
-                + """),false)
-                  AND NOT EXISTS (SELECT 1 FROM source_management_provider_intents p
-                      WHERE p.management_update_id=u.id)
-                  AND NOT EXISTS (SELECT 1 FROM live_order_intents i
-                      WHERE i.cancel_requested_by=u.id)"""
-            )
+            # Source-age expiry is NOT a failure: the executor re-derives eligibility
+            # before any mutation and records the precise reason. Only the execution
+            # budget dead-letters here, and it always writes last_error.
             cursor.execute(
                 """
                 UPDATE source_management_updates u SET state='failed',
@@ -168,12 +165,16 @@ class PostgresSourceManagementStore:
             connection.commit()
         return state
 
-    def update_state(self, update_id: UUID, state: str) -> None:
+    def update_state(
+        self, update_id: UUID, state: str, last_error: str | None = None
+    ) -> None:
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
             cursor.execute(
-                """UPDATE source_management_updates SET state = %s, updated_at = CURRENT_TIMESTAMP
+                """UPDATE source_management_updates
+                   SET state = %s, last_error = COALESCE(%s, last_error),
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE id = %s""",
-                (state, update_id),
+                (state, last_error, update_id),
             )
             connection.commit()
 
@@ -217,21 +218,47 @@ class PostgresSourceManagementStore:
             )
             return cursor.fetchone() is not None
 
-    def management_is_eligible(self, update_id: UUID) -> bool:
-        """Recheck source time under the update lock before a NEW mutation."""
+    def management_ineligibility(self, update_id: UUID) -> str | None:
+        """Recheck revision identity and source age under the update lock.
+
+        Returns ``None`` when a NEW mutation is allowed, otherwise a stable reason
+        code that is written to ``last_error``. Revision equality (not the entry
+        recency window) is the source-integrity contract for management.
+        """
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT COALESCE(("
-                + SOURCE_ELIGIBLE_SQL.format(alias="tm")
-                + "),false) AND tm.revision_hash=u.revision "
+                + MANAGEMENT_ELIGIBLE_SQL.format(
+                    alias="tm", max_age_seconds=int(self._max_source_age_seconds)
+                )
+                + "),false) AS eligible, tm.intake_state, tm.entry_rejection_reason, "
+                "(tm.revision_hash <> u.revision) AS revision_changed, "
+                "(tm.received_at < clock_timestamp() - (%s * interval '1 second')) AS too_old "
                 "FROM source_management_updates u "
                 "JOIN telegram_messages tm ON tm.id=u.source_message_id "
                 "WHERE u.id=%s FOR UPDATE OF u",
-                (update_id,),
+                (int(self._max_source_age_seconds), update_id),
             )
             row = cursor.fetchone()
             connection.commit()
-            return row is not None and bool(row[0])
+            if row is None:
+                return "management-update-missing"
+            values = list(row.values()) if isinstance(row, dict) else list(row)
+            eligible, intake_state, rejection, revision_changed, too_old = values
+            if eligible:
+                return None
+            if revision_changed:
+                return "management-source-revision-superseded"
+            if rejection in {"edited-source-message", "superseded-source-revision"}:
+                return f"management-source-{str(rejection)}"
+            if too_old:
+                return "management-source-too-old"
+            if str(intake_state) != "ANALYZED":
+                return "management-source-not-analyzed"
+            return "management-source-ineligible"
+
+    def management_is_eligible(self, update_id: UUID) -> bool:
+        return self.management_ineligibility(update_id) is None
 
     def has_claimed_cancellation(self, update_id: UUID) -> bool:
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:

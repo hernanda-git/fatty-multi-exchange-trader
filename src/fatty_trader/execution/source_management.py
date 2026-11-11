@@ -28,7 +28,9 @@ class SourceManagementUpdate:
 class SourceManagementStore(Protocol):
     def claim(self, worker_id: str) -> SourceManagementUpdate | None: ...
     def get(self, update_id: UUID) -> SourceManagementUpdate: ...
-    def update_state(self, update_id: UUID, state: str) -> None: ...
+    def update_state(
+        self, update_id: UUID, state: str, last_error: str | None = None
+    ) -> None: ...
     def alert_outcome(
         self, update: SourceManagementUpdate, state: str, error: str | None = None
     ) -> None: ...
@@ -38,6 +40,7 @@ class SourceManagementStore(Protocol):
     def persist_provider_intent(self, update_id: UUID, client_oid: str) -> bool: ...
     def has_provider_intent(self, update_id: UUID, client_oid: str) -> bool: ...
     def management_is_eligible(self, update_id: UUID) -> bool: ...
+    def management_ineligibility(self, update_id: UUID) -> str | None: ...
     def has_claimed_cancellation(self, update_id: UUID) -> bool: ...
 
 
@@ -74,6 +77,8 @@ class InMemorySourceManagementStore:
         self._updates = {update.id: update for update in updates or []}
         self._provider_intents: set[tuple[UUID, str]] = set()
         self.eligible = True
+        self.ineligibility_reason: str | None = None
+        self.last_errors: dict[UUID, str | None] = {}
         self.claimed_cancellations: set[UUID] = set()
         self.outcomes: list[tuple[str, str]] = []
 
@@ -90,8 +95,12 @@ class InMemorySourceManagementStore:
     def get(self, update_id: UUID) -> SourceManagementUpdate:
         return self._updates[update_id]
 
-    def update_state(self, update_id: UUID, state: str) -> None:
+    def update_state(
+        self, update_id: UUID, state: str, last_error: str | None = None
+    ) -> None:
         update = self._updates.pop(update_id)
+        if last_error is not None:
+            self.last_errors[update_id] = last_error
         self._updates[update_id] = replace(update, state=state)
 
     def alert_outcome(
@@ -121,7 +130,13 @@ class InMemorySourceManagementStore:
         return (update_id, client_oid) in self._provider_intents
 
     def management_is_eligible(self, update_id: UUID) -> bool:
-        return self.eligible
+        return self.management_ineligibility(update_id) is None
+
+    def management_ineligibility(self, update_id: UUID) -> str | None:
+        del update_id
+        if self.eligible:
+            return None
+        return self.ineligibility_reason or "management-source-ineligible"
 
     def has_claimed_cancellation(self, update_id: UUID) -> bool:
         return update_id in self.claimed_cancellations
@@ -147,7 +162,7 @@ class SourceManagementExecutor:
 
     def _finish(self, update: SourceManagementUpdate, state: str, error: str | None = None) -> None:
         """Record a terminal outcome and make it visible to the operator."""
-        self._store.update_state(update.id, state)
+        self._store.update_state(update.id, state, error)
         alert = getattr(self._store, "alert_outcome", None)
         if callable(alert):
             alert(update, state, error)
@@ -184,7 +199,17 @@ class SourceManagementExecutor:
                 except SourceManagementReconciliationPending as exc:
                     if "claimed stop intent is not available" not in str(exc):
                         raise
-            if not self._store.management_is_eligible(update.id):
+            reason_of = getattr(self._store, "management_ineligibility", None)
+            ineligibility = (
+                reason_of(update.id)
+                if callable(reason_of)
+                else (
+                    None
+                    if self._store.management_is_eligible(update.id)
+                    else "source management revision is no longer eligible"
+                )
+            )
+            if ineligibility is not None:
                 close_oid = f"source-management-{update.id.hex}-close"
                 if self._store.has_provider_intent(update.id, close_oid):
                     positions = self._gateway.get_positions(update.symbol)
@@ -201,7 +226,7 @@ class SourceManagementExecutor:
                     raise SourceManagementReconciliationPending(
                         "stale cancellation claim still requires terminal readback"
                     )
-                raise ValueError("source management revision is no longer eligible")
+                raise ValueError(ineligibility)
             cancels_entries = update.action in {
                 ManagementAction.CLOSE,
                 ManagementAction.TP1_BOOKED,
@@ -346,6 +371,10 @@ class SourceManagementExecutor:
         return True
 
     def _require_eligible(self, update: SourceManagementUpdate) -> None:
+        reason_of = getattr(self._store, "management_ineligibility", None)
+        reason = reason_of(update.id) if callable(reason_of) else None
+        if reason is not None:
+            raise ValueError(reason)
         if not self._store.management_is_eligible(update.id):
             raise ValueError("source management revision is no longer eligible")
 

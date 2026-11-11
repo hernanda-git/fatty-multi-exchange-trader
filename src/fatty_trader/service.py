@@ -1722,8 +1722,15 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
     if mutations_raw not in {"0", "1"}:
         raise ValueError("BITGET_OPERATOR_MUTATIONS_ENABLED must be 0 or 1")
+    management_max_source_age = int(
+        environ.get("BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS", "1800")
+    )
+    if management_max_source_age < 1:
+        raise ValueError("BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS must be positive")
     executor = SourceManagementExecutor(
-        PostgresSourceManagementStore(psycopg.connect),
+        PostgresSourceManagementStore(
+            psycopg.connect, max_source_age_seconds=management_max_source_age
+        ),
         gateway,
         mutations_enabled=mutations_raw == "1",
         max_attempts=int(environ.get("SOURCE_MANAGEMENT_MAX_ATTEMPTS", "5")),

@@ -132,3 +132,43 @@ OR (
     )
 )
 )"""
+
+#: Analysis selection is deliberately wider than entry admission: a signal that is
+#: too old to enter may still carry a management instruction for an open position
+#: (close / TP booked / move stop to entry). Entry admission stays gated by
+#: ``SOURCE_ELIGIBLE_SQL`` at dispatch time, and management execution is gated by
+#: ``MANAGEMENT_ELIGIBLE_SQL`` below.
+ANALYSIS_BACKFILL_MINUTES = 60
+
+ANALYSIS_ELIGIBLE_SQL = """(
+    {alias}.ingestion_origin IN ('realtime', 'catchup', 'backfill')
+    AND isfinite({alias}.received_at)
+    AND {alias}.received_at
+        > clock_timestamp() - interval '""" + str(ANALYSIS_BACKFILL_MINUTES) + """ minutes'
+    AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
+    AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
+    AND NOT EXISTS (
+        SELECT 1 FROM telegram_messages source_edit
+        WHERE source_edit.channel_id = {alias}.channel_id
+          AND source_edit.message_id = {alias}.message_id
+          AND source_edit.entry_rejection_reason = 'edited-source-message'
+    )
+)"""
+
+#: Management instructions are not entries: only the source revision identity and
+#: a configurable age limit apply. ``{max_age_seconds}`` must be a validated int.
+MANAGEMENT_ELIGIBLE_SQL = """(
+    isfinite({alias}.received_at)
+    AND {alias}.received_at
+        > clock_timestamp() - ({max_age_seconds} * interval '1 second')
+    AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
+    AND {alias}.intake_state = 'ANALYZED'
+    AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
+    AND {alias}.entry_rejection_reason IS DISTINCT FROM 'superseded-source-revision'
+    AND NOT EXISTS (
+        SELECT 1 FROM telegram_messages source_edit
+        WHERE source_edit.channel_id = {alias}.channel_id
+          AND source_edit.message_id = {alias}.message_id
+          AND source_edit.entry_rejection_reason = 'edited-source-message'
+    )
+)"""

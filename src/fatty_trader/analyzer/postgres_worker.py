@@ -18,7 +18,7 @@ from fatty_trader.analyzer.image_analysis import (
 from fatty_trader.analyzer.integration import AnalysisResult, AnalysisStatus, analyze_with_fallback
 from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.analyzer.trade_management import parse_source_management
-from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL
+from fatty_trader.intake.freshness import ANALYSIS_ELIGIBLE_SQL, SOURCE_ELIGIBLE_SQL
 from fatty_trader.intake.persistence import RawTelegramMessage
 
 _SELECT_RECEIVED = f"""
@@ -27,7 +27,7 @@ SELECT id, channel_id, message_id, revision_hash, raw_text, received_at,
        ingestion_origin, entry_expires_at, entry_rejection_reason
 FROM telegram_messages tm
 WHERE intake_state = 'RECEIVED' AND channel_id = ANY(%s)
-  AND {SOURCE_ELIGIBLE_SQL.format(alias="tm")}
+  AND {ANALYSIS_ELIGIBLE_SQL.format(alias="tm")}
 ORDER BY received_at, message_id
 FOR UPDATE SKIP LOCKED
 LIMIT %s
