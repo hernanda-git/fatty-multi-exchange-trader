@@ -413,10 +413,12 @@ def enqueue_card(status: str, reasons: list[dict[str, str]], *, reminder: bool =
     critical = sum(1 for reason in reasons if reason["severity"] == "critical")
     warning = sum(1 for reason in reasons if reason["severity"] == "warning")
     headline = "all checks clear" if status == "ok" else f"{critical} critical, {warning} warning"
+    codes = [reason["code"] for reason in reasons][:5]
+    summary = "; ".join(codes)
     payload = {
         "kind": "system-event",
         "state": status,
-        "message": f"watchdog {status}: {headline}",
+        "message": f"watchdog {status}: {headline}" + (f" · {summary}" if summary else ""),
         "reasons": [f"{reason['severity']}:{reason['code']}" for reason in reasons][:20],
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
