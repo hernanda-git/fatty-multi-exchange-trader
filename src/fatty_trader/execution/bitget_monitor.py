@@ -52,6 +52,34 @@ _AUTO_RELEASABLE_KILL_SWITCH_REASONS = frozenset(
 #: Audit reference recorded on an automatic release.
 _AUTO_RELEASE_REFERENCE = "auto:clock-check-recovered"
 
+#: Read failures that describe a provider/network snapshot, not a durable
+#: divergence. They are counted per cycle and only latch after consecutive
+#: failures, then self-clear on the first clean cycle. `unexpected-*` and any
+#: ownership mismatch remain permanent: they mean the bot cannot account for
+#: real venue state.
+_TRANSIENT_KILL_SWITCH_REASONS = frozenset(
+    {
+        "clock-skew-unavailable",
+        "clock-skew-exceeded",
+        "provider-fills-read-failed",
+        "provider-orders-read-failed",
+        "provider-positions-read-failed",
+        "provider-fills-invalid",
+        "provider-orders-invalid",
+        "provider-positions-invalid",
+        "verified-close-evidence-unavailable",
+    }
+)
+_TRANSIENT_KILL_SWITCH_PREFIXES = ("unknown-intent-unreconciled:",)
+
+
+def _transient_latch_key(reason: str) -> str | None:
+    """Normalize a reason to its strike bucket, or None when it is durable."""
+    for prefix in _TRANSIENT_KILL_SWITCH_PREFIXES:
+        if reason.startswith(prefix):
+            return prefix
+    return reason if reason in _TRANSIENT_KILL_SWITCH_REASONS else None
+
 #: Durable outbox payload kind for a position whose venue protection is not confirmed.
 #:
 #: It deliberately has no bespoke Telegram formatter: the generic key/value renderer
@@ -273,9 +301,13 @@ class BitgetMonitor:
         enforce_kill_switch: bool = True,
         fallback_mutations_enabled: bool = False,
         live_intent_store: LiveIntentStoreProtocol | None = None,
+        transient_strikes: int = 3,
+        auto_release_transient: bool = True,
     ) -> None:
         if max_clock_skew_ms < 0:
             raise ValueError("max_clock_skew_ms must be non-negative")
+        if transient_strikes < 1:
+            raise ValueError("transient_strikes must be positive")
         self._client = client
         self._repository = repository
         self._scope = scope
@@ -283,6 +315,9 @@ class BitgetMonitor:
         self._enforce_kill_switch = enforce_kill_switch
         self._fallback_mutations_enabled = fallback_mutations_enabled
         self._live_intent_store = live_intent_store
+        self._transient_strike_limit = transient_strikes
+        self._auto_release_transient = auto_release_transient
+        self._transient_strikes: dict[str, int] = {}
 
     async def run_once(self) -> MonitorReport:
         reasons: list[str] = []
@@ -319,21 +354,35 @@ class BitgetMonitor:
             if abs(skew) > self._max_clock_skew_ms:
                 reasons.append("clock-skew-exceeded")
         unique_reasons = tuple(dict.fromkeys(reasons))
-        if unique_reasons:
-            latchable_reasons = tuple(
-                reason
-                for reason in unique_reasons
-                if reason not in _ALERT_ONLY_PROTECTION_REASONS
-                and not reason.startswith(("fallback-sl_hit:", "fallback-tp_hit:"))
-            )
-            if not latchable_reasons:
-                return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
+        latchable_reasons = tuple(
+            reason
+            for reason in unique_reasons
+            if reason not in _ALERT_ONLY_PROTECTION_REASONS
+            and not reason.startswith(("fallback-sl_hit:", "fallback-tp_hit:"))
+        )
+        # Transient read failures must repeat before they close the entry lane.
+        effective: list[str] = []
+        observed_buckets: set[str] = set()
+        for reason in latchable_reasons:
+            bucket = _transient_latch_key(reason)
+            if bucket is None:
+                effective.append(reason)
+                continue
+            observed_buckets.add(bucket)
+            strikes = self._transient_strikes.get(bucket, 0) + 1
+            self._transient_strikes[bucket] = strikes
+            if strikes >= self._transient_strike_limit:
+                effective.append(reason)
+        for bucket in tuple(self._transient_strikes):
+            if bucket not in observed_buckets:
+                del self._transient_strikes[bucket]
+        if effective:
             if not self._enforce_kill_switch:
                 return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
-            for reason in latchable_reasons:
+            for reason in effective:
                 await _run_sync_storage(self._repository.latch_kill_switch, self._scope, reason)
             return MonitorReport(
-                "kill-switch-latched", latchable_reasons, provider_exits_reconciled
+                "kill-switch-latched", tuple(effective), provider_exits_reconciled
             )
         if self._enforce_kill_switch and await _run_sync_storage(
             self._repository.kill_switch_active, self._scope
@@ -341,9 +390,15 @@ class BitgetMonitor:
             latched_reason = await _run_sync_storage(
                 self._repository.kill_switch_reason, self._scope
             )
-            if latched_reason in _AUTO_RELEASABLE_KILL_SWITCH_REASONS:
-                # This cycle found nothing latchable, so the transient condition is
-                # over: release it instead of leaving the entry lane closed forever.
+            transient_bucket = (
+                _transient_latch_key(latched_reason) if latched_reason else None
+            )
+            releasable = latched_reason in _AUTO_RELEASABLE_KILL_SWITCH_REASONS or (
+                self._auto_release_transient and transient_bucket is not None
+            )
+            if releasable:
+                # This cycle has no effective latchable reason: the transient
+                # condition is over, release instead of staying closed forever.
                 ref = f"auto:{latched_reason}-recovered"
                 await _run_sync_storage(
                     self._repository.release_kill_switch, self._scope, ref
@@ -361,7 +416,8 @@ class BitgetMonitor:
                     provider_exits_reconciled=provider_exits_reconciled,
                     latched_reason=latched_reason,
                 )
-        return MonitorReport("ok", provider_exits_reconciled=provider_exits_reconciled)
+        status = "degraded" if unique_reasons else "ok"
+        return MonitorReport(status, unique_reasons, provider_exits_reconciled)
 
     async def _run_fallback_monitor(self, reasons: list[str]) -> None:
         """Run bot-managed TP/SL only behind a separate explicit mutation gate."""

@@ -1428,6 +1428,14 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
     fallback_raw = environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0").lower()
     if fallback_raw not in {"0", "1"}:
         raise ValueError("BITGET_FALLBACK_MUTATIONS_ENABLED must be 0 or 1")
+    transient_strikes = int(environ.get("BITGET_LATCH_TRANSIENT_STRIKES", "3"))
+    if transient_strikes < 1:
+        raise ValueError("BITGET_LATCH_TRANSIENT_STRIKES must be positive")
+    auto_release_transient_raw = environ.get(
+        "BITGET_LATCH_TRANSIENT_AUTORELEASE", "1"
+    ).lower()
+    if auto_release_transient_raw not in {"0", "1"}:
+        raise ValueError("BITGET_LATCH_TRANSIENT_AUTORELEASE must be 0 or 1")
     monitor = BitgetMonitor(
         client,
         repository,
@@ -1435,6 +1443,8 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
         enforce_kill_switch=bitget_kill_switch_enforced(environ),
         fallback_mutations_enabled=((fallback_raw == "1") and bitget_kill_switch_enforced(environ)),
         live_intent_store=live_intent_store,
+        transient_strikes=transient_strikes,
+        auto_release_transient=auto_release_transient_raw == "1",
     )
     interval = float(environ.get("BITGET_MONITOR_POLL_SECONDS", "30"))
     # Liveness: a cycle budget, and a stall budget after which the supervisor exits

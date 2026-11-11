@@ -17,6 +17,14 @@ from datetime import UTC, datetime
 from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 
 PROVIDER_REASONS = ("provider-position-read-failed", "provider-position-invalid")
+#: The healer may only release a latch whose cause it can itself observe.
+HEALABLE_REASONS = frozenset(
+    {
+        "socket-not-connected",
+        "provider-position-read-failed",
+        "provider-position-invalid",
+    }
+)
 
 
 def _flag(environ: Mapping[str, str], name: str, default: bool) -> bool:
@@ -112,6 +120,9 @@ class LatchHealer:
             active, reason = self._latch_state(self._policy.scope)
             if not active:
                 return "idle"
+            if reason not in HEALABLE_REASONS:
+                # A latch this healer cannot prove healthy must stay for a human.
+                return "reason-not-healable"
             required = self._required_cycles(reason)
             if self._healthy < required:
                 return "armed:{}/{}".format(self._healthy, required)
