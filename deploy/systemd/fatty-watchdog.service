@@ -1,0 +1,17 @@
+[Unit]
+Description=Fatty Bitget read-only watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
+ExecStart=/usr/bin/python3 scripts/live_watchdog.py
+Restart=always
+RestartSec=30
+Environment=WATCHDOG_INTERVAL_SECONDS=60
+Environment=FATTY_WATCHDOG_ALERTS=1
+Environment=FATTY_WATCHDOG_STATE_DIR=/home/valarion/.local/state/fatty-watchdog
+
+[Install]
+WantedBy=default.target
