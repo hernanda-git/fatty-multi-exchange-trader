@@ -1,3 +1,5 @@
+# The production host runs Python 3.9; datetime.UTC only exists in 3.11+.
+# ruff: noqa: UP017
 #!/usr/bin/env python3
 """Overnight read-only watchdog for the live Bitget bot.
 
@@ -20,7 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -404,7 +406,7 @@ def enqueue_card(status: str, reasons: list[dict[str, str]], *, reminder: bool =
     codes = sorted({reason["code"] for reason in reasons})
     digest = hashlib.sha1("\n".join(codes).encode()).hexdigest()[:12]
     if reminder:
-        bucket = datetime.now(UTC).strftime("%Y%m%d%H")
+        bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H")
         dedup = f"watchdog-reminder:{status}:{bucket}"
     else:
         dedup = f"watchdog-state:{status}:{digest}"
@@ -416,7 +418,7 @@ def enqueue_card(status: str, reasons: list[dict[str, str]], *, reminder: bool =
         "state": status,
         "message": f"watchdog {status}: {headline}",
         "reasons": [f"{reason['severity']}:{reason['code']}" for reason in reasons][:20],
-        "checked_at": datetime.now(UTC).isoformat(),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
     }
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).replace("'", "''")
     statement = (
@@ -432,7 +434,7 @@ def enqueue_card(status: str, reasons: list[dict[str, str]], *, reminder: bool =
 
 def write_state(status: str, reasons: list[dict[str, str]], observation: dict[str, Any]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     status_payload = {
         "status": status,
         "checked_at": now,
