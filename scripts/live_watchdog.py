@@ -374,8 +374,17 @@ def observe_venue(reasons: list[dict[str, str]], known_limit_oids: list[str]) ->
     skew = data.get("clock_skew_ms")
     if isinstance(skew, (int, float)) and abs(skew) > 5000:
         reasons.append({"code": "clock-skew", "severity": "warning", "detail": f"{int(skew)}ms"})
+    failed_symbols = {
+        str(error).split(":")[1]
+        for error in data.get("errors") or []
+        if str(error).startswith("plans-unavailable:") and len(str(error).split(":")) > 1
+    }
     for position in data.get("positions") or []:
         symbol = str(position.get("symbol") or "")
+        if symbol in failed_symbols:
+            # The plan read itself failed and was already reported; do not
+            # escalate a read failure as a false "unprotected" page.
+            continue
         plans = (data.get("plans") or {}).get(symbol) or []
         live_plans = [p for p in plans if str(p.get("status") or "").lower() == "live"]
         has_stop = any(str(p.get("plan_type")) == "pos_loss" for p in live_plans)
@@ -510,7 +519,9 @@ def main() -> int:
         now = time.monotonic()
         changed = status != last_status
         reminder = status != "ok" and (now - last_alert_at) >= REMINDER_SECONDS
-        if changed or reminder:
+        # The first observation must not page just because there was no history.
+        first_observation = last_status is None
+        if (changed and (not first_observation or status != "ok")) or reminder:
             enqueue_card(status, reasons, reminder=reminder and not changed)
             last_alert_at = now
         if changed:
