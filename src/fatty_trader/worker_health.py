@@ -29,9 +29,7 @@ class WorkerHealth:
         self._closed = False
         self.path.unlink(missing_ok=True)  # Restart needs its first completed cycle.
         self.owner_token = uuid.uuid4().hex
-        self.attestation_mode = (
-            environ.get("WORKER_HEALTH_ATTESTATION", "token").strip().lower()
-        )
+        self.attestation_mode = environ.get("WORKER_HEALTH_ATTESTATION", "token").strip().lower()
         if self.attestation_mode not in {"token", "identity"}:
             raise ValueError("WORKER_HEALTH_ATTESTATION must be token or identity")
         self._stop = Event()

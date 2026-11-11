@@ -83,9 +83,7 @@ def _open_symbols(cursor: Any) -> list[str]:
     return [str(row[0]) for row in cursor.fetchall()]
 
 
-def _enroll_management(
-    cursor: Any, message_uuid: Any, revision: str, management: Any
-) -> list[str]:
+def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management: Any) -> list[str]:
     """Durably enroll one deterministic management instruction per target symbol.
 
     A symbol-less stop instruction fans out to every open position so the channel's
@@ -351,9 +349,7 @@ def process_received_batch(
                     ):
                         management = management_from_image_json(image_result)
                     if management is not None:
-                        symbols = _enroll_management(
-                            cursor, message_uuid, revision, management
-                        )
+                        symbols = _enroll_management(cursor, message_uuid, revision, management)
                         print(
                             f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                             f"symbols={','.join(symbols) or 'none'} "

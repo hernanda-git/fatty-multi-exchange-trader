@@ -86,7 +86,10 @@ async def test_fill_read_failure_is_not_misdiagnosed_as_shape_failure(caplog) ->
 
     repository = InMemoryReconciliationRepository()
     report = await BitgetMonitor(
-        FailedVenue(), repository, live_intent_store=InMemoryLiveIntentStore()
+        FailedVenue(),
+        repository,
+        live_intent_store=InMemoryLiveIntentStore(),
+        transient_strikes=1,
     ).run_once()
     assert report.reasons == ("provider-fills-read-failed",)
     assert repository.kill_switch_active("bitget")
@@ -145,7 +148,7 @@ async def test_unavailable_clock_latches_then_a_clean_cycle_releases_the_transie
 
     venue = Venue()
     repository = InMemoryReconciliationRepository()
-    monitor = BitgetMonitor(venue, repository)
+    monitor = BitgetMonitor(venue, repository, transient_strikes=1)
     first = await monitor.run_once()
     assert first.reasons == ("clock-skew-unavailable",)
     assert repository.kill_switch_active("bitget")
@@ -233,7 +236,9 @@ async def test_monitor_storage_does_not_delay_in_flight_clock_response(
     monitor_task = None
     try:
         await asyncio.wait_for(request_started.wait(), timeout=1)
-        monitor_task = asyncio.create_task(BitgetMonitor(venue, repository).run_once())
+        monitor_task = asyncio.create_task(
+            BitgetMonitor(venue, repository, transient_strikes=1).run_once()
+        )
         assert await asyncio.to_thread(entered.wait, 1)
         respond.set()
         await asyncio.wait_for(clock_task, timeout=1)
@@ -378,7 +383,7 @@ async def test_monitor_row_read_diagnostics_distinguish_exception_from_shape(
     method = "get_all_positions" if endpoint == "positions" else "get_pending_orders"
     setattr(venue, method, reader)
     repository = InMemoryReconciliationRepository()
-    report = await BitgetMonitor(venue, repository).run_once()
+    report = await BitgetMonitor(venue, repository, transient_strikes=1).run_once()
     expected = f"provider-{endpoint}-{'read-failed' if failure == 'exception' else 'invalid'}"
     assert report.reasons == (expected,)
     assert repository.kill_switch_active("bitget")
@@ -429,7 +434,7 @@ async def test_real_rest_client_monitor_retries_transient_429_but_latches_exhaus
     repository = InMemoryReconciliationRepository()
     try:
         report = await BitgetMonitor(
-            client, repository, live_intent_store=InMemoryLiveIntentStore()
+            client, repository, live_intent_store=InMemoryLiveIntentStore(), transient_strikes=1
         ).run_once()
     finally:
         await client.aclose()
@@ -550,6 +555,7 @@ async def test_post_fill_mismatch_auto_recovers_when_cleared() -> None:
     recovered = await BitgetMonitor(venue, repository).run_once()
     assert recovered.status == "ok"
     assert repository.kill_switch_active("bitget") is False
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -920,3 +926,30 @@ async def test_system_liquidation_fill_is_reconciled_without_global_switch() -> 
     assert reconciliation.kill_switch_active("bitget") is False
     assert len(intents.fills) == 1
     assert intents.provider_events[0]["source"] == "SYSTEM_LIQUIDATION"
+
+
+@pytest.mark.asyncio
+async def test_transient_read_failure_needs_consecutive_strikes_then_auto_releases() -> None:
+    venue = ReadOnlyVenue()
+    fail = {"on": True}
+
+    async def reader():
+        if fail["on"]:
+            raise TimeoutError("network")
+        return await _empty_order_envelope()
+
+    venue.get_pending_orders = reader
+    repository = InMemoryReconciliationRepository()
+    monitor = BitgetMonitor(venue, repository, transient_strikes=3)
+    first = await monitor.run_once()
+    second = await monitor.run_once()
+    assert first.status == "degraded"
+    assert second.status == "degraded"
+    assert not repository.kill_switch_active("bitget")
+    third = await monitor.run_once()
+    assert third.status == "kill-switch-latched"
+    assert repository.kill_switch_active("bitget")
+    fail["on"] = False
+    clean = await monitor.run_once()
+    assert clean.status == "ok"
+    assert not repository.kill_switch_active("bitget")

@@ -165,9 +165,7 @@ class PostgresSourceManagementStore:
             connection.commit()
         return state
 
-    def update_state(
-        self, update_id: UUID, state: str, last_error: str | None = None
-    ) -> None:
+    def update_state(self, update_id: UUID, state: str, last_error: str | None = None) -> None:
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
             cursor.execute(
                 """UPDATE source_management_updates

@@ -140,11 +140,14 @@ OR (
 #: ``MANAGEMENT_ELIGIBLE_SQL`` below.
 ANALYSIS_BACKFILL_MINUTES = 60
 
-ANALYSIS_ELIGIBLE_SQL = """(
+ANALYSIS_ELIGIBLE_SQL = (
+    """(
     {alias}.ingestion_origin IN ('realtime', 'catchup', 'backfill')
     AND isfinite({alias}.received_at)
     AND {alias}.received_at
-        > clock_timestamp() - interval '""" + str(ANALYSIS_BACKFILL_MINUTES) + """ minutes'
+        > clock_timestamp() - interval '"""
+    + str(ANALYSIS_BACKFILL_MINUTES)
+    + """ minutes'
     AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
     AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
     AND NOT EXISTS (
@@ -154,6 +157,7 @@ ANALYSIS_ELIGIBLE_SQL = """(
           AND source_edit.entry_rejection_reason = 'edited-source-message'
     )
 )"""
+)
 
 #: Management instructions are not entries: only the source revision identity and
 #: a configurable age limit apply. ``{max_age_seconds}`` must be a validated int.

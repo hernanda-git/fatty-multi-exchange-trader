@@ -42,7 +42,11 @@ A source relay says management was detected/queued; it is not a provider executi
 - Enrollment is durable or it is reported. Migration 35 requires every non-terminal
   `source_management_updates` row to carry a deadline, so the analyzer insert sets one
   (30 minutes: the execution budget, not the source window; the executor still re-checks
-  the source revision before any mutation). An insert that cannot be proven is a failed
+  the source revision before any mutation). Execution does not share the entry clock:
+  analysis selection is decoupled from entry admission (60-minute backfill window), and
+  management source age is capped by `BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS`
+  (default 1800; set 300 for the old five-minute behaviour). An insert that cannot be
+  proven is a failed
   message, not a silent one: `intake_state='FAILED'`, `entry_rejection_reason` records
   `analysis-failed:<Type>`, and one deduplicated `system-event` card is queued per
   message revision. A deterministic management instruction is re-enrolled after a
@@ -57,6 +61,17 @@ A source relay says management was detected/queued; it is not a provider executi
   registration (proven epoch and environment). A legacy/absent row is untouched; a
   registry write failure parks the update for a GET-only retry. Without this sync the
   local lane would keep closing at the previous trigger.
+
+### Kill-switch grain
+
+A transient provider read failure (`provider-*-read-failed`,
+`verified-close-evidence-unavailable`, an unavailable venue clock, or a failed
+unknown-intent read) does not close the entry lane on one cycle: it must repeat
+`BITGET_LATCH_TRANSIENT_STRIKES` times (default 3) and auto-releases on the first
+clean cycle unless `BITGET_LATCH_TRANSIENT_AUTORELEASE=0`. Malformed provider
+payloads and durable divergences (`unexpected-order`, `unexpected-position`, a
+post-fill mismatch that has not been released) still latch immediately and only an
+operator with an approval reference clears them.
 
 ## Evidence and verification responsibilities
 

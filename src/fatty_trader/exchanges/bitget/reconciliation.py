@@ -151,8 +151,7 @@ async def reconcile_unknown_intent(
                 plan_oid = str(plan_oid).strip() if plan_oid is not None else None
                 plan_client = _plan_client_oid(plan, leg)
                 if (
-                    intent.provider_order_id is not None
-                    and plan_oid == intent.provider_order_id
+                    intent.provider_order_id is not None and plan_oid == intent.provider_order_id
                 ) or plan_client == intent.client_oid:
                     intent.state = "acknowledged"
                     if plan_oid is not None:

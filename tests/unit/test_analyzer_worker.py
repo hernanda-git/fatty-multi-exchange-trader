@@ -75,7 +75,7 @@ def test_process_received_batch_persists_analysis_and_two_paper_dispatches() -> 
     statements = "\n".join(statement for statement, _ in cursor.executed)
     assert "SELECT id, channel_id, message_id" in statements
     assert "isfinite(tm.received_at)" in statements
-    assert "isfinite(tm.entry_expires_at)" in statements
+    assert "interval '60 minutes'" in statements
     assert "tm.ingestion_origin IN" in statements
     assert statements.count("INSERT INTO dispatches") == 2
     assert "INSERT INTO canonical_signals" in statements

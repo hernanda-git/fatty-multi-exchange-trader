@@ -859,11 +859,7 @@ class TradingHandlers:
             if not reconcile:
                 won = self._intents.claim_cancel(intent.client_oid, management_id)
                 current = self._intents.get(intent.client_oid)
-                if (
-                    not won
-                    and current is not None
-                    and current.cancel_requested_by != management_id
-                ):
+                if not won and current is not None and current.cancel_requested_by != management_id:
                     raise ValueError("cancellation claim is owned by another instruction")
             current = self._intents.get(intent.client_oid)
             result = (
@@ -871,9 +867,7 @@ class TradingHandlers:
                 if reconcile
                 else await runtime.execution._execution.cancel_pending_entry(
                     current,
-                    lambda: runtime.execution._claim_cancel_post(
-                        current.client_oid, management_id
-                    ),
+                    lambda: runtime.execution._claim_cancel_post(current.client_oid, management_id),
                 )
             )
             runtime.execution._persist_readback(current, result)

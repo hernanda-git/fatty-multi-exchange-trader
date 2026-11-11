@@ -227,6 +227,7 @@ class LiveIntentStoreProtocol(Protocol):
     def remaining_owned_quantity(self, root_oid: str) -> Decimal: ...
     def symbol_close_intents(self, symbol: str) -> tuple[LiveIntentRecord, ...]: ...
 
+
 class InMemoryLiveIntentStore:
     """In-memory intent store (tests / wiring seam for a durable backend)."""
 

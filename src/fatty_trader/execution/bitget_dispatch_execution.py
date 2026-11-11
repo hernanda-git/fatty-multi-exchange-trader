@@ -964,6 +964,7 @@ class BitgetDispatchExecution:
                 await cast(Any, reconcile)(intent, result, store=self._store)
             except TypeError:
                 await cast(Any, reconcile)(intent, result)
+
     def _persist_readback(self, intent: LiveIntentRecord, result: AsyncExecutionResult) -> None:
         if result.client_oid != intent.client_oid:
             raise ValueError("Bitget readback client OID does not match durable intent")

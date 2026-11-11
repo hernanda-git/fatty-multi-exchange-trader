@@ -520,7 +520,8 @@ async def test_source_service_uses_runtime_owned_cancellation_before_real_gatewa
     monkeypatch.setattr(service, "build_bitget_execution_runtime", lambda _env: runtime)
     monkeypatch.setattr(service, "worker_progress", lambda: None)
     monkeypatch.setattr(
-        "fatty_trader.storage.source_management.PostgresSourceManagementStore", lambda _: store
+        "fatty_trader.storage.source_management.PostgresSourceManagementStore",
+        lambda *_args, **_kwargs: store,
     )
     monkeypatch.setattr(
         "fatty_trader.storage.live_intents.PostgresLiveIntentStore",

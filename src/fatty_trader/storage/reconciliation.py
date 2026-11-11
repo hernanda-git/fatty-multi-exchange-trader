@@ -39,9 +39,7 @@ class ReconciliationRepository(Protocol):
     def alert_protection_unconfirmed(
         self, scope: str, dedup_key: str, payload: dict[str, Any]
     ) -> None: ...
-    def record_reconciliation(
-        self, scope: str, *, ok: bool, mismatch_count: int
-    ) -> None: ...
+    def record_reconciliation(self, scope: str, *, ok: bool, mismatch_count: int) -> None: ...
 
 
 class KillSwitch(Protocol):
@@ -120,9 +118,7 @@ class InMemoryReconciliationRepository:
         self._alert_keys.add(key)
         self.alert_payloads.append(dict(payload))
 
-    def record_reconciliation(
-        self, scope: str, *, ok: bool, mismatch_count: int
-    ) -> None:
+    def record_reconciliation(self, scope: str, *, ok: bool, mismatch_count: int) -> None:
         self.reconciliation_state[scope] = (ok, mismatch_count)
 
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
@@ -148,7 +144,8 @@ class PostgresReconciliationRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
-                          filled_qty, filled_price, fee, provider_order_id, provider_fill_ids, last_error
+                          filled_qty, filled_price, fee, provider_order_id,
+                          provider_fill_ids, last_error
                    FROM live_order_intents i
                    WHERE exchange = %s
                      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
@@ -304,9 +301,7 @@ class PostgresReconciliationRepository:
         finally:
             connection.close()
 
-    def record_reconciliation(
-        self, scope: str, *, ok: bool, mismatch_count: int
-    ) -> None:
+    def record_reconciliation(self, scope: str, *, ok: bool, mismatch_count: int) -> None:
         """Upsert the console's reconciliation panel from the monitor's own cycle."""
         connection = self._connection_factory()
         try:

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -64,6 +64,7 @@ def test_enabled_protection_capability_gate_uses_live_environment_record() -> No
             environment="LIVE",
             symbol="BTCUSDT",
             native_state=NativeProtectionState.VERIFIED,
+            last_verified_at=now - timedelta(seconds=2),
         )
     )
 

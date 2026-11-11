@@ -229,9 +229,7 @@ def build_bitget_protection_admission(
             )
         )
     except ValueError as exc:
-        raise ValueError(
-            "BITGET_PROTECTION_VERIFICATION_STALE_SECONDS must be numeric"
-        ) from exc
+        raise ValueError("BITGET_PROTECTION_VERIFICATION_STALE_SECONDS must be numeric") from exc
     fallback_enabled = environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0") == "1"
 
     def admit(symbol: str) -> tuple[bool, str]:
@@ -828,6 +826,7 @@ def _bitget_dispatch_preflight(
                 now=route_observed_at,
                 force_market=force_market,
             )
+
         split = routed(Decimal("4")).market_quantity > 0 and routed(Decimal("4")).limit_quantity > 0
         sizing_price = (
             max(snapshot.current_price, normalized_entry)
@@ -841,9 +840,7 @@ def _bitget_dispatch_preflight(
         if not canonical_targets:
             risk_distance = abs(sizing_price - aligned_sl)
             sign = (
-                Decimal("1")
-                if Direction(dispatch.direction) is Direction.LONG
-                else Decimal("-1")
+                Decimal("1") if Direction(dispatch.direction) is Direction.LONG else Decimal("-1")
             )
             derived_tp = round_price_to_tick(
                 sizing_price + (sign * risk_distance * Decimal("1.5")), metadata.price_tick
@@ -1390,9 +1387,7 @@ def build_bitget_monitor_protection(
             try:
                 min_outage_seconds = float(raw_outage)
             except ValueError as exc:
-                raise ValueError(
-                    "BITGET_PROTECTION_MIN_OUTAGE_SECONDS must be a number"
-                ) from exc
+                raise ValueError("BITGET_PROTECTION_MIN_OUTAGE_SECONDS must be a number") from exc
             if not math.isfinite(min_outage_seconds) or min_outage_seconds < 0:
                 raise ValueError(
                     "BITGET_PROTECTION_MIN_OUTAGE_SECONDS must be finite and not negative"
@@ -1452,9 +1447,7 @@ async def run_bitget_monitor(environ: Mapping[str, str]) -> None:
     transient_strikes = int(environ.get("BITGET_LATCH_TRANSIENT_STRIKES", "3"))
     if transient_strikes < 1:
         raise ValueError("BITGET_LATCH_TRANSIENT_STRIKES must be positive")
-    auto_release_transient_raw = environ.get(
-        "BITGET_LATCH_TRANSIENT_AUTORELEASE", "1"
-    ).lower()
+    auto_release_transient_raw = environ.get("BITGET_LATCH_TRANSIENT_AUTORELEASE", "1").lower()
     if auto_release_transient_raw not in {"0", "1"}:
         raise ValueError("BITGET_LATCH_TRANSIENT_AUTORELEASE must be 0 or 1")
     monitor = BitgetMonitor(
@@ -1753,9 +1746,7 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
     mutations_raw = environ.get("BITGET_OPERATOR_MUTATIONS_ENABLED", "0").lower()
     if mutations_raw not in {"0", "1"}:
         raise ValueError("BITGET_OPERATOR_MUTATIONS_ENABLED must be 0 or 1")
-    management_max_source_age = int(
-        environ.get("BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS", "1800")
-    )
+    management_max_source_age = int(environ.get("BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS", "1800"))
     if management_max_source_age < 1:
         raise ValueError("BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS must be positive")
     executor = SourceManagementExecutor(

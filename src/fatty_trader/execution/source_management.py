@@ -28,9 +28,7 @@ class SourceManagementUpdate:
 class SourceManagementStore(Protocol):
     def claim(self, worker_id: str) -> SourceManagementUpdate | None: ...
     def get(self, update_id: UUID) -> SourceManagementUpdate: ...
-    def update_state(
-        self, update_id: UUID, state: str, last_error: str | None = None
-    ) -> None: ...
+    def update_state(self, update_id: UUID, state: str, last_error: str | None = None) -> None: ...
     def alert_outcome(
         self, update: SourceManagementUpdate, state: str, error: str | None = None
     ) -> None: ...
@@ -95,9 +93,7 @@ class InMemorySourceManagementStore:
     def get(self, update_id: UUID) -> SourceManagementUpdate:
         return self._updates[update_id]
 
-    def update_state(
-        self, update_id: UUID, state: str, last_error: str | None = None
-    ) -> None:
+    def update_state(self, update_id: UUID, state: str, last_error: str | None = None) -> None:
         update = self._updates.pop(update_id)
         if last_error is not None:
             self.last_errors[update_id] = last_error

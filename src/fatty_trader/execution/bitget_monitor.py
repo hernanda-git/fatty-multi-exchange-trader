@@ -59,14 +59,11 @@ _AUTO_RELEASE_REFERENCE = "auto:clock-check-recovered"
 #: real venue state.
 _TRANSIENT_KILL_SWITCH_REASONS = frozenset(
     {
+        # A read that failed; the next cycle may simply succeed.
         "clock-skew-unavailable",
-        "clock-skew-exceeded",
         "provider-fills-read-failed",
         "provider-orders-read-failed",
         "provider-positions-read-failed",
-        "provider-fills-invalid",
-        "provider-orders-invalid",
-        "provider-positions-invalid",
         "verified-close-evidence-unavailable",
     }
 )
@@ -79,6 +76,7 @@ def _transient_latch_key(reason: str) -> str | None:
         if reason.startswith(prefix):
             return prefix
     return reason if reason in _TRANSIENT_KILL_SWITCH_REASONS else None
+
 
 #: Durable outbox payload kind for a position whose venue protection is not confirmed.
 #:
@@ -327,15 +325,11 @@ class BitgetMonitor:
                 self._scope,
                 ok=report.status == "ok",
                 mismatch_count=sum(
-                    1
-                    for reason in report.reasons
-                    if reason not in _ALERT_ONLY_PROTECTION_REASONS
+                    1 for reason in report.reasons if reason not in _ALERT_ONLY_PROTECTION_REASONS
                 ),
             )
         except Exception:
-            logging.getLogger(__name__).warning(
-                "reason=reconciliation-state-write-failed"
-            )
+            logging.getLogger(__name__).warning("reason=reconciliation-state-write-failed")
         return report
 
     async def _run_cycle(self) -> MonitorReport:
@@ -400,18 +394,14 @@ class BitgetMonitor:
                 return MonitorReport("degraded", unique_reasons, provider_exits_reconciled)
             for reason in effective:
                 await _run_sync_storage(self._repository.latch_kill_switch, self._scope, reason)
-            return MonitorReport(
-                "kill-switch-latched", tuple(effective), provider_exits_reconciled
-            )
+            return MonitorReport("kill-switch-latched", tuple(effective), provider_exits_reconciled)
         if self._enforce_kill_switch and await _run_sync_storage(
             self._repository.kill_switch_active, self._scope
         ):
             latched_reason = await _run_sync_storage(
                 self._repository.kill_switch_reason, self._scope
             )
-            transient_bucket = (
-                _transient_latch_key(latched_reason) if latched_reason else None
-            )
+            transient_bucket = _transient_latch_key(latched_reason) if latched_reason else None
             releasable = latched_reason in _AUTO_RELEASABLE_KILL_SWITCH_REASONS or (
                 self._auto_release_transient and transient_bucket is not None
             )
@@ -419,9 +409,7 @@ class BitgetMonitor:
                 # This cycle has no effective latchable reason: the transient
                 # condition is over, release instead of staying closed forever.
                 ref = f"auto:{latched_reason}-recovered"
-                await _run_sync_storage(
-                    self._repository.release_kill_switch, self._scope, ref
-                )
+                await _run_sync_storage(self._repository.release_kill_switch, self._scope, ref)
                 logging.getLogger(__name__).info(
                     "Bitget monitor released transient kill switch: "
                     "scope=%s reason=%s reference=%s",

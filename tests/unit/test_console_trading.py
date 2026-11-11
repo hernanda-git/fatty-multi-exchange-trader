@@ -171,11 +171,11 @@ def test_cancel_post_claim_checks_authority_inside_transaction_before_claim():
     handler = TradingHandlers({**CONFIG, "CONSOLE_ACCOUNT_ID": "123"}, store)
     handler._active_job = {"scope": SCOPE}
     with pytest.raises(ValueError, match="cancelled"):
-        handler._claim_owned_cancel_post("owned")
+        handler._claim_owned_cancel_post("owned", uuid4())
     assert store.events == ["begin", "authority"]
     store.events.clear()
     store.cancelled = False
-    assert handler._claim_owned_cancel_post("owned")
+    assert handler._claim_owned_cancel_post("owned", uuid4())
     assert store.events == ["begin", "authority", "claim", "commit"]
 
 

@@ -33,7 +33,12 @@ def _capability(**overrides: object) -> BitgetProtectionCapability:
 
 def test_native_verified_symbol_is_admissible_without_fallback_stream() -> None:
     allowed, reason = can_admit_symbol(
-        _capability(native_state=NativeProtectionState.VERIFIED), now=_NOW, stale_after=5
+        _capability(
+            native_state=NativeProtectionState.VERIFIED,
+            last_verified_at=_NOW - timedelta(seconds=2),
+        ),
+        now=_NOW,
+        stale_after=5,
     )
 
     assert allowed is True
