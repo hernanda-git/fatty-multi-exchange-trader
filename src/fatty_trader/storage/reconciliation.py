@@ -139,7 +139,7 @@ class PostgresReconciliationRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
-                          filled_qty, filled_price, fee, provider_order_id, provider_fill_ids
+                          filled_qty, filled_price, fee, provider_order_id, provider_fill_ids, last_error
                    FROM live_order_intents i
                    WHERE exchange = %s
                      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
@@ -176,7 +176,9 @@ class PostgresReconciliationRepository:
                 """UPDATE live_order_intents
                    SET provider_order_id = COALESCE(provider_order_id, %s), state = %s,
                        filled_qty = %s, filled_price = %s, fee = %s,
-                       provider_fill_ids = %s::jsonb, updated_at = CURRENT_TIMESTAMP
+                       provider_fill_ids = %s::jsonb,
+                       last_error = COALESCE(%s, last_error),
+                       updated_at = CURRENT_TIMESTAMP
                    WHERE exchange = %s AND client_order_id = %s""",
                 (
                     record.provider_order_id,
@@ -185,6 +187,7 @@ class PostgresReconciliationRepository:
                     record.avg_price,
                     record.fee,
                     json.dumps(record.provider_fill_ids),
+                    record.last_error,
                     record.exchange,
                     record.client_oid,
                 ),
@@ -380,4 +383,5 @@ def _intent_from_row(row: Any) -> LiveIntentRecord:
         fee=Decimal(str(values[9] or "0")),
         provider_order_id=str(values[10]) if values[10] is not None else None,
         provider_fill_ids=tuple(str(value) for value in json.loads(raw_fill_ids)),
+        last_error=str(values[12]) if len(values) > 12 and values[12] is not None else None,
     )

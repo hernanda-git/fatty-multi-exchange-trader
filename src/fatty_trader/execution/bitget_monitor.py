@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from fatty_trader.exchanges.bitget.live import LiveIntentStoreProtocol
+from fatty_trader.exchanges.bitget.live import LiveIntentRecord, LiveIntentStoreProtocol
 from fatty_trader.exchanges.bitget.native_close import bind_native_plan_close_from_fill
 from fatty_trader.exchanges.bitget.provider_fill_reconciliation import (
     ProviderFillReconciliationError,
@@ -386,6 +386,7 @@ class BitgetMonitor:
         intents = await _run_sync_storage(self._repository.unresolved_intents, self._scope)
         for intent in intents:
             try:
+                before = _intent_observation(intent)
                 reconciled = await reconcile_unknown_intent(
                     intent,
                     read_order_detail=lambda symbol, oid: self._client.get_order_detail(
@@ -394,8 +395,10 @@ class BitgetMonitor:
                     read_fills=self._client.get_fills,
                     read_position=lambda symbol: self._client.get_single_position(symbol),
                     read_pending_orders=lambda _symbol: self._client.get_pending_orders(),
+                    read_pending_plans=self._client.get_pending_plan_orders,
                 )
-                await _run_sync_storage(self._repository.update_intent, reconciled)
+                if _intent_observation(reconciled) != before:
+                    await _run_sync_storage(self._repository.update_intent, reconciled)
             except Exception:
                 reasons.append(f"unknown-intent-unreconciled:{intent.client_oid}")
 
@@ -634,6 +637,19 @@ class BitgetMonitor:
             oid = order.get("clientOid", order.get("client_oid"))
             if not isinstance(oid, str) or oid not in known:
                 reasons.append(f"unexpected-order:{oid if isinstance(oid, str) else 'unknown'}")
+
+
+def _intent_observation(intent: LiveIntentRecord) -> tuple[Any, ...]:
+    """Fields the reconciler can change; equal means no durable write is needed."""
+    return (
+        intent.state,
+        intent.provider_order_id,
+        intent.filled_qty,
+        intent.avg_price,
+        intent.fee,
+        intent.provider_fill_ids,
+        intent.last_error,
+    )
 
 
 def _open_quantity(position: dict[str, Any]) -> Decimal | None:

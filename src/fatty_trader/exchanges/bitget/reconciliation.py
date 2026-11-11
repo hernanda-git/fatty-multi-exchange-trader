@@ -17,6 +17,10 @@ from fatty_trader.exchanges.bitget.live import (
     normalize_fill,
     summarize_fills,
 )
+from fatty_trader.exchanges.bitget.reconciliation_live import (
+    _plan_client_oid,
+    _plan_order_id,
+)
 
 
 @dataclass(frozen=True)
@@ -128,8 +132,33 @@ async def reconcile_unknown_intent(
     read_fills: Callable[[str], Awaitable[Any]],
     read_position: Callable[[str], Awaitable[Any]],
     read_pending_orders: Callable[[str], Awaitable[Any]],
+    read_pending_plans: Callable[[str], Awaitable[Any]] | None = None,
 ) -> LiveIntentRecord:
     """Refresh one durable unknown intent using provider GET reads only."""
+    if intent.role in {"SL", "TP"} and read_pending_plans is not None:
+        # Native position TP/SL are plan orders: they never appear in order
+        # detail or ordinary pending orders, so the generic classifier would
+        # report UNKNOWN forever. Prove a working plan with the plan endpoint.
+        try:
+            plans = await read_pending_plans(intent.symbol)
+        except Exception:
+            plans = None
+        rows = plans.get("entrustedList") if isinstance(plans, dict) else plans
+        if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
+            leg = "stopLoss" if intent.role == "SL" else "stopSurplus"
+            for plan in rows:
+                plan_oid = _plan_order_id(plan)
+                plan_oid = str(plan_oid).strip() if plan_oid is not None else None
+                plan_client = _plan_client_oid(plan, leg)
+                if (
+                    intent.provider_order_id is not None
+                    and plan_oid == intent.provider_order_id
+                ) or plan_client == intent.client_oid:
+                    intent.state = "acknowledged"
+                    if plan_oid is not None:
+                        intent.provider_order_id = plan_oid
+                    intent.last_error = None
+                    return intent
     detail_not_found = False
     try:
         detail = await read_order_detail(intent.symbol, intent.client_oid)
@@ -209,6 +238,8 @@ async def reconcile_unknown_intent(
         LiveOrderStatus.REJECTED: "rejected",
         LiveOrderStatus.UNKNOWN: "unknown",
     }[status]
+    if intent.state == "unknown":
+        intent.last_error = "provider-order-unresolved"
     return intent
 
 

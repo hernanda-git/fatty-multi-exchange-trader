@@ -715,6 +715,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             stop_mutation_take_profit_id=values[29],
             protection_root_oid=values[30],
             active_take_profit_price=Decimal(str(values[31])) if values[31] is not None else None,
+            last_error=str(values[32]) if len(values) > 32 and values[32] is not None else None,
         )
 
     def _get_with_cursor(self, client_oid: str, cursor: Cursor) -> LiveIntentRecord | None:
@@ -727,7 +728,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                    planned_stop_loss, planned_take_profits, dispatch_id, entry_leg,
                    order_type, limit_price, cancel_requested_by, provider_terminal,
                    cancel_post_claimed, active_stop_loss_price, stop_mutation_root_oid,
-                   stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price
+                   stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price,
+                   last_error
             FROM live_order_intents
             WHERE client_order_id = %s
             """,
@@ -751,7 +753,8 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                        planned_stop_loss, planned_take_profits, dispatch_id, entry_leg,
                        order_type, limit_price, cancel_requested_by, provider_terminal,
                        cancel_post_claimed, active_stop_loss_price, stop_mutation_root_oid,
-                       stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price
+                       stop_mutation_take_profit_id, protection_root_oid, active_take_profit_price,
+                       last_error
                 FROM live_order_intents
                 WHERE exchange = 'bitget' AND symbol = %s
                   AND role IN ('CLOSE', 'EMERGENCY_CLOSE')
@@ -778,6 +781,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 SET provider_order_id = COALESCE(provider_order_id, %s),
                     state = %s, requested_qty = %s, filled_qty = %s, filled_price = %s, fee = %s,
                     provider_fill_ids = %s::jsonb,
+                    last_error = COALESCE(%s, last_error),
                     provider_terminal = provider_terminal OR %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE exchange = %s AND client_order_id = %s
@@ -792,6 +796,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                     record.avg_price,
                     record.fee,
                     json.dumps(record.provider_fill_ids),
+                    record.last_error,
                     record.provider_terminal,
                     record.exchange,
                     record.client_oid,

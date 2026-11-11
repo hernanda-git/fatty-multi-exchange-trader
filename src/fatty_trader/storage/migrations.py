@@ -527,6 +527,21 @@ MIGRATIONS: Final = [
             WHERE stop_mutation_root_oid IS NULL;
         """,
     ),
+    (
+        38,
+        """
+        -- Durable cause for an intent that cannot be classified. Nullable and
+        -- additive: older workers ignore it and never interpret it as evidence.
+        ALTER TABLE live_order_intents
+            ADD COLUMN IF NOT EXISTS last_error TEXT;
+        -- Admission and monitor scans filter exchange/role/state every cycle.
+        CREATE INDEX IF NOT EXISTS live_order_intents_nonterminal
+            ON live_order_intents (exchange, role, state)
+            WHERE state NOT IN ('filled', 'rejected', 'cancelled', 'reconciled');
+        CREATE INDEX IF NOT EXISTS dispatch_transitions_recent
+            ON dispatch_transitions (created_at DESC);
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

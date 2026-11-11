@@ -160,6 +160,7 @@ class LiveIntentRecord:
     stop_mutation_take_profit_id: str | None = None
     protection_root_oid: str | None = None
     active_take_profit_price: Decimal | None = None
+    last_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.role != "ENTRY":
