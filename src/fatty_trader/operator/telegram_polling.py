@@ -166,13 +166,17 @@ class TelegramCommandPoller:
         fetch_updates: FetchUpdates,
         send_reply: SendReply,
         receipt_store: UpdateReceiptStore | None = None,
-        channel_id: int | None = None,
+        channel: int | str | None = None,
     ) -> None:
         self._command_service = command_service
         self._fetch_updates = fetch_updates
         self._send_reply = send_reply
         self._receipt_store = receipt_store
-        self._channel_id = channel_id
+        reference = str(channel).strip() if channel is not None else ""
+        self._channel_id = int(reference) if reference.lstrip("-").isdigit() else None
+        self._channel_username = (
+            reference.lstrip("@").lower() if reference and self._channel_id is None else None
+        )
         self.offset = receipt_store.next_offset() if receipt_store is not None else None
 
     def run_once(self) -> int:
@@ -209,9 +213,15 @@ class TelegramCommandPoller:
         if is_channel:
             # A channel post carries no user identity; only the configured channel is
             # answered and the adapter keeps that lane read-only.
-            if chat.get("type") != "channel" or self._channel_id is None:
+            if chat.get("type") != "channel":
                 return
-            if chat_id != self._channel_id:
+            if self._channel_id is not None:
+                if chat_id != self._channel_id:
+                    return
+            elif (
+                self._channel_username is None
+                or str(chat.get("username", "")).lower() != self._channel_username
+            ):
                 return
             self._dispatch(text, chat_id, sender_id=0, is_private=False, is_channel=True)
             return

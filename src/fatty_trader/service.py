@@ -1665,11 +1665,11 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     )
     api = TelegramBotApi(environ["TG_BOT_TOKEN"])
     api.set_my_commands()
-    channel_id = next(
+    channel = next(
         (
-            int(part)
+            part.strip()
             for part in environ.get("TELEGRAM_SOURCE_CHANNELS", "").split(",")
-            if part.strip().lstrip("-").isdigit()
+            if part.strip()
         ),
         None,
     )
@@ -1678,7 +1678,7 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
         fetch_updates=api.fetch_updates,
         send_reply=api.send_reply,
         receipt_store=PostgresTelegramUpdateReceiptStore(lambda: psycopg.connect()),
-        channel_id=channel_id,
+        channel=channel,
     )
 
     def listen() -> None:

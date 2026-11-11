@@ -348,7 +348,7 @@ def test_poller_routes_read_only_command_posted_in_the_configured_channel() -> N
         command_service=service,
         fetch_updates=lambda offset: [_channel_post()],
         send_reply=lambda chat_id, text: sent.append((chat_id, text)),
-        channel_id=-1001252615519,
+        channel=-1001252615519,
     )
 
     assert poller.run_once() == 1
@@ -371,16 +371,43 @@ def test_poller_ignores_channel_posts_from_other_channels_and_unconfigured_bots(
         command_service=service,
         fetch_updates=lambda offset: [_channel_post(chat_id=-1009999999999)],
         send_reply=lambda chat_id, text: sent.append((chat_id, text)),
-        channel_id=-1001252615519,
+        channel=-1001252615519,
     )
     unconfigured = TelegramCommandPoller(
         command_service=service,
         fetch_updates=lambda offset: [_channel_post()],
         send_reply=lambda chat_id, text: sent.append((chat_id, text)),
-        channel_id=None,
+        channel=None,
     )
 
     assert poller.run_once() == 1
     assert unconfigured.run_once() == 1
     assert service.calls == []
     assert sent == []
+
+
+def test_poller_matches_the_configured_channel_handle() -> None:
+    service = FakeCommandService()
+    sent: list[tuple[int, str]] = []
+    poller = TelegramCommandPoller(
+        command_service=service,
+        fetch_updates=lambda offset: [
+            {
+                "update_id": 1,
+                "channel_post": {
+                    "message_id": 21,
+                    "text": "/status",
+                    "chat": {
+                        "id": -1001252615519,
+                        "type": "channel",
+                        "username": "fattyfatclub",
+                    },
+                },
+            }
+        ],
+        send_reply=lambda chat_id, text: sent.append((chat_id, text)),
+        channel="@FattyFatClub",
+    )
+
+    assert poller.run_once() == 1
+    assert sent == [(-1001252615519, "handled /status")]
