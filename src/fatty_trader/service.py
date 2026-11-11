@@ -216,18 +216,39 @@ def build_bitget_protection_admission(
         repository = PostgresProtectionCapabilityRepository(psycopg.connect)
     clock = now or (lambda: datetime.now(UTC))
 
-    from fatty_trader.exchanges.bitget.protection_capability import can_admit_symbol
+    from fatty_trader.exchanges.bitget.protection_capability import (
+        NATIVE_VERIFICATION_STALE_SECONDS,
+        can_admit_symbol,
+    )
+
+    try:
+        verification_stale_after = float(
+            environ.get(
+                "BITGET_PROTECTION_VERIFICATION_STALE_SECONDS",
+                str(NATIVE_VERIFICATION_STALE_SECONDS),
+            )
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "BITGET_PROTECTION_VERIFICATION_STALE_SECONDS must be numeric"
+        ) from exc
+    fallback_enabled = environ.get("BITGET_FALLBACK_MUTATIONS_ENABLED", "0") == "1"
 
     def admit(symbol: str) -> tuple[bool, str]:
         capability = repository.get("bitget", environment, symbol)  # type: ignore[attr-defined]
         if capability is None:
             return False, "protection-capability-unknown"
-        return can_admit_symbol(
+        allowed, reason = can_admit_symbol(
             capability,
             now=clock(),
             stale_after=stale_after,
             required_environment=environment,
+            verification_stale_after=verification_stale_after,
         )
+        if allowed and reason == "fresh-fallback-stream" and not fallback_enabled:
+            # Admission must not promise a lane this process cannot register.
+            return False, "fallback-runtime-disabled"
+        return allowed, reason
 
     return admit
 

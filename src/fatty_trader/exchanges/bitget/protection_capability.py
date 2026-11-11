@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+#: Native TP/SL verification has no stream heartbeat; it is proved by a real
+#: placement. One hour is a deployment-scale horizon, not a 5-second stream one.
+NATIVE_VERIFICATION_STALE_SECONDS = 3600.0
+
 
 class NativeProtectionState(StrEnum):
     UNKNOWN = "UNKNOWN"
@@ -85,6 +89,7 @@ def can_admit_symbol(
     now: datetime,
     stale_after: float,
     required_environment: str | None = None,
+    verification_stale_after: float | None = None,
 ) -> tuple[bool, str]:
     """Return whether this symbol has a currently provable protection lane.
 
@@ -99,6 +104,17 @@ def can_admit_symbol(
 
     native_state = _native_state(capability.native_state)
     if native_state is NativeProtectionState.VERIFIED:
+        # A months-old verification is not current proof: native placement can be
+        # revoked by venue changes. Verify freshness, on its own (longer) clock.
+        horizon = (
+            verification_stale_after
+            if verification_stale_after is not None
+            else NATIVE_VERIFICATION_STALE_SECONDS
+        )
+        if not _fresh(capability.last_verified_at, now, horizon):
+            if capability.last_verified_at is None:
+                return False, "native-verification-never-observed"
+            return False, "native-verification-stale"
         return True, "native-protected"
 
     if native_state is NativeProtectionState.UNKNOWN and not capability.fallback_allowed:

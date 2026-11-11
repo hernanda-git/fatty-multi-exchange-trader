@@ -29,6 +29,11 @@ class WorkerHealth:
         self._closed = False
         self.path.unlink(missing_ok=True)  # Restart needs its first completed cycle.
         self.owner_token = uuid.uuid4().hex
+        self.attestation_mode = (
+            environ.get("WORKER_HEALTH_ATTESTATION", "token").strip().lower()
+        )
+        if self.attestation_mode not in {"token", "identity"}:
+            raise ValueError("WORKER_HEALTH_ATTESTATION must be token or identity")
         self._stop = Event()
         self._socket: socket.socket | None = None
         self._thread: Thread | None = None
@@ -70,13 +75,18 @@ class WorkerHealth:
                     with connection.makefile("rb") as stream:
                         request = json.loads(stream.readline(4096))
                     with self._lock:
+                        token_ok = (
+                            request.get("owner_token") == self.owner_token
+                            if self.attestation_mode == "token"
+                            else True
+                        )
                         valid = (
                             not self._closed
                             and self.path.exists()
                             and request["service"] == self.name
                             and request["pid"] == self.pid
                             and request["identity"] == self.identity
-                            and request["owner_token"] == self.owner_token
+                            and token_ok
                             and _process_identity(self.pid) == self.identity
                         )
                     connection.sendall(
@@ -102,9 +112,10 @@ class WorkerHealth:
             "state": "ready",
             "pid": self.pid,
             "identity": self.identity,
-            "owner_token": self.owner_token,
             "progress": time.monotonic(),
         }
+        if self.attestation_mode == "token":
+            payload["owner_token"] = self.owner_token
         temporary = self.path.with_name(f"{self.path.name}.{self.pid}.tmp")
         try:
             temporary.write_text(json.dumps(payload))

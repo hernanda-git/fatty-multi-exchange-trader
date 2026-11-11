@@ -27,7 +27,9 @@ _WORKERS = {
 }
 
 
-def _owner_is_alive(evidence: dict[str, Any], endpoint: str | None) -> bool:
+def _owner_is_alive(
+    evidence: dict[str, Any], endpoint: str | None, *, attestation: str = "token"
+) -> bool:
     if endpoint is None:
         return bool(evidence["identity"] == _process_identity(int(evidence["pid"])))
     # No fallback to a namespace-local PID on socket failure: PID 1 in web
@@ -35,7 +37,9 @@ def _owner_is_alive(evidence: dict[str, Any], endpoint: str | None) -> bool:
     if sys.platform == "win32":
         return False
     challenge = uuid.uuid4().hex
-    request = {key: evidence[key] for key in ("service", "pid", "identity", "owner_token")}
+    request = {key: evidence[key] for key in ("service", "pid", "identity")}
+    if attestation == "token":
+        request["owner_token"] = evidence["owner_token"]
     request["challenge"] = challenge
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(0.2)
@@ -53,6 +57,9 @@ def create_runtime_health_reader(
     clock: Callable[[], float] = time.monotonic,
 ) -> Callable[[], dict[str, dict[str, Any]]]:
     """Probe on demand, without startup I/O, worker launches or cached readiness."""
+
+    attestation_raw = environ.get("WORKER_HEALTH_ATTESTATION", "token").strip().lower()
+    attestation = attestation_raw if attestation_raw in {"token", "identity"} else "token"
 
     def read() -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {
@@ -104,7 +111,9 @@ def create_runtime_health_reader(
             try:
                 evidence = json.loads(path.read_text())
                 owner_alive = _owner_is_alive(
-                    evidence, environ.get(f"WEB_{component.upper()}_HEALTH_SOCKET_PATH")
+                    evidence,
+                    environ.get(f"WEB_{component.upper()}_HEALTH_SOCKET_PATH"),
+                    attestation=attestation,
                 )
                 checked_at = float(clock())
                 age = checked_at - float(evidence["progress"])
