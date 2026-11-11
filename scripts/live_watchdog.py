@@ -146,6 +146,26 @@ def _json_output(text: str) -> Any:
     raise ValueError("unparseable JSON output")
 
 
+def _json_lines(text: str) -> list[dict[str, Any]]:
+    """Compose v2 emits one JSON object per line; tolerate arrays too."""
+    rows: list[dict[str, Any]] = []
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+        elif isinstance(value, list):
+            rows.extend(item for item in value if isinstance(item, dict))
+    if not rows:
+        raise ValueError("no JSON rows")
+    return rows
+
+
 def _revision() -> str:
     result = _run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"])
     return result.stdout.strip() or "unknown"
@@ -159,12 +179,10 @@ def observe_containers(reasons: list[dict[str, str]]) -> dict[str, Any]:
         )
         return {}
     try:
-        rows = _json_output(result.stdout) or []
+        rows = _json_lines(result.stdout)
     except ValueError:
         reasons.append({"code": "compose-ps-unparseable", "severity": "critical", "detail": ""})
         return {}
-    if isinstance(rows, dict):
-        rows = [rows]
     services = {str(row.get("Service")): row for row in rows if isinstance(row, dict)}
     for name in REQUIRED_SERVICES:
         row = services.get(name)
