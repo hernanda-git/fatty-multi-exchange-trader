@@ -39,6 +39,9 @@ class ReconciliationRepository(Protocol):
     def alert_protection_unconfirmed(
         self, scope: str, dedup_key: str, payload: dict[str, Any]
     ) -> None: ...
+    def record_reconciliation(
+        self, scope: str, *, ok: bool, mismatch_count: int
+    ) -> None: ...
 
 
 class KillSwitch(Protocol):
@@ -62,6 +65,7 @@ class InMemoryReconciliationRepository:
         self._unhandled_mismatches: set[str] = set()
         self.alerts: list[str] = []
         self.alert_payloads: list[dict[str, Any]] = []
+        self.reconciliation_state: dict[str, tuple[bool, int]] = {}
 
     def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
         return [
@@ -115,6 +119,11 @@ class InMemoryReconciliationRepository:
             return
         self._alert_keys.add(key)
         self.alert_payloads.append(dict(payload))
+
+    def record_reconciliation(
+        self, scope: str, *, ok: bool, mismatch_count: int
+    ) -> None:
+        self.reconciliation_state[scope] = (ok, mismatch_count)
 
     def has_unhandled_post_fill_mismatch(self, scope: str) -> bool:
         return scope in self._unhandled_mismatches
@@ -287,6 +296,32 @@ class PostgresReconciliationRepository:
                 """INSERT INTO notifications_outbox (id, dedup_key, payload)
                    VALUES (%s, %s, %s::jsonb) ON CONFLICT (dedup_key) DO NOTHING""",
                 (uuid4(), f"{scope}:{dedup_key}", json.dumps(payload, sort_keys=True)),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def record_reconciliation(
+        self, scope: str, *, ok: bool, mismatch_count: int
+    ) -> None:
+        """Upsert the console's reconciliation panel from the monitor's own cycle."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """INSERT INTO reconciliation_state
+                       (scope, last_run_at, last_success_at, mismatch_count, updated_at)
+                   VALUES (%s, now(), CASE WHEN %s THEN now() ELSE NULL END, %s, now())
+                   ON CONFLICT (scope) DO UPDATE SET
+                       last_run_at = now(),
+                       last_success_at = CASE WHEN %s THEN now()
+                           ELSE reconciliation_state.last_success_at END,
+                       mismatch_count = %s,
+                       updated_at = now()""",
+                (scope, ok, mismatch_count, ok, mismatch_count),
             )
             connection.commit()
         except Exception:

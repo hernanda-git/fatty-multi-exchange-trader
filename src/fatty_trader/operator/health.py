@@ -85,7 +85,13 @@ def build_operator_diagnostic(
         return "\n".join(lines)
     queries = {
         "reconcile": """
-            SELECT (SELECT count(*) FROM positions WHERE closed_at IS NULL),
+            SELECT (SELECT count(*) FROM (
+                       SELECT DISTINCT ON (i.symbol) d.state
+                       FROM dispatches d JOIN live_order_intents i ON i.dispatch_id=d.id
+                         AND i.exchange='bitget' AND i.role='ENTRY'
+                       WHERE d.exchange='bitget'
+                       ORDER BY i.symbol, d.created_at DESC) latest
+                     WHERE latest.state IN ('FILLED','PARTIALLY_FILLED')),
                    (SELECT count(*) FROM live_order_intents WHERE exchange='bitget'
                     AND state NOT IN ('filled','rejected','cancelled','reconciled')),
                    (SELECT count(*) FROM fallback_protection WHERE exchange='bitget'
@@ -372,11 +378,19 @@ def load_health_ledger(
         """
         SELECT (SELECT count(*) FROM telegram_messages) AS messages,
                (SELECT count(*) FROM canonical_signals) AS signals,
-               (SELECT count(*) FROM positions WHERE exchange='bitget'
-                AND closed_at IS NULL) AS open_positions,
-               (SELECT count(*) FROM orders WHERE exchange='bitget'
-                AND state NOT IN ('FILLED','CANCELLED','REJECTED','CLOSED')) AS pending_orders,
-               (SELECT count(*) FROM orders WHERE exchange='bitget') AS total_orders,
+               (SELECT count(*) FROM (
+                    SELECT DISTINCT ON (i.symbol) d.state
+                    FROM dispatches d JOIN live_order_intents i ON i.dispatch_id=d.id
+                      AND i.exchange='bitget' AND i.role='ENTRY'
+                    WHERE d.exchange='bitget'
+                    ORDER BY i.symbol, d.created_at DESC) latest
+                WHERE latest.state IN ('FILLED','PARTIALLY_FILLED')) AS open_positions,
+               (SELECT count(*) FROM live_order_intents WHERE exchange='bitget'
+                AND role='ENTRY' AND order_type='limit'
+                AND state NOT IN ('filled','rejected','cancelled','reconciled'))
+                AS pending_orders,
+               (SELECT count(*) FROM live_order_intents WHERE exchange='bitget')
+                AS total_orders,
                (SELECT count(*) FROM live_order_intents WHERE exchange='bitget'
                 AND state NOT IN ('filled','rejected','cancelled','reconciled')) AS active_intents,
                (SELECT count(*) FROM fallback_protection WHERE exchange='bitget'

@@ -320,6 +320,25 @@ class BitgetMonitor:
         self._transient_strikes: dict[str, int] = {}
 
     async def run_once(self) -> MonitorReport:
+        report = await self._run_cycle()
+        try:
+            await _run_sync_storage(
+                self._repository.record_reconciliation,
+                self._scope,
+                ok=report.status == "ok",
+                mismatch_count=sum(
+                    1
+                    for reason in report.reasons
+                    if reason not in _ALERT_ONLY_PROTECTION_REASONS
+                ),
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "reason=reconciliation-state-write-failed"
+            )
+        return report
+
+    async def _run_cycle(self) -> MonitorReport:
         reasons: list[str] = []
         await self._reconcile_unresolved_intents(reasons)
         provider_exits_reconciled = await self._reconcile_provider_exits(reasons)
