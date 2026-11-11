@@ -368,7 +368,7 @@ class PostgresBitgetMarginReservationRepository:
                     isinstance(q, Decimal) and q.is_finite() and q > 0
                     for q in (entry[6], close_intent[5], close_intent[6])
                 )
-                or close_intent[5] != close_intent[6]
+                or (close_intent[5] != close_intent[6] and not is_native_close)
             ):
                 return reject("close-intent-not-bound")
             cursor.execute(

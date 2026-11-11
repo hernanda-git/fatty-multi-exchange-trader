@@ -147,3 +147,28 @@ def test_multiparagraph_commentary_preserves_close_action() -> None:
     assert update.symbol == "PUMPUSDT"
     assert update.action is ManagementAction.CLOSE
 
+
+@pytest.mark.parametrize(
+    ("text", "expected_symbol"),
+    [
+        (
+            "closed half $ONE position\n\nWill keep it running with half size",
+            "ONEUSDT",
+        ),
+        ("close half $ONE", "ONEUSDT"),
+        ("closing half $BTC", "BTCUSDT"),
+        ("took half profit on $ONE", "ONEUSDT"),
+        ("booked half on $SOL", "SOLUSDT"),
+        ("partial close on $ONE", "ONEUSDT"),
+        ("closed partial $ETH", "ETHUSDT"),
+        ("close 50% on $ONE", "ONEUSDT"),
+        ("50% close on $DOGE", "DOGEUSDT"),
+    ],
+)
+def test_half_and_partial_close_instructions_are_recognized_as_tp1(
+    text: str, expected_symbol: str
+) -> None:
+    update = parse_source_management(text)
+    assert update is not None
+    assert update.symbol == expected_symbol
+    assert update.action is ManagementAction.TP1_BOOKED

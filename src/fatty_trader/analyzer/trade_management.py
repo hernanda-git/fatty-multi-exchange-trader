@@ -31,6 +31,8 @@ _TP1 = re.compile(
     rf"\b(?:tp\s*1|first\s+tp)\b.*\b(?:{_TP_ACTION}|on\b)\b"
     rf"|\b(?:{_TP_ACTION}|on\b).*\b(?:tp\s*1|first\s+tp)\b"
     rf"|\b(?:tp\s*1|first\s+tp)\b"
+    rf"|\b(?:close|closed|closing|exit|exited|take|taken|took|book|booked|booking)\b.*(?:\b(?:half|partial)\b|50%)"
+    rf"|(?:\b(?:half|partial)\b|50%).*\b(?:close|closed|closing|exit|exited|position|trade|booked|booking|profit)\b"
     rf")",
     re.I,
 )
@@ -65,6 +67,7 @@ _CANDLE_ANALYSIS_CLOSE = re.compile(
     r"\b(?:daily|candle|session|weekly|monthly|4h|1h|2h|15m)\s+close\b|\bclose\s+(?:above|below)\b",
     re.I,
 )
+_HALF_OR_PARTIAL = re.compile(r"\b(?:half|partial)\b|50%", re.I)
 _CONDITIONAL = re.compile(
     r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", re.I
 )
@@ -110,6 +113,7 @@ def parse_source_management(text: str) -> SourceManagement | None:
             _CLOSE.search(line)
             and not _NEGATED_CLOSE.search(line)
             and not _CANDLE_ANALYSIS_CLOSE.search(line)
+            and not _HALF_OR_PARTIAL.search(line)
         ):
             return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
 
@@ -124,6 +128,7 @@ def parse_source_management(text: str) -> SourceManagement | None:
             _CLOSE.search(text)
             and not _NEGATED_CLOSE.search(text)
             and not _CANDLE_ANALYSIS_CLOSE.search(text)
+            and not _HALF_OR_PARTIAL.search(text)
         ):
             return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
     return None

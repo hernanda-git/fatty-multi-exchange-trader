@@ -237,10 +237,16 @@ class PostgresVerifiedCloseLifecycle:
                     ):
                         raise ValueError("unverified fill")
                     evidence.append(item)
+                is_native = str(close_oid).endswith("-native-close")
+                expected_qty = (
+                    record.filled_qty
+                    if (is_native and record.filled_qty > record.requested_qty)
+                    else record.requested_qty
+                )
                 if (
                     len({f["provider_fill_id"] for f in evidence}) != len(evidence)
                     or len({f["provider_order_id"] for f in evidence}) != 1
-                    or sum((f["quantity"] for f in evidence), Decimal(0)) != record.requested_qty
+                    or sum((f["quantity"] for f in evidence), Decimal(0)) != expected_qty
                     or (
                         record.provider_order_id
                         and record.provider_order_id != evidence[0]["provider_order_id"]
@@ -252,7 +258,8 @@ class PostgresVerifiedCloseLifecycle:
             # Persist authenticated fill identity before asking for the fresh flat proof.
             record.state = "filled"
             record.provider_order_id = evidence[0]["provider_order_id"]
-            record.filled_qty = record.requested_qty
+            record.requested_qty = expected_qty
+            record.filled_qty = expected_qty
             record.avg_price = (
                 sum((f["price"] * f["quantity"] for f in evidence), Decimal(0)) / record.filled_qty
             )

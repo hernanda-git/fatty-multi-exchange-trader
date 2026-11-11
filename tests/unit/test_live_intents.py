@@ -115,3 +115,50 @@ def test_update_rejects_conflicting_provider_order_id() -> None:
         assert "conflict" in str(exc)
     else:
         raise AssertionError("provider order-id conflict must fail closed")
+
+def test_update_persists_requested_qty_in_sql() -> None:
+    connection = Connection(("provider-1",))
+    store = PostgresLiveIntentStore(lambda: connection)
+    rec = record()
+    rec.requested_qty = Decimal("0.024")
+    rec.filled_qty = Decimal("0.024")
+    rec.provider_order_id = "provider-1"
+    rec.state = "filled"
+    store.update(rec)
+    sql, params = connection.cursor_value.calls[0]
+    assert "requested_qty = %s" in sql
+    assert params[2] == Decimal("0.024")
+    assert connection.commits == 1
+
+def test_in_memory_remaining_owned_quantity_does_not_double_count_aggregated_child() -> None:
+    store = InMemoryLiveIntentStore()
+    root = record()
+    root.requested_qty = Decimal("9009")
+    root.filled_qty = Decimal("36036")  # Already aggregated
+    root.provider_fill_ids = ("f-market", "f-limit")
+    child = record()
+    child.client_oid = root.client_oid + "-limit"
+    child.entry_leg = "limit"
+    child.requested_qty = Decimal("27027")
+    child.filled_qty = Decimal("27027")
+    child.provider_fill_ids = ("f-limit",)
+    store.save(root)
+    store.save(child)
+    assert store.remaining_owned_quantity(root.client_oid) == Decimal("36036")
+
+
+def test_in_memory_remaining_owned_quantity_sums_unaggregated_child() -> None:
+    store = InMemoryLiveIntentStore()
+    root = record()
+    root.requested_qty = Decimal("9009")
+    root.filled_qty = Decimal("9009")  # Not aggregated yet
+    root.provider_fill_ids = ("f-market",)
+    child = record()
+    child.client_oid = root.client_oid + "-limit"
+    child.entry_leg = "limit"
+    child.requested_qty = Decimal("27027")
+    child.filled_qty = Decimal("27027")
+    child.provider_fill_ids = ("f-limit",)
+    store.save(root)
+    store.save(child)
+    assert store.remaining_owned_quantity(root.client_oid) == Decimal("36036")

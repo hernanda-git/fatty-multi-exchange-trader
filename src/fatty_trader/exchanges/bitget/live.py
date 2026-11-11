@@ -358,7 +358,13 @@ class InMemoryLiveIntentStore:
     def remaining_owned_quantity(self, root_oid: str) -> Decimal:
         root = self._records[root_oid]
         child = self._records.get(root_oid + "-limit")
-        total = root.filled_qty + (child.filled_qty if child is not None else Decimal("0"))
+        child_qty = Decimal("0")
+        if child is not None and child.filled_qty > 0:
+            child_fids = set(child.provider_fill_ids or ())
+            root_fids = set(root.provider_fill_ids or ())
+            if not (child_fids and child_fids.intersection(root_fids)):
+                child_qty = child.filled_qty
+        total = root.filled_qty + child_qty
         for close_oid, owner in self.close_bindings.items():
             if owner != root_oid:
                 continue

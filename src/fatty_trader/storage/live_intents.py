@@ -291,7 +291,13 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
         if root is None or root.role != "ENTRY" or root.entry_leg == "limit":
             raise OwnedQuantityEvidenceError("remaining quantity requires canonical entry root")
         child = self._get_with_cursor(entry_root_oid + "-limit", cursor)
-        total = root.filled_qty + (child.filled_qty if child is not None else Decimal("0"))
+        child_qty = Decimal("0")
+        if child is not None and child.filled_qty > 0:
+            child_fids = set(child.provider_fill_ids or ())
+            root_fids = set(root.provider_fill_ids or ())
+            if not (child_fids and child_fids.intersection(root_fids)):
+                child_qty = child.filled_qty
+        total = root.filled_qty + child_qty
         cursor.execute(
             """SELECT c.client_order_id,c.symbol,c.side,c.role,c.provider_order_id,
                       c.filled_qty,c.provider_fill_ids,
@@ -770,7 +776,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 """
                 UPDATE live_order_intents
                 SET provider_order_id = COALESCE(provider_order_id, %s),
-                    state = %s, filled_qty = %s, filled_price = %s, fee = %s,
+                    state = %s, requested_qty = %s, filled_qty = %s, filled_price = %s, fee = %s,
                     provider_fill_ids = %s::jsonb,
                     provider_terminal = provider_terminal OR %s,
                     updated_at = CURRENT_TIMESTAMP
@@ -781,6 +787,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                 (
                     record.provider_order_id,
                     record.state,
+                    record.requested_qty,
                     record.filled_qty,
                     record.avg_price,
                     record.fee,
