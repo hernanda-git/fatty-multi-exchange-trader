@@ -195,6 +195,10 @@ The audited deployment uses the enabled user-level `fatty-health-report.timer`, 
 
 For no-send inspection, use `scripts/health_report.py`'s `load_report_data()` with the canonical formatter; invoking the script's main sends a Telegram report. Reporting neither refreshes nor overwrites immutable admission snapshots. Fallback rows/native levels indicate registrations, not proof of worker enforcement or confirmed protection execution.
 
+## Operator Telegram commands
+
+The operator bot answers the configured `TG_OPERATOR_ID` in a private chat; forwarded messages and other senders are rejected. In the configured source channel (`TELEGRAM_SOURCE_CHANNELS`) it answers `/commands` posted to the channel, but read-only only: a channel post carries no user identity. Read surface: `/help /health /status /reconcile /protection /fills /intents /dispatches /signals /positions /orders /balance /price SYMBOL`. Trade previews (`/open /trade /cancel /close /setsl /settp`) and their `/confirm /approve /reject /job /jobcancel` authority stay private-only and still require the password console session. The poller requests `message` and `channel_post` updates over long polling; no webhook is configured.
+
 ## Sizing, contract eligibility, and clock evidence
 
 The service selects a route once per preflight observation and carries the split prices into live sizing. Exact 25/75 sizing uses a total quantum of four venue quantity steps; full-market sizing retains one step. Each child must satisfy its own planned-price minimum notional/quantity and market or LIMIT maximum. Final admitted margin/notional are recomputed after quantization under the existing 1.1 USDT production cap. An infeasible split is rejected before reservation; no approximate split or full-market fallback is invented.

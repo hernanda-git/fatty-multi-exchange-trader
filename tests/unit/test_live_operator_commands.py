@@ -147,3 +147,48 @@ def test_read_only_service_has_no_confirmation_or_mutation_authority():
     assert not hasattr(service, "_pending")
     with pytest.raises(CommandError, match="shared durable"):
         handle(service, "/close BTCUSDT")
+
+
+def test_diagnostics_run_outside_the_adapter_event_loop() -> None:
+    import asyncio
+
+    service, _, _ = adapter()
+
+    def diagnostic_reader(kind: str) -> str:
+        # The synchronous provider gateway must never be asked to run inside a loop.
+        with pytest.raises(RuntimeError):
+            asyncio.get_running_loop()
+        return f"diag {kind}"
+
+    service.diagnostic_reader = diagnostic_reader
+
+    assert handle(service, "/status") == "diag status"
+
+
+def test_channel_slash_command_serves_reads_and_refuses_trades() -> None:
+    service, _, commands = adapter()
+    service.diagnostic_reader = lambda kind: f"diag {kind}"
+
+    reply = service.handle(
+        "/status", sender_id=0, is_private=False, is_forwarded=False, is_channel=True
+    )
+    assert reply == "diag status"
+
+    with pytest.raises(CommandError, match="read-only"):
+        service.handle(
+            "/close BTCUSDT",
+            sender_id=0,
+            is_private=False,
+            is_forwarded=False,
+            is_channel=True,
+        )
+    assert commands.previews == []
+
+
+def test_channel_help_lists_only_read_commands() -> None:
+    service, _, _ = adapter()
+    reply = service.handle(
+        "/help", sender_id=0, is_private=False, is_forwarded=False, is_channel=True
+    )
+    assert "/status" in reply and "/positions" in reply
+    assert "private chat" in reply

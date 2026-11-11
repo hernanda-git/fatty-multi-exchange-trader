@@ -1665,11 +1665,20 @@ async def run_operator_bot(environ: Mapping[str, str]) -> None:
     )
     api = TelegramBotApi(environ["TG_BOT_TOKEN"])
     api.set_my_commands()
+    channel_id = next(
+        (
+            int(part)
+            for part in environ.get("TELEGRAM_SOURCE_CHANNELS", "").split(",")
+            if part.strip().lstrip("-").isdigit()
+        ),
+        None,
+    )
     poller = TelegramCommandPoller(
         command_service=commands,
         fetch_updates=api.fetch_updates,
         send_reply=api.send_reply,
         receipt_store=PostgresTelegramUpdateReceiptStore(lambda: psycopg.connect()),
+        channel_id=channel_id,
     )
 
     def listen() -> None:

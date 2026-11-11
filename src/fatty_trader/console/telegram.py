@@ -24,6 +24,32 @@ from fatty_trader.operator.command_parser import (
     parse_operator_command,
 )
 
+_DIAGNOSTIC_HEADS = {
+    "/status",
+    "/reconcile",
+    "/protection",
+    "/fills",
+    "/intents",
+    "/dispatches",
+    "/signals",
+}
+_READ_HEADS = _DIAGNOSTIC_HEADS | {"/health", "/positions", "/orders", "/balance"}
+_PRIVATE_HELP = (
+    "Read-only /health /positions /orders /balance /price SYMBOL. "
+    "Mutations /open /trade /cancel /close "
+    "/setsl /settp create the same durable preview as the console. "
+    "/confirm PREVIEW DIGEST PHRASE "
+    "enqueues only after exact preview-bound consent in the password console. "
+    "/job ID tracks evidence. "
+    "Account-wide/manual/baseline mutations are prohibited. "
+    "No legacy confirmation tokens."
+)
+_CHANNEL_HELP = (
+    "Read-only here: /health /status /reconcile /protection /fills /intents "
+    "/dispatches /signals /positions /orders /balance /price SYMBOL. "
+    "Trade commands stay in the private chat with this bot."
+)
+
 
 class TelegramCommandAdapter:
     def __init__(
@@ -85,24 +111,67 @@ class TelegramCommandAdapter:
             )
         return str(owners[0]["client_order_id"])
 
-    def handle(self, text: str, *, sender_id: int, is_private: bool, is_forwarded: bool) -> str:
-        if not authorize_sender(
-            sender_id=sender_id,
-            expected_operator_id=self.operator_id,
-            is_private=is_private,
-            is_forwarded=is_forwarded,
-        ):
-            raise PermissionError("unauthorized operator command")
+    def handle(
+        self,
+        text: str,
+        *,
+        sender_id: int,
+        is_private: bool,
+        is_forwarded: bool,
+        is_channel: bool = False,
+    ) -> str:
         try:
-            return asyncio.run(self._handle(text, sender_id))
-        except CommandError:
+            if is_channel:
+                return self._handle_channel(text)
+            if not authorize_sender(
+                sender_id=sender_id,
+                expected_operator_id=self.operator_id,
+                is_private=is_private,
+                is_forwarded=is_forwarded,
+            ):
+                raise PermissionError("unauthorized operator command")
+            return self._handle(text, sender_id)
+        except (PermissionError, CommandError):
             raise
         except Exception as exc:
             raise CommandError(
                 getattr(exc, "message", "console command failed; inspect durable job evidence")
             ) from None
 
-    async def _handle(self, text: str, sender_id: int) -> str:
+    def _handle_channel(self, text: str) -> str:
+        """Serve read-only commands where identity cannot be proven (channel posts).
+
+        A channel post carries no user identity, so trade commands stay in the private
+        bot; only provider/ledger reads are safe to answer in the channel.
+        """
+        head, *parts = text.split()
+        head = head.split("@", 1)[0].lower()
+        reply = self._read_command(text, head=head, parts=parts, channel=True)
+        if reply is None:
+            raise CommandError(
+                "channel commands are read-only; open a private chat with the bot "
+                "for trade commands"
+            )
+        return reply
+
+    def _read_command(
+        self, text: str, *, head: str, parts: list[str], channel: bool
+    ) -> str | None:
+        if head in {"/help", "/start"}:
+            return _CHANNEL_HELP if channel else _PRIVATE_HELP
+        if head == "/health" and self.health_reader:
+            return self.health_reader()
+        if self.diagnostic_reader and head in _DIAGNOSTIC_HEADS:
+            return self.diagnostic_reader(head[1:])
+        section = {"/positions": "positions", "/orders": "orders", "/balance": "account"}.get(head)
+        if section and self.read_service:
+            return escape(json.dumps(self.read_service.read(section), default=str), quote=False)
+        if head == "/price" and len(parts) == 1:
+            snapshot = self.store.latest_snapshot(f"ticker:{parts[0].upper()}", self.scope)
+            return escape(json.dumps(snapshot, default=str), quote=False)
+        return None
+
+    def _handle(self, text: str, sender_id: int) -> str:
         head, *parts = text.split()
         head = head.split("@", 1)[0].lower()
         if head in {"/confirm", "/approve", "/reject", "/job", "/jobcancel"}:
@@ -150,41 +219,16 @@ class TelegramCommandAdapter:
                 }[head]
                 job = method(parts[0], request, principal)
             return escape(json.dumps(job, default=str), quote=False)
-        if head in {"/help", "/start"}:
-            return (
-                "Read-only /health /positions /orders /balance /price SYMBOL. "
-                "Mutations /open /trade /cancel /close "
-                "/setsl /settp create the same durable preview as the console. "
-                "/confirm PREVIEW DIGEST PHRASE "
-                "enqueues only after exact preview-bound consent in the password console. "
-                "/job ID tracks evidence. "
-                "Account-wide/manual/baseline mutations are prohibited. "
-                "No legacy confirmation tokens."
-            )
-        if head == "/health" and self.health_reader:
-            return self.health_reader()
+        read = self._read_command(text, head=head, parts=parts, channel=False)
+        if read is not None:
+            return read
+        if head in _READ_HEADS:
+            raise CommandError("read command is unavailable")
         command = parse_operator_command(text)
         if not isinstance(
-            command, (OpenCommand, TradeCommand, CancelCommand, CloseCommand, SetProtectionCommand)
+            command,
+            (OpenCommand, TradeCommand, CancelCommand, CloseCommand, SetProtectionCommand),
         ):
-            if self.diagnostic_reader and head in {
-                "/status",
-                "/reconcile",
-                "/protection",
-                "/fills",
-                "/intents",
-                "/dispatches",
-                "/signals",
-            }:
-                return self.diagnostic_reader(head[1:])
-            section = {"/positions": "positions", "/orders": "orders", "/balance": "account"}.get(
-                head
-            )
-            if section and self.read_service:
-                return escape(json.dumps(self.read_service.read(section), default=str), quote=False)
-            if head == "/price" and len(parts) == 1:
-                snapshot = self.store.latest_snapshot(f"ticker:{parts[0].upper()}", self.scope)
-                return escape(json.dumps(snapshot, default=str), quote=False)
             raise CommandError("read command is unavailable")
         principal = self._principal(sender_id)
         if getattr(command, "confirm_token", None):
@@ -237,14 +281,16 @@ class TelegramCommandAdapter:
                 ("protection.set_sl" if command.kind == "SL" else "protection.set_tp"),
                 {"client_oid": self._root(command.symbol), "price": str(command.price)},
             )
-        preview = await self.commands.preview(
-            {
-                "action": action,
-                "arguments": args,
-                "target_refs": [],
-                "reason": "Private Telegram operator command",
-            },
-            principal,
-            self.scope,
+        preview = asyncio.run(
+            self.commands.preview(
+                {
+                    "action": action,
+                    "arguments": args,
+                    "target_refs": [],
+                    "reason": "Private Telegram operator command",
+                },
+                principal,
+                self.scope,
+            )
         )
         return escape(json.dumps(preview, default=str), quote=False)

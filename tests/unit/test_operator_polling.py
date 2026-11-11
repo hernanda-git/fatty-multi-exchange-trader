@@ -29,8 +29,19 @@ class FakeCommandService:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def handle(self, text: str, *, sender_id: int, is_private: bool, is_forwarded: bool) -> str:
-        if sender_id != 1 or not is_private or is_forwarded:
+    def handle(
+        self,
+        text: str,
+        *,
+        sender_id: int,
+        is_private: bool,
+        is_forwarded: bool,
+        is_channel: bool = False,
+    ) -> str:
+        if is_channel:
+            if is_private or sender_id != 0 or is_forwarded:
+                raise PermissionError("unauthorized")
+        elif sender_id != 1 or not is_private or is_forwarded:
             raise PermissionError("unauthorized")
         self.calls.append(
             {
@@ -38,6 +49,7 @@ class FakeCommandService:
                 "sender_id": sender_id,
                 "is_private": is_private,
                 "is_forwarded": is_forwarded,
+                "is_channel": is_channel,
             }
         )
         return f"handled {text}"
@@ -70,7 +82,7 @@ def test_bot_api_long_polls_and_replies_without_parse_mode() -> None:
         seen.append(request)
         if request.url.path.endswith("/getUpdates"):
             assert json.loads(request.content.decode()) == {
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "channel_post"],
                 "offset": 8,
                 "timeout": 25,
             }
@@ -168,7 +180,13 @@ def test_poller_routes_authorized_private_slash_command_and_replies() -> None:
 
     assert poller.run_once() == 1
     assert service.calls == [
-        {"text": "/balance", "sender_id": 1, "is_private": True, "is_forwarded": False}
+        {
+            "text": "/balance",
+            "sender_id": 1,
+            "is_private": True,
+            "is_forwarded": False,
+            "is_channel": False,
+        }
     ]
     assert sent == [(1, "handled /balance")]
     assert poller.offset == 2
@@ -305,3 +323,64 @@ def test_start_with_bot_mention_reaches_service_and_returns_readable_reply() -> 
     assert len(sent) == 1
     assert sent[0]["chat_id"] == 1
     client.close()
+
+
+def _channel_post(
+    *,
+    update_id: int = 1,
+    text: str = "/status",
+    chat_id: int = -1001252615519,
+) -> dict[str, Any]:
+    return {
+        "update_id": update_id,
+        "channel_post": {
+            "message_id": 20,
+            "text": text,
+            "chat": {"id": chat_id, "type": "channel"},
+        },
+    }
+
+
+def test_poller_routes_read_only_command_posted_in_the_configured_channel() -> None:
+    service = FakeCommandService()
+    sent: list[tuple[int, str]] = []
+    poller = TelegramCommandPoller(
+        command_service=service,
+        fetch_updates=lambda offset: [_channel_post()],
+        send_reply=lambda chat_id, text: sent.append((chat_id, text)),
+        channel_id=-1001252615519,
+    )
+
+    assert poller.run_once() == 1
+    assert service.calls == [
+        {
+            "text": "/status",
+            "sender_id": 0,
+            "is_private": False,
+            "is_forwarded": False,
+            "is_channel": True,
+        }
+    ]
+    assert sent == [(-1001252615519, "handled /status")]
+
+
+def test_poller_ignores_channel_posts_from_other_channels_and_unconfigured_bots() -> None:
+    service = FakeCommandService()
+    sent: list[tuple[int, str]] = []
+    poller = TelegramCommandPoller(
+        command_service=service,
+        fetch_updates=lambda offset: [_channel_post(chat_id=-1009999999999)],
+        send_reply=lambda chat_id, text: sent.append((chat_id, text)),
+        channel_id=-1001252615519,
+    )
+    unconfigured = TelegramCommandPoller(
+        command_service=service,
+        fetch_updates=lambda offset: [_channel_post()],
+        send_reply=lambda chat_id, text: sent.append((chat_id, text)),
+        channel_id=None,
+    )
+
+    assert poller.run_once() == 1
+    assert unconfigured.run_once() == 1
+    assert service.calls == []
+    assert sent == []

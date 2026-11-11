@@ -12,7 +12,15 @@ from fatty_trader.operator.command_parser import CommandError
 
 
 class CommandService(Protocol):
-    def handle(self, text: str, *, sender_id: int, is_private: bool, is_forwarded: bool) -> str: ...
+    def handle(
+        self,
+        text: str,
+        *,
+        sender_id: int,
+        is_private: bool,
+        is_forwarded: bool,
+        is_channel: bool = False,
+    ) -> str: ...
 
 
 FetchUpdates = Callable[[int | None], Sequence[dict[str, Any]]]
@@ -87,7 +95,10 @@ class TelegramBotApi:
             self._client.close()
 
     def fetch_updates(self, offset: int | None) -> list[dict[str, Any]]:
-        payload: dict[str, Any] = {"timeout": 25, "allowed_updates": ["message"]}
+        payload: dict[str, Any] = {
+            "timeout": 25,
+            "allowed_updates": ["message", "channel_post"],
+        }
         if offset is not None:
             payload["offset"] = offset
         result = self._post("getUpdates", payload)
@@ -155,11 +166,13 @@ class TelegramCommandPoller:
         fetch_updates: FetchUpdates,
         send_reply: SendReply,
         receipt_store: UpdateReceiptStore | None = None,
+        channel_id: int | None = None,
     ) -> None:
         self._command_service = command_service
         self._fetch_updates = fetch_updates
         self._send_reply = send_reply
         self._receipt_store = receipt_store
+        self._channel_id = channel_id
         self.offset = receipt_store.next_offset() if receipt_store is not None else None
 
     def run_once(self) -> int:
@@ -180,28 +193,59 @@ class TelegramCommandPoller:
 
     def _handle_update(self, update: dict[str, Any]) -> None:
         message = update.get("message")
+        is_channel = False
+        if not isinstance(message, dict):
+            message = update.get("channel_post")
+            is_channel = isinstance(message, dict)
         if not isinstance(message, dict):
             return
         text = message.get("text")
         chat = message.get("chat")
-        sender = message.get("from")
-        if not isinstance(text, str) or not text.startswith("/"):
-            return
-        if not isinstance(chat, dict) or not isinstance(sender, dict):
+        if not isinstance(text, str) or not text.startswith("/") or not isinstance(chat, dict):
             return
         chat_id = chat.get("id")
+        if not isinstance(chat_id, int):
+            return
+        if is_channel:
+            # A channel post carries no user identity; only the configured channel is
+            # answered and the adapter keeps that lane read-only.
+            if chat.get("type") != "channel" or self._channel_id is None:
+                return
+            if chat_id != self._channel_id:
+                return
+            self._dispatch(text, chat_id, sender_id=0, is_private=False, is_channel=True)
+            return
+        sender = message.get("from")
+        if not isinstance(sender, dict):
+            return
         sender_id = sender.get("id")
-        if not isinstance(chat_id, int) or not isinstance(sender_id, int):
+        if not isinstance(sender_id, int):
             return
         if chat.get("type") != "private":
             return
         is_forwarded = "forward_origin" in message or "forward_from" in message
+        self._dispatch(
+            text, chat_id, sender_id=sender_id, is_private=True, is_channel=False,
+            is_forwarded=is_forwarded,
+        )
+
+    def _dispatch(
+        self,
+        text: str,
+        chat_id: int,
+        *,
+        sender_id: int,
+        is_private: bool,
+        is_channel: bool,
+        is_forwarded: bool = False,
+    ) -> None:
         try:
             response = self._command_service.handle(
                 text,
                 sender_id=sender_id,
-                is_private=True,
+                is_private=is_private,
                 is_forwarded=is_forwarded,
+                is_channel=is_channel,
             )
         except PermissionError:
             self._send_reply(chat_id, "Command rejected.")
