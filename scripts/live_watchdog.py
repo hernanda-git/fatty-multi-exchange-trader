@@ -461,7 +461,12 @@ def enqueue_card(status: str, reasons: list[dict[str, str]], *, reminder: bool =
         print(f"watchdog: alert enqueue failed: {type(exc).__name__}", flush=True)
 
 
-def write_state(status: str, reasons: list[dict[str, str]], observation: dict[str, Any]) -> None:
+def write_state(
+    status: str,
+    reasons: list[dict[str, str]],
+    observation: dict[str, Any],
+    observed: list[dict[str, str]] | None = None,
+) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat()
     status_payload = {
@@ -469,6 +474,7 @@ def write_state(status: str, reasons: list[dict[str, str]], observation: dict[st
         "checked_at": now,
         "revision": _revision(),
         "reasons": reasons,
+        "observed": observed if observed is not None else reasons,
         "observation": observation,
     }
     (STATE_DIR / "status.json").write_text(
@@ -483,6 +489,7 @@ def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     last_status: str | None = None
     last_alert_at = 0.0
+    warning_strikes: dict[str, int] = {}
     status_path = STATE_DIR / "status.json"
     if status_path.exists():
         try:
@@ -512,20 +519,29 @@ def main() -> int:
                     "detail": type(exc).__name__,
                 }
             )
-        critical = any(reason["severity"] == "critical" for reason in reasons)
-        warning = any(reason["severity"] == "warning" for reason in reasons)
-        status = "alert" if critical else "degraded" if warning else "ok"
-        write_state(status, reasons, observation)
+        critical_reasons = [r for r in reasons if r["severity"] == "critical"]
+        observed_warnings = {r["code"]: r for r in reasons if r["severity"] == "warning"}
+        for code in tuple(warning_strikes):
+            if code not in observed_warnings:
+                del warning_strikes[code]
+        warning_reasons: list[dict[str, str]] = []
+        for code, reason in observed_warnings.items():
+            warning_strikes[code] = warning_strikes.get(code, 0) + 1
+            if warning_strikes[code] >= 3:
+                warning_reasons.append(reason)
+        effective = critical_reasons + warning_reasons
+        status = "alert" if critical_reasons else "degraded" if warning_reasons else "ok"
+        write_state(status, effective, observation, observed=reasons)
         now = time.monotonic()
         changed = status != last_status
         reminder = status != "ok" and (now - last_alert_at) >= REMINDER_SECONDS
         # The first observation must not page just because there was no history.
         first_observation = last_status is None
         if (changed and (not first_observation or status != "ok")) or reminder:
-            enqueue_card(status, reasons, reminder=reminder and not changed)
+            enqueue_card(status, effective, reminder=reminder and not changed)
             last_alert_at = now
         if changed:
-            summary = ", ".join(reason["code"] for reason in reasons) or "none"
+            summary = ", ".join(reason["code"] for reason in effective) or "none"
             print(f"watchdog: status={status} reasons={summary}", flush=True)
         last_status = status
         time.sleep(INTERVAL)
