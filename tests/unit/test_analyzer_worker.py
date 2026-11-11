@@ -446,3 +446,64 @@ def test_management_enrollment_survives_a_later_transaction_failure() -> None:
         if "intake_state='FAILED'" in statement
     ]
     assert failed and failed[0][0] == "analysis-failed:RuntimeError"
+
+
+class FanOutCursor:
+    def __init__(self, symbols: list[str]) -> None:
+        self.symbols = symbols
+        self.executed: list[tuple[str, object]] = []
+        self.fetchall_calls = 0
+
+    def execute(self, statement: str, params: object = ()) -> None:
+        self.executed.append((statement, params))
+
+    def fetchall(self) -> list[tuple[object, ...]]:
+        self.fetchall_calls += 1
+        return [(symbol,) for symbol in self.symbols]
+
+
+def test_symbol_less_stop_enrollment_fans_out_to_every_open_symbol() -> None:
+    from fatty_trader.analyzer.postgres_worker import _enroll_management
+    from fatty_trader.analyzer.trade_management import (
+        ManagementAction,
+        SourceManagement,
+    )
+
+    cursor = FanOutCursor(["BRETTUSDT", "ONEUSDT"])
+    symbols = _enroll_management(
+        cursor,
+        uuid4(),
+        "a" * 64,
+        SourceManagement(symbol=None, action=ManagementAction.SL_TO_ENTRY),
+    )
+
+    assert symbols == ["BRETTUSDT", "ONEUSDT"]
+    inserts = [
+        params
+        for statement, params in cursor.executed
+        if "INSERT INTO source_management_updates" in statement
+    ]
+    assert [cast(tuple[Any, ...], params)[3] for params in inserts] == [
+        "BRETTUSDT",
+        "ONEUSDT",
+    ]
+    assert all(cast(tuple[Any, ...], params)[4] == "SL_TO_ENTRY" for params in inserts)
+
+
+def test_named_stop_enrollment_does_not_scan_open_symbols() -> None:
+    from fatty_trader.analyzer.postgres_worker import _enroll_management
+    from fatty_trader.analyzer.trade_management import (
+        ManagementAction,
+        SourceManagement,
+    )
+
+    cursor = FanOutCursor(["BRETTUSDT"])
+    symbols = _enroll_management(
+        cursor,
+        uuid4(),
+        "a" * 64,
+        SourceManagement(symbol="ONEUSDT", action=ManagementAction.SL_TO_ENTRY),
+    )
+
+    assert symbols == ["ONEUSDT"]
+    assert cursor.fetchall_calls == 0

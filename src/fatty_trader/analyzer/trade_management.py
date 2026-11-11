@@ -71,6 +71,10 @@ _HALF_OR_PARTIAL = re.compile(r"\b(?:half|partial)\b|50%", re.I)
 _CONDITIONAL = re.compile(
     r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", re.I
 )
+# "don't forget to move your stoploss to entry" is an instruction, not a veto.
+_AFFIRMATIVE_REDIRECT = re.compile(
+    r"\b(?:do\s+not|don['’]?t|never)\s+forget\s+to\b", re.I
+)
 
 
 class ManagementAction(StrEnum):
@@ -82,20 +86,25 @@ class ManagementAction(StrEnum):
 
 @dataclass(frozen=True)
 class SourceManagement:
-    symbol: str
+    """``symbol`` is None only for instructions that safely scope to every position."""
+
+    symbol: str | None
     action: ManagementAction
 
 
 def parse_source_management(text: str) -> SourceManagement | None:
     """Return a high-confidence management instruction, otherwise None."""
-    candidates = [match.group(1).upper() for match in _EXPLICIT_SYMBOL.finditer(text or "")]
-    candidates.extend(match.group(1).upper() for match in _FULL_SYMBOL.finditer(text or ""))
+    text = _AFFIRMATIVE_REDIRECT.sub("please", text or "")
+    candidates = [match.group(1).upper() for match in _EXPLICIT_SYMBOL.finditer(text)]
+    candidates.extend(match.group(1).upper() for match in _FULL_SYMBOL.finditer(text))
     normalized = {
         token if token.endswith("USDT") else f"{token}USDT"
         for token in candidates
         if _is_symbol_candidate(token)
     }
-    if len(normalized) != 1:
+    if not normalized:
+        return _generic_stop_management(text)
+    if len(normalized) > 1:
         return None
     symbol = normalized.pop()
 
@@ -131,6 +140,25 @@ def parse_source_management(text: str) -> SourceManagement | None:
             and not _HALF_OR_PARTIAL.search(text)
         ):
             return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
+    return None
+
+
+def _generic_stop_management(text: str) -> SourceManagement | None:
+    """Honor a symbol-less stop-to-entry instruction for every open position.
+
+    Closing or booking without a symbol stays ambiguous and is ignored; moving
+    stops to entry is safe to widen only because every owned position is already
+    trading with a stop. Symbol-less parsing keeps the live lane from silently
+    dropping the channel's most common reminder.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines:
+        if _CONDITIONAL.search(line):
+            continue
+        if _SL_TO_ENTRY.search(line):
+            return SourceManagement(symbol=None, action=ManagementAction.SL_TO_ENTRY)
+    if not _CONDITIONAL.search(text) and _SL_TO_ENTRY.search(text):
+        return SourceManagement(symbol=None, action=ManagementAction.SL_TO_ENTRY)
     return None
 
 

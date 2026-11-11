@@ -219,6 +219,11 @@ class SourceManagementExecutor:
             # position snapshot, even when the account was flat before cancellation.
             positions = self._gateway.get_positions(update.symbol)
             if not positions:
+                if update.action is ManagementAction.SL_TO_ENTRY:
+                    # A flat symbol already satisfies "move the stop to entry"; a
+                    # widened generic instruction must not raise a false failure alert.
+                    self._finish(update, "cancelled-flat")
+                    return "cancelled-flat"
                 if cancels_entries:
                     close_oid = f"source-management-{update.id.hex}-close"
                     if self._store.has_provider_intent(update.id, close_oid):

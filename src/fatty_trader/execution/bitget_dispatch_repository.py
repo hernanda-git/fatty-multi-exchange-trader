@@ -523,9 +523,25 @@ class PostgresBitgetDispatchRepository:
                 """
                 INSERT INTO dispatch_transitions
                     (id, dispatch_id, from_state, to_state, reason, evidence)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                SELECT %s, %s, %s, %s, %s, %s::jsonb
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM dispatch_transitions
+                    WHERE dispatch_id = %s AND from_state = %s AND to_state = %s
+                      AND reason IS NOT DISTINCT FROM %s
+                )
                 """,
-                (uuid4(), dispatch_id, expected_state, target_state, reason, serialized_evidence),
+                (
+                    uuid4(),
+                    dispatch_id,
+                    expected_state,
+                    target_state,
+                    reason,
+                    serialized_evidence,
+                    dispatch_id,
+                    expected_state,
+                    target_state,
+                    reason,
+                ),
             )
             if target_state in {"FILLED", "REJECTED", "CANCELLED", "RECONCILED"}:
                 cursor.execute(

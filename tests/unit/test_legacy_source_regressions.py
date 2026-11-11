@@ -158,9 +158,9 @@ def test_management_without_position_is_not_reported_as_reconciled() -> None:
 
     assert (
         SourceManagementExecutor(store, Gateway(), mutations_enabled=True).run_once("worker")
-        == "failed"
+        == "cancelled-flat"
     )
-    assert store.get(update.id).state == "failed"
+    assert store.get(update.id).state == "cancelled-flat"
 
 
 def test_codex_no_signal_falls_back_to_explicit_xpl_setup() -> None:

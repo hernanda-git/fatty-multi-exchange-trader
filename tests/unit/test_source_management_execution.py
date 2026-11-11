@@ -552,3 +552,16 @@ async def test_source_service_uses_runtime_owned_cancellation_before_real_gatewa
     )
     assert calls[3:] == [("get_all_positions", None), ("aclose", None)]
     assert store.get(update.id).state == "reconciled"
+
+
+def test_stop_move_on_flat_symbol_is_cancelled_not_failed() -> None:
+    update = SourceManagementUpdate.new("a" * 64, "ONEUSDT", ManagementAction.SL_TO_ENTRY)
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "cancelled-flat"
+    )
+    assert store.get(update.id).state == "cancelled-flat"
+    assert gateway.calls == [("get_positions", "ONEUSDT")]

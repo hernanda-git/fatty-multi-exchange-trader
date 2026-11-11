@@ -62,10 +62,36 @@ INSERT INTO notifications_outbox (id, dedup_key, payload)
 VALUES (%s, %s, %s::jsonb)
 ON CONFLICT (dedup_key) DO NOTHING
 """
+_OPEN_SYMBOLS = """
+WITH latest AS (
+    SELECT DISTINCT ON (i.symbol) i.symbol, d.state
+    FROM live_order_intents i
+    JOIN dispatches d ON d.id = i.dispatch_id AND d.exchange = i.exchange
+    WHERE i.exchange = 'bitget' AND i.role = 'ENTRY'
+      AND i.entry_leg IS DISTINCT FROM 'limit' AND i.filled_qty > 0
+    ORDER BY i.symbol, d.created_at DESC, d.id DESC
+)
+SELECT symbol FROM latest
+WHERE state IN ('FILLED', 'PARTIALLY_FILLED')
+ORDER BY symbol
+"""
 
 
-def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management: Any) -> None:
-    """Durably enroll one deterministic management instruction.
+def _open_symbols(cursor: Any) -> list[str]:
+    """Symbols whose newest dispatch still holds a filled position."""
+    cursor.execute(_OPEN_SYMBOLS)
+    return [str(row[0]) for row in cursor.fetchall()]
+
+
+def _enroll_management(
+    cursor: Any, message_uuid: Any, revision: str, management: Any
+) -> list[str]:
+    """Durably enroll one deterministic management instruction per target symbol.
+
+    A symbol-less stop instruction fans out to every open position so the channel's
+    "move your stoploss to entry" reminder is never silently dropped. A per-symbol
+    row keeps claim, retry and provider-intent identity independent, exactly like an
+    explicitly named instruction.
 
     Migration 35 requires every non-terminal row to carry a deadline; an insert
     without one raises the table's CHECK and dropped the instruction silently
@@ -73,17 +99,20 @@ def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management
     the execution budget, not the source window; the executor re-checks the
     source revision before any mutation.
     """
-    cursor.execute(
-        _MANAGEMENT_INSERT,
-        (
-            uuid4(),
-            message_uuid,
-            revision,
-            management.symbol,
-            management.action.value,
-            _MANAGEMENT_DEADLINE_MINUTES,
-        ),
-    )
+    symbols = [management.symbol] if management.symbol else _open_symbols(cursor)
+    for symbol in symbols:
+        cursor.execute(
+            _MANAGEMENT_INSERT,
+            (
+                uuid4(),
+                message_uuid,
+                revision,
+                symbol,
+                management.action.value,
+                _MANAGEMENT_DEADLINE_MINUTES,
+            ),
+        )
+    return symbols
 
 
 def process_received_batch(
@@ -169,10 +198,13 @@ def process_received_batch(
                                 None if source_veto else parse_source_management(message.raw_text)
                             )
                             if management is not None:
-                                _enroll_management(cursor, message_uuid, revision, management)
+                                symbols = _enroll_management(
+                                    cursor, message_uuid, revision, management
+                                )
                                 print(
                                     f"[ANALYZER] msg_id={message_id} MANAGEMENT "
-                                    f"symbol={management.symbol} action={management.action.value}",
+                                    f"symbols={','.join(symbols) or 'none'} "
+                                    f"action={management.action.value}",
                                     flush=True,
                                 )
                                 cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
@@ -286,10 +318,13 @@ def process_received_batch(
                                 None if source_veto else parse_source_management(message.raw_text)
                             )
                             if management is not None:
-                                _enroll_management(cursor, message_uuid, revision, management)
+                                symbols = _enroll_management(
+                                    cursor, message_uuid, revision, management
+                                )
                                 print(
                                     f"[ANALYZER] msg_id={message_id} MANAGEMENT "
-                                    f"symbol={management.symbol} action={management.action.value}",
+                                    f"symbols={','.join(symbols) or 'none'} "
+                                    f"action={management.action.value}",
                                     flush=True,
                                 )
                                 cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
@@ -316,10 +351,13 @@ def process_received_batch(
                     ):
                         management = management_from_image_json(image_result)
                     if management is not None:
-                        _enroll_management(cursor, message_uuid, revision, management)
+                        symbols = _enroll_management(
+                            cursor, message_uuid, revision, management
+                        )
                         print(
                             f"[ANALYZER] msg_id={message_id} MANAGEMENT "
-                            f"symbol={management.symbol} action={management.action.value}",
+                            f"symbols={','.join(symbols) or 'none'} "
+                            f"action={management.action.value}",
                             flush=True,
                         )
                     signal_id = None

@@ -744,8 +744,12 @@ class ReadService:
                 "ledger": self._query(
                     "SELECT (SELECT count(*) FROM live_order_intents WHERE exchange='bitget') "
                     "AS intents, (SELECT count(*) FROM fills WHERE exchange='bitget') AS fills, "
-                    "(SELECT count(*) FROM positions WHERE exchange='bitget' "
-                    "AND closed_at IS NULL) AS open_positions",
+                    "(SELECT count(*) FROM (SELECT DISTINCT ON (i.symbol) d.state "
+                    "FROM dispatches d JOIN live_order_intents i ON i.dispatch_id=d.id "
+                    "AND i.exchange='bitget' AND i.role='ENTRY' "
+                    "WHERE d.exchange='bitget' "
+                    "ORDER BY i.symbol, d.created_at DESC) latest "
+                    "WHERE latest.state IN ('FILLED','PARTIALLY_FILLED')) AS open_positions",
                     name="ledger_summary",
                 ),
                 "latches": self._query(

@@ -13,7 +13,7 @@ This document records the owner-selected behavior and the local implementation c
 
 ## Source booking and CLOSE
 
-Source messages are management instructions, not new entry setups. An explicit, unambiguous symbol and nonconditional/nonnegated instruction are required. The analyzer durably queues management before marking a message analyzed; `(source_message_id, revision, symbol, action)` deduplicates the same instruction.
+Source messages are management instructions, not new entry setups. A nonconditional/nonnegated instruction is required; an explicit, unambiguous symbol is required for every action except `SL_TO_ENTRY`. A symbol-less stop reminder ("don't forget to move your stoploss to entry") expands to one durable update per open position instead of being silently dropped. The analyzer durably queues management before marking a message analyzed; `(source_message_id, revision, symbol, action)` deduplicates the same instruction.
 
 Before any recognized booking TP or CLOSE is executed, stop all bot-owned remaining entry legs for that symbol, including when there is no open position. Use only exact durable ENTRY ownership and client order IDs. Never call symbol-wide cancel-all and never cancel native SL/TP, reduce-only closes, plan protection or unrelated/manual orders to accomplish this.
 
@@ -26,11 +26,11 @@ After proved cancellation, read provider positions again. A fill can race cancel
 - `CLOSE`: after cancellation, close the freshly observed full position reduce-only and require flat readback.
 - `TP1_BOOKED`: preserve the existing explicit source TP1 policy: after cancellation, close half of the freshly observed position, confirm reduction, then request SL at remaining entry. This source-management policy is distinct from FULL-position automatic first-target TP; do not generalize it to other targets. The gateway fails closed when native SL replacement lacks a verified adapter.
 - `TP_BOOKED`: generic TP and later numbered TP booked/taken/hit messages cancel the remainder only. They do not authorize another allocation, a partial/full close or SL replacement. TP1-specific parsing takes precedence. Numbered TP labels are not trade symbols.
-- `SL_TO_ENTRY`: retains its existing stop-management behavior; it does not itself authorize cancellation of waiting entry.
+- `SL_TO_ENTRY`: retains its existing stop-management behavior; it does not itself authorize cancellation of waiting entry. A symbol-less instruction enrolls one update per symbol whose newest dispatch is still `FILLED`/`PARTIALLY_FILLED`. A symbol that is already flat finishes `cancelled-flat`, never a false `failed` alert.
 
 ### Honest terminal outcomes
 
-- `cancelled-flat`: cancellation was proved and a fresh position read found no open position, with no existing close POST intent for that management update. No close/TP execution is claimed or fabricated.
+- `cancelled-flat`: cancellation was proved and a fresh position read found no open position, with no existing close POST intent for that management update. No close/TP execution is claimed or fabricated. A `SL_TO_ENTRY` on an already flat symbol also finishes here: the stop is moot, not a failure.
 - `entries-cancelled`: a generic/later TP booking proved entry cancellation while an actual position remains; no close/TP fill is claimed.
 - `reconciled`: the requested position mutation completed its existing provider readback contract.
 - `reconciliation-pending`: cancellation or an existing/ambiguous mutation needs durable reconciliation. An earlier close intent plus a currently flat position alone must not be relabeled as cancellation-only success.

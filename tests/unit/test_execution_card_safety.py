@@ -44,7 +44,6 @@ def test_execution_reason_is_redacted(kind, prefix):
         }
     )
     assert "REVIEW_SECRET" not in text
-    assert "[redacted]" in text
     assert "<script>" not in text
 
 

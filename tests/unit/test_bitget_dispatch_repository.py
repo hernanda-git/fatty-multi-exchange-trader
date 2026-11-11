@@ -142,8 +142,10 @@ def test_transition_evidence_outbox_and_json_log_share_committed_event(capsys) -
         for sql, params in cursor.statements
         if "INSERT INTO dispatch_transitions" in sql
     )
-    persisted = json.loads(transition_params[-1])
+    persisted = json.loads(transition_params[5])
     assert "evidence" in transition_sql and "%s::jsonb" in transition_sql
+    assert "WHERE NOT EXISTS" in transition_sql
+    assert "reason IS NOT DISTINCT FROM" in transition_sql
     assert persisted["dispatch_id"] == str(dispatch_id)
     assert persisted["attempt"] == 2
     assert persisted["worker_id"] == "worker-a"

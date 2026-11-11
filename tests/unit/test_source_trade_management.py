@@ -172,3 +172,28 @@ def test_half_and_partial_close_instructions_are_recognized_as_tp1(
     assert update is not None
     assert update.symbol == expected_symbol
     assert update.action is ManagementAction.TP1_BOOKED
+
+
+def test_symbol_less_stop_to_entry_targets_every_open_position() -> None:
+    update = parse_source_management(
+        "Going to sleep now, goodnight guys and dont forget to move your "
+        "stoploss to entry❤️"
+    )
+
+    assert update is not None
+    assert update.symbol is None
+    assert update.action is ManagementAction.SL_TO_ENTRY
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "close everything now",
+        "book some profits also❤️",
+        "close half here",
+        "if price comes back move stoploss to entry",
+        "never move your stoploss to entry",
+    ],
+)
+def test_symbol_less_closes_and_conditional_stops_stay_ambiguous(text: str) -> None:
+    assert parse_source_management(text) is None
