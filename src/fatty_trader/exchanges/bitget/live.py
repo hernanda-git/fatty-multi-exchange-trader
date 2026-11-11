@@ -219,7 +219,7 @@ class LiveIntentStoreProtocol(Protocol):
         self, symbol: str | None = None, management_id: UUID | None = None
     ) -> tuple[LiveIntentRecord, ...]: ...
     def claim_cancel(self, client_oid: str, management_id: UUID) -> bool: ...
-    def claim_cancel_post(self, client_oid: str) -> bool: ...
+    def claim_cancel_post(self, client_oid: str, management_id: UUID) -> bool: ...
     def update_active_stop(
         self, symbol: str, root_oid: str, stop: Decimal, management_id: str
     ) -> None: ...
@@ -317,10 +317,10 @@ class InMemoryLiveIntentStore:
             record.provider_terminal = True
         return True
 
-    def claim_cancel_post(self, client_oid: str) -> bool:
+    def claim_cancel_post(self, client_oid: str, management_id: UUID) -> bool:
         record = self._records[client_oid]
         if (
-            record.cancel_requested_by is None
+            record.cancel_requested_by != management_id
             or record.cancel_post_claimed
             or record.provider_terminal
         ):

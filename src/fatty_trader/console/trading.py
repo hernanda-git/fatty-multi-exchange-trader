@@ -551,7 +551,7 @@ class TradingHandlers:
                 raise ValueError("exact pre-POST close binding could not be proved")
             return claimed
 
-    def _claim_owned_cancel_post(self, client_oid: str) -> bool:
+    def _claim_owned_cancel_post(self, client_oid: str, management_id: UUID) -> bool:
         if self._active_job is None:
             raise ValueError("cancellation requires active durable job")
         with self.store.connection() as connection:
@@ -563,7 +563,7 @@ class TradingHandlers:
                 """UPDATE live_order_intents i SET cancel_post_claimed=TRUE,
                 updated_at=clock_timestamp() FROM bitget_margin_reservations r,dispatches d
                 WHERE i.exchange='bitget' AND i.client_order_id=%s
-                AND i.role='ENTRY' AND i.order_type='limit' AND i.cancel_requested_by IS NOT NULL
+                AND i.role='ENTRY' AND i.order_type='limit' AND i.cancel_requested_by=%s
                 AND r.id=i.margin_reservation_id AND d.id=i.dispatch_id AND d.id=r.dispatch_id
                 AND r.environment=%s AND NOT i.cancel_post_claimed AND NOT i.provider_terminal
                 AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b
@@ -571,7 +571,7 @@ class TradingHandlers:
                        OR (b.record_kind='reservation' AND b.record_id=r.id)
                        OR (b.record_kind='dispatch' AND b.record_id=d.id))
                 RETURNING i.client_order_id""",
-                (client_oid, self._active_job["scope"]["environment"]),
+                (client_oid, management_id, self._active_job["scope"]["environment"]),
             )
             return cursor.fetchone() is not None
 
@@ -857,13 +857,23 @@ class TradingHandlers:
             ):
                 raise ValueError("cancellation target is not an exact owned LIMIT ENTRY")
             if not reconcile:
-                self._intents.claim_cancel(intent.client_oid, management_id)
+                won = self._intents.claim_cancel(intent.client_oid, management_id)
+                current = self._intents.get(intent.client_oid)
+                if (
+                    not won
+                    and current is not None
+                    and current.cancel_requested_by != management_id
+                ):
+                    raise ValueError("cancellation claim is owned by another instruction")
             current = self._intents.get(intent.client_oid)
             result = (
                 await runtime.execution._execution.reconcile_intent(current)
                 if reconcile
                 else await runtime.execution._execution.cancel_pending_entry(
-                    current, lambda: runtime.execution._claim_cancel_post(current.client_oid)
+                    current,
+                    lambda: runtime.execution._claim_cancel_post(
+                        current.client_oid, management_id
+                    ),
                 )
             )
             runtime.execution._persist_readback(current, result)

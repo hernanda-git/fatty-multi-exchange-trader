@@ -480,6 +480,11 @@ class PostgresBitgetDispatchRepository:
         reason: str | None = None,
         evidence: dict[str, Any] | None = None,
     ) -> None:
+        if expected_state == target_state:
+            # Recovery readback legitimately re-applies the current state. Its
+            # terminal_reason and any terminal canary cleanup are already durable,
+            # so a same-state write is pure churn; never append another edge.
+            return
         reason = safe_transition_reason(reason)
         event_evidence = {
             "schema_version": 1,

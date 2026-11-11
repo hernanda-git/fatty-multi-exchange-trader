@@ -513,7 +513,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
             connection.rollback()
             raise
 
-    def claim_cancel_post(self, client_oid: str) -> bool:
+    def claim_cancel_post(self, client_oid: str, management_id: Any) -> bool:
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
@@ -522,7 +522,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                     updated_at=clock_timestamp()
                 FROM bitget_margin_reservations r,dispatches d
                 WHERE i.exchange='bitget' AND i.client_order_id=%s AND i.role='ENTRY'
-                  AND i.order_type='limit' AND i.cancel_requested_by IS NOT NULL
+                  AND i.order_type='limit' AND i.cancel_requested_by=%s
                   AND r.id=i.margin_reservation_id AND d.id=i.dispatch_id AND d.id=r.dispatch_id
                   AND NOT i.cancel_post_claimed AND NOT i.provider_terminal
                   AND NOT EXISTS(SELECT 1 FROM bitget_baseline_records b
@@ -530,7 +530,7 @@ class PostgresLiveIntentStore(LiveIntentStoreProtocol):
                          OR (b.record_kind='reservation' AND b.record_id=r.id)
                          OR (b.record_kind='dispatch' AND b.record_id=d.id))
                 RETURNING i.client_order_id""",
-                (client_oid,),
+                (client_oid, management_id),
             )
             won = cursor.fetchone() is not None
             connection.commit()

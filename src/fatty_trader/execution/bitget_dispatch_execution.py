@@ -75,7 +75,7 @@ class BitgetDispatchExecution:
         self._native_close_resolver = native_close_resolver
         self.recovery_ready = False
         self.recovery_issues: tuple[str, ...] = ()
-        self.console_cancel_claim: Callable[[str], bool] | None = None
+        self.console_cancel_claim: Callable[[str, UUID], bool] | None = None
 
     async def recover_entry_lifecycles(self) -> int:
         """GET-only recovery, including consumed reservations and terminal fills.
@@ -643,7 +643,16 @@ class BitgetDispatchExecution:
                 current.state = "cancelled"
                 current.provider_terminal = True
                 self._store.update(current)
-            return "PARTIAL" if root.filled_qty > 0 else exc.outcome
+            if root.filled_qty > 0:
+                # The market leg is live: the reservation is consumed, never leaked.
+                self._resolve_reservation(root, "FILLED")
+                return "PARTIAL"
+            # A pre-POST veto releases the reservation; EXPIRED is a source
+            # retirement, which is still a release for the margin ledger.
+            self._resolve_reservation(
+                root, "REJECTED" if exc.outcome in {"EXPIRED", "REJECTED"} else exc.outcome
+            )
+            return exc.outcome
         except Exception:
             self._resolve_reservation(root, "UNKNOWN")
             raise
@@ -662,10 +671,10 @@ class BitgetDispatchExecution:
             return "EXPIRED"
         return None
 
-    def _claim_cancel_post(self, client_oid: str) -> bool:
+    def _claim_cancel_post(self, client_oid: str, management_id: UUID) -> bool:
         if self.console_cancel_claim is not None:
-            return self.console_cancel_claim(client_oid)
-        return self._store.claim_cancel_post(client_oid)
+            return self.console_cancel_claim(client_oid, management_id)
+        return self._store.claim_cancel_post(client_oid, management_id)
 
     async def cancel_pending_entries(
         self, symbol: str, management_id: UUID, *, reconciliation_only: bool = False
@@ -680,14 +689,25 @@ class BitgetDispatchExecution:
                     continue
                 if limit.entry_leg != "limit":
                     if not reconciliation_only:
-                        self._store.claim_cancel(limit.client_oid, management_id)
-                    refreshed = self._store.get(limit.client_oid)
-                    if refreshed is None:
-                        return False
+                        won = self._store.claim_cancel(limit.client_oid, management_id)
+                        refreshed = self._store.get(limit.client_oid)
+                        if refreshed is None:
+                            return False
+                        if not won and refreshed.cancel_requested_by != management_id:
+                            # Another management instruction owns this cancellation.
+                            # Never POST a mutation we did not claim.
+                            continue
+                    else:
+                        refreshed = self._store.get(limit.client_oid)
+                        if refreshed is None:
+                            return False
                     cancel = getattr(self._execution, "cancel_pending_entry", None)
                     result = (
                         await cancel(
-                            refreshed, lambda oid=limit.client_oid: self._claim_cancel_post(oid)
+                            refreshed,
+                            lambda oid=limit.client_oid: self._claim_cancel_post(
+                                oid, management_id
+                            ),
                         )
                         if callable(cancel) and not reconciliation_only
                         else await self._execution.reconcile_intent(refreshed)
@@ -702,16 +722,24 @@ class BitgetDispatchExecution:
                     return False
                 self._aggregate_split(root, limit)
                 if not reconciliation_only:
-                    self._store.claim_cancel(limit.client_oid, management_id)
+                    won = self._store.claim_cancel(limit.client_oid, management_id)
                     limit_updated = self._store.get(limit.client_oid)
                     if limit_updated is None:
                         return False
+                    if not won and limit_updated.cancel_requested_by != management_id:
+                        # Another management instruction owns this cancellation.
+                        continue
                     limit = limit_updated
                 if not limit.provider_terminal:
                     cancel = getattr(self._execution, "cancel_pending_entry", None)
                     result = (
                         await cancel(
-                            limit, (lambda oid=limit.client_oid: self._claim_cancel_post(oid))
+                            limit,
+                            (
+                                lambda oid=limit.client_oid: self._claim_cancel_post(
+                                    oid, management_id
+                                )
+                            ),
                         )
                         if callable(cancel) and not reconciliation_only
                         else await self._execution.reconcile_intent(limit)
