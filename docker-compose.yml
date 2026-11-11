@@ -223,6 +223,8 @@ services:
       BITGET_EXECUTION_ENABLED: ${BITGET_EXECUTION_ENABLED:-1}
       # Capability admission is separately gated and remains disabled by default.
       BITGET_PROTECTION_CAPABILITY_GATE_ENABLED: ${BITGET_PROTECTION_CAPABILITY_GATE_ENABLED:-0}
+      # Native verification is proved by a placement, not a stream heartbeat.
+      BITGET_PROTECTION_VERIFICATION_STALE_SECONDS: ${BITGET_PROTECTION_VERIFICATION_STALE_SECONDS:-3600}
       BITGET_PROTECTION_STREAM_ENABLED: ${BITGET_PROTECTION_STREAM_ENABLED:-1}
       BITGET_PROTECTION_STREAM_MODE: ${BITGET_PROTECTION_STREAM_MODE:-observe}
       BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED: ${BITGET_PROTECTION_STREAM_MUTATIONS_ENABLED:-0}
@@ -309,6 +311,10 @@ services:
       # stream latches its entry block. Plumbed here so tuning .env actually
       # reaches the container; the in-code default (3) is only a fallback.
       BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH: ${BITGET_PROTECTION_STALE_CYCLES_BEFORE_LATCH:-3}
+      # A provider read that failed once is retried before it closes the lane.
+      # Set strikes=1 and autorelease=0 to restore the pre-2026-11-12 behaviour.
+      BITGET_LATCH_TRANSIENT_STRIKES: ${BITGET_LATCH_TRANSIENT_STRIKES:-3}
+      BITGET_LATCH_TRANSIENT_AUTORELEASE: ${BITGET_LATCH_TRANSIENT_AUTORELEASE:-1}
     healthcheck:
       # Probe this service *and* verify the cycle heartbeat is fresh. The inherited
       # dispatcher probe validated configuration only, which is why the 3h50m stall
@@ -428,6 +434,9 @@ services:
       BITGET_MAX_MARGIN_PER_TRADE_USDT: "1.1"
       BITGET_OPERATOR_MUTATIONS_ENABLED: "1"
       SOURCE_MANAGEMENT_POLL_SECONDS: ${SOURCE_MANAGEMENT_POLL_SECONDS:-30}
+      # Execution budget for a management instruction, independent of the five-minute
+      # entry window. Set 300 to restore the pre-2026-11-12 effective behaviour.
+      BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS: ${BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS:-1800}
       BITGET_CANARY_MAX_ORDERS: ${BITGET_CANARY_MAX_ORDERS:-5}
       BITGET_APPROVAL_REFERENCE: ${BITGET_APPROVAL_REFERENCE:-hernanda-approved-live-20260908}
       BITGET_MAX_CLOCK_SKEW_MS: ${BITGET_MAX_CLOCK_SKEW_MS:-5000}

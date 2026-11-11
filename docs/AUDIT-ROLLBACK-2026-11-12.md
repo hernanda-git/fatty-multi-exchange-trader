@@ -32,6 +32,9 @@ error evidence.
 | `BITGET_PROTECTION_VERIFICATION_STALE_SECONDS` | `3600` | a very large value disables native-verification freshness |
 | `WORKER_HEALTH_ATTESTATION` | `token` | already the old behaviour; `identity` is opt-in hardening |
 
+All four knobs are plumbed in `docker-compose.yml` with these defaults, so a
+`.env` change reaches the container on `docker compose up -d` without editing code.
+
 `BITGET_PROTECTION_CAPABILITY_GATE_ENABLED` is unchanged and still `0`. The
 capability freshness fix only matters when you enable it.
 
