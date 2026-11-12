@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from fatty_trader.analyzer.trade_management import ManagementAction
+
+
+def _position_decimal(value: Any) -> Decimal | None:
+    """Parse a provider position field; unparseable/missing values stay unknown."""
+    if value is None or value == "":
+        return None
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return result if result.is_finite() else None
 
 
 @dataclass(frozen=True)
@@ -19,10 +30,17 @@ class SourceManagementUpdate:
     action: ManagementAction
     state: str = "queued"
     attempts: int = 0
+    target_price: Decimal | None = None
 
     @classmethod
-    def new(cls, revision: str, symbol: str, action: ManagementAction) -> SourceManagementUpdate:
-        return cls(uuid4(), uuid4(), revision, symbol, action)
+    def new(
+        cls,
+        revision: str,
+        symbol: str,
+        action: ManagementAction,
+        target_price: Decimal | None = None,
+    ) -> SourceManagementUpdate:
+        return cls(uuid4(), uuid4(), revision, symbol, action, target_price=target_price)
 
 
 class SourceManagementStore(Protocol):
@@ -164,7 +182,8 @@ class SourceManagementExecutor:
             alert(update, state, error)
         print(
             f"[SOURCE-MANAGEMENT-FINISH] update_id={update.id} symbol={update.symbol} "
-            f"action={update.action} state={state} error={error or 'none'}",
+            f"action={update.action} target={update.target_price} "
+            f"state={state} error={error or 'none'}",
             flush=True,
         )
 
@@ -185,6 +204,7 @@ class SourceManagementExecutor:
             if update.action in {
                 ManagementAction.TP1_BOOKED,
                 ManagementAction.SL_TO_ENTRY,
+                ManagementAction.SL_MOVE,
             } and self._store.has_provider_intent(update.id, sl_oid):
                 # This is GET-only even when the position is now flat. Flat
                 # cannot prove which protection plan a previous POST changed.
@@ -240,8 +260,11 @@ class SourceManagementExecutor:
             # position snapshot, even when the account was flat before cancellation.
             positions = self._gateway.get_positions(update.symbol)
             if not positions:
-                if update.action is ManagementAction.SL_TO_ENTRY:
-                    # A flat symbol already satisfies "move the stop to entry"; a
+                if update.action in {
+                    ManagementAction.SL_TO_ENTRY,
+                    ManagementAction.SL_MOVE,
+                }:
+                    # A flat symbol already satisfies a stop instruction; a
                     # widened generic instruction must not raise a false failure alert.
                     self._finish(update, "cancelled-flat")
                     return "cancelled-flat"
@@ -306,6 +329,49 @@ class SourceManagementExecutor:
                     side=remaining["side"],
                     quantity=remaining["size"],
                     stop_loss=remaining["entry"],
+                    client_oid=sl_oid,
+                )
+            elif update.action is ManagementAction.SL_MOVE:
+                target = update.target_price
+                if target is None or not target.is_finite() or target <= 0:
+                    raise ValueError("management-stop-price-missing")
+                current_stop = position.get("stop_loss")
+                if not isinstance(current_stop, Decimal) or current_stop <= 0:
+                    raise ValueError("management-stop-baseline-unavailable")
+                if target == current_stop:
+                    # The venue already holds the instructed stop: nothing to send.
+                    self._finish(update, "reconciled")
+                    return "reconciled"
+                if (position["side"] == "LONG" and target < current_stop) or (
+                    position["side"] == "SHORT" and target > current_stop
+                ):
+                    # A stop move may only ever reduce risk. Refuse the widening
+                    # before any provider intent is persisted.
+                    raise ValueError("management-stop-widening-refused")
+                mark = _position_decimal(position.get("mark"))
+                if (
+                    mark is not None
+                    and mark > 0
+                    and (
+                        (position["side"] == "LONG" and target >= mark)
+                        or (position["side"] == "SHORT" and target <= mark)
+                    )
+                ):
+                    raise ValueError("management-stop-already-breached")
+                self._require_eligible(update)
+                if not self._store.persist_provider_intent(update.id, sl_oid):
+                    try:
+                        self._gateway.reconcile_stop_loss(sl_oid)
+                        self._finish(update, "reconciled")
+                        return "reconciled"
+                    except SourceManagementReconciliationPending as exc:
+                        if "claimed stop intent is not available" not in str(exc):
+                            raise
+                self._gateway.replace_stop_loss(
+                    symbol=update.symbol,
+                    side=position["side"],
+                    quantity=position["size"],
+                    stop_loss=target,
                     client_oid=sl_oid,
                 )
             elif update.action is ManagementAction.SL_TO_ENTRY:

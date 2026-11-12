@@ -52,8 +52,8 @@ RETURNING id
 _MANAGEMENT_DEADLINE_MINUTES = 30
 _MANAGEMENT_INSERT = """
 INSERT INTO source_management_updates
-(id, source_message_id, revision, symbol, action, state, deadline_at)
-VALUES (%s, %s, %s, %s, %s, 'queued',
+(id, source_message_id, revision, symbol, action, target_price, state, deadline_at)
+VALUES (%s, %s, %s, %s, %s, %s, 'queued',
         clock_timestamp() + (%s * interval '1 minute'))
 ON CONFLICT (source_message_id, revision, symbol, action) DO NOTHING
 """
@@ -107,6 +107,7 @@ def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management
                 revision,
                 symbol,
                 management.action.value,
+                management.target_price,
                 _MANAGEMENT_DEADLINE_MINUTES,
             ),
         )
@@ -202,7 +203,8 @@ def process_received_batch(
                                 print(
                                     f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                                     f"symbols={','.join(symbols) or 'none'} "
-                                    f"action={management.action.value}",
+                                    f"action={management.action.value} "
+                                    f"target={management.target_price}",
                                     flush=True,
                                 )
                                 cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
@@ -322,7 +324,8 @@ def process_received_batch(
                                 print(
                                     f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                                     f"symbols={','.join(symbols) or 'none'} "
-                                    f"action={management.action.value}",
+                                    f"action={management.action.value} "
+                                    f"target={management.target_price}",
                                     flush=True,
                                 )
                                 cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
@@ -353,7 +356,8 @@ def process_received_batch(
                         print(
                             f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                             f"symbols={','.join(symbols) or 'none'} "
-                            f"action={management.action.value}",
+                            f"action={management.action.value} "
+                            f"target={management.target_price}",
                             flush=True,
                         )
                     signal_id = None

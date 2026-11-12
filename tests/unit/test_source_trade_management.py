@@ -197,3 +197,46 @@ def test_symbol_less_stop_to_entry_targets_every_open_position() -> None:
 )
 def test_symbol_less_closes_and_conditional_stops_stay_ambiguous(text: str) -> None:
     assert parse_source_management(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("sl moved to 4.14 on $SNXX | Current risk 0.5R at sl", "4.14"),
+        ("SL is now at 4.14 on $SNXX", "4.14"),
+        ("moved stop loss to 4.14 $SNXX", "4.14"),
+        ("stop loss at 4.14 on #SNXX", "4.14"),
+        ("moving my $SNXX sl to 4.14", "4.14"),
+    ],
+)
+def test_explicit_stop_move_carries_the_pinned_price(text: str, expected: str) -> None:
+    from decimal import Decimal
+
+    update = parse_source_management(text)
+
+    assert update is not None
+    assert update.symbol == "SNXXUSDT"
+    assert update.action is ManagementAction.SL_MOVE
+    assert update.target_price == Decimal(expected)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$SNXX LONG TRADE | ENTRY: 4.24 | TARGET: 5.26 | STOPLOSS: 4.072",
+        "stop loss hit at 4.14 on $SNXX",
+        "sl moved to 4.14 on $SNXX, if price holds",
+        "$SNXX sl risk 0.5R at sl",
+        "SL is below 4.14 on $SNXX",
+    ],
+)
+def test_stop_move_requires_unconditional_management_cue(text: str) -> None:
+    assert parse_source_management(text) is None
+
+
+def test_stop_to_entry_still_wins_over_an_explicit_price_move() -> None:
+    update = parse_source_management("move sl to entry on $SNXX, then trail to 4.14")
+
+    assert update is not None
+    assert update.action is ManagementAction.SL_TO_ENTRY
+    assert update.target_price is None

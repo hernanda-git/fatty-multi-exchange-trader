@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable, Coroutine, Mapping, Sequence
+from contextlib import suppress
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -563,13 +564,20 @@ class BitgetOperatorGateway:
             lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
             if lifecycle is not None and hasattr(lifecycle, "reconcile"):
                 self._run(lifecycle.reconcile(self._client))
-                try:
+                with suppress(Exception):
                     remaining_owned = self._intent_store.remaining_owned_quantity(root_oid)
-                except Exception:
-                    pass
         if remaining_owned != quantity:
             raise ValueError("native SL ownership does not match the live residual")
         old_stop = root.active_stop_loss_price or root.planned_stop_loss
+        venue_stop = position.get("stop_loss")
+        if isinstance(venue_stop, Decimal) and venue_stop > 0:
+            old_stop = venue_stop
+        if (side == "LONG" and normalized_stop < old_stop) or (
+            side == "SHORT" and normalized_stop > old_stop
+        ):
+            # Tick rounding happens above this point; re-check the normalized
+            # price so a rounded target can never widen the venue stop.
+            raise ValueError("stop modification would widen the current venue stop")
         expectation = NativeProtectionExpectation(
             symbol=symbol,
             hold_side=side.lower(),

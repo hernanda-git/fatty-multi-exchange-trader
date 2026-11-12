@@ -176,3 +176,23 @@ MANAGEMENT_ELIGIBLE_SQL = """(
           AND source_edit.entry_rejection_reason = 'edited-source-message'
     )
 )"""
+
+#: Revision/integrity checks without the close/booking age window. Stop instructions
+#: use this predicate: their target price is absolute, so a late delivery is still
+#: risk-reducing, and execution refuses any move that would widen the stop. The
+#: 24-hour bound stops a replay from ever reaching a later, unrelated position on
+#: the same symbol while still covering overnight/weekend downtime.
+MANAGEMENT_INTEGRITY_SQL = """(
+    isfinite({alias}.received_at)
+    AND {alias}.received_at > clock_timestamp() - interval '24 hours'
+    AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
+    AND {alias}.intake_state = 'ANALYZED'
+    AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
+    AND {alias}.entry_rejection_reason IS DISTINCT FROM 'superseded-source-revision'
+    AND NOT EXISTS (
+        SELECT 1 FROM telegram_messages source_edit
+        WHERE source_edit.channel_id = {alias}.channel_id
+          AND source_edit.message_id = {alias}.message_id
+          AND source_edit.entry_rejection_reason = 'edited-source-message'
+    )
+)"""

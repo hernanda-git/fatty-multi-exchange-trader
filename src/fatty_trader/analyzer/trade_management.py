@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 
 _EXPLICIT_SYMBOL = re.compile(r"[$#]([A-Z0-9]{1,15})\b", re.I)
@@ -52,6 +53,24 @@ _SL_TO_ENTRY = re.compile(
     re.I,
 )
 
+#: A stop move to an explicit price ("sl moved to 4.14 on $SNXX"). The parser
+#: demands a management cue (move/shift/raise/trail or "now at") so an entry
+#: template's "STOPLOSS 4.072" line can never be mistaken for a stop mutation.
+#: Entry-signal markers are vetoed separately below.
+_SL_MOVE = re.compile(
+    r"(?is)"
+    r"\b(?:sl|stop\s*loss|stoploss)\b[^\n]{0,30}?"
+    r"\b(?:moved|move|moving|shift(?:ed|ing)?|raise[ds]?|raising|trail(?:ed|ing)?|"
+    r"is\s+now|now)\b[^\n0-9]{0,15}?(?P<price1>\d+(?:\.\d+)?)"
+    r"|\b(?:moved|move|moving|shift(?:ed|ing)?|raise[ds]?|raising|trail(?:ed|ing)?)\b"
+    r"[^\n]{0,30}?\b(?:sl|stop\s*loss|stoploss)\b[^\n0-9]{0,15}?(?P<price2>\d+(?:\.\d+)?)"
+    r"|\b(?:sl|stop\s*loss|stoploss)\b\s*(?:is\s+)?(?:now\s+)?(?:at|to)\s*"
+    r"(?P<price3>\d+(?:\.\d+)?)"
+)
+_ENTRY_SIGNAL_MARKER = re.compile(
+    r"(?is)\bENTRY\s*:|\bTARGETS?\s*:|\b(?:LONG|SHORT)\b[^\n]{0,50}\bSTOP\s*LOSS\b"
+)
+
 _CLOSE = re.compile(
     r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+\d+(?:\.\d+)?R(?:\+)?(?:\s+profit)?)\b"
     r"|\b(?:close|closed|closing|exit|exited)\s+(?:all\s+|fully\s+)?[$#]?[A-Z0-9]{1,15}\b"
@@ -81,6 +100,7 @@ class ManagementAction(StrEnum):
     TP1_BOOKED = "TP1_BOOKED"
     TP_BOOKED = "TP_BOOKED"
     SL_TO_ENTRY = "SL_TO_ENTRY"
+    SL_MOVE = "SL_MOVE"
     CLOSE = "CLOSE"
 
 
@@ -90,6 +110,7 @@ class SourceManagement:
 
     symbol: str | None
     action: ManagementAction
+    target_price: Decimal | None = None
 
 
 def parse_source_management(text: str) -> SourceManagement | None:
@@ -118,6 +139,11 @@ def parse_source_management(text: str) -> SourceManagement | None:
             return SourceManagement(symbol=symbol, action=ManagementAction.TP_BOOKED)
         if _SL_TO_ENTRY.search(line):
             return SourceManagement(symbol=symbol, action=ManagementAction.SL_TO_ENTRY)
+        stop_move = _stop_move_price(line)
+        if stop_move is not None:
+            return SourceManagement(
+                symbol=symbol, action=ManagementAction.SL_MOVE, target_price=stop_move
+            )
         if (
             _CLOSE.search(line)
             and not _NEGATED_CLOSE.search(line)
@@ -133,6 +159,11 @@ def parse_source_management(text: str) -> SourceManagement | None:
             return SourceManagement(symbol=symbol, action=ManagementAction.TP_BOOKED)
         if _SL_TO_ENTRY.search(text):
             return SourceManagement(symbol=symbol, action=ManagementAction.SL_TO_ENTRY)
+        stop_move = _stop_move_price(text)
+        if stop_move is not None:
+            return SourceManagement(
+                symbol=symbol, action=ManagementAction.SL_MOVE, target_price=stop_move
+            )
         if (
             _CLOSE.search(text)
             and not _NEGATED_CLOSE.search(text)
@@ -141,6 +172,21 @@ def parse_source_management(text: str) -> SourceManagement | None:
         ):
             return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
     return None
+
+
+def _stop_move_price(text: str) -> Decimal | None:
+    """Return the explicit stop price when the text is a stop-move instruction."""
+    if _ENTRY_SIGNAL_MARKER.search(text):
+        return None
+    match = _SL_MOVE.search(text)
+    if match is None:
+        return None
+    raw = match.group("price1") or match.group("price2") or match.group("price3")
+    try:
+        price = Decimal(raw)
+    except (InvalidOperation, TypeError):
+        return None
+    return price if price.is_finite() and price > 0 else None
 
 
 def _generic_stop_management(text: str) -> SourceManagement | None:

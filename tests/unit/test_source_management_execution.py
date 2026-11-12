@@ -566,3 +566,128 @@ def test_stop_move_on_flat_symbol_is_cancelled_not_failed() -> None:
     )
     assert store.get(update.id).state == "cancelled-flat"
     assert gateway.calls == [("get_positions", "ONEUSDT")]
+
+
+def _stop_move_update(target: str) -> SourceManagementUpdate:
+    return SourceManagementUpdate.new(
+        "a" * 64,
+        "SNXXUSDT",
+        ManagementAction.SL_MOVE,
+        target_price=Decimal(target),
+    )
+
+
+def _long_position(stop: str = "4.072", mark: str = "4.19") -> dict[str, object]:
+    return {
+        "symbol": "SNXXUSDT",
+        "side": "LONG",
+        "size": Decimal("3.63"),
+        "entry": Decimal("4.234"),
+        "stop_loss": Decimal(stop),
+        "mark": mark,
+    }
+
+
+def test_stop_move_tightens_the_native_stop_and_persists_the_target() -> None:
+    update = _stop_move_update("4.14")
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+    gateway.positions = [_long_position()]
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "reconciled"
+    )
+
+    assert store.get(update.id).state == "reconciled"
+    assert store.get(update.id).target_price == Decimal("4.14")
+    assert gateway.calls == [
+        ("get_positions", "SNXXUSDT"),
+        (
+            "replace_stop_loss",
+            {
+                "symbol": "SNXXUSDT",
+                "side": "LONG",
+                "quantity": Decimal("3.63"),
+                "stop_loss": Decimal("4.14"),
+                "client_oid": f"source-management-{update.id.hex}-sl",
+            },
+        ),
+    ]
+
+
+def test_stop_move_never_widens_the_venue_stop() -> None:
+    update = _stop_move_update("4.05")
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+    gateway.positions = [_long_position()]
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "failed"
+    )
+
+    assert store.get(update.id).state == "failed"
+    assert store.last_errors[update.id] == "management-stop-widening-refused"
+    assert gateway.calls == [("get_positions", "SNXXUSDT")]
+
+
+def test_stop_move_refuses_a_target_the_mark_already_breached() -> None:
+    update = _stop_move_update("4.2")
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+    gateway.positions = [_long_position(mark="4.19")]
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "failed"
+    )
+
+    assert store.last_errors[update.id] == "management-stop-already-breached"
+    assert gateway.calls == [("get_positions", "SNXXUSDT")]
+
+
+def test_stop_move_is_a_noop_when_the_venue_already_holds_the_target() -> None:
+    update = _stop_move_update("4.072")
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+    gateway.positions = [_long_position()]
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "reconciled"
+    )
+
+    assert store.get(update.id).state == "reconciled"
+    assert gateway.calls == [("get_positions", "SNXXUSDT")]
+
+
+def test_stop_move_requires_a_provable_baseline_stop() -> None:
+    update = _stop_move_update("4.14")
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+    position = _long_position()
+    position.pop("stop_loss")
+    gateway.positions = [position]
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "failed"
+    )
+
+    assert store.last_errors[update.id] == "management-stop-baseline-unavailable"
+    assert gateway.calls == [("get_positions", "SNXXUSDT")]
+
+
+def test_sl_move_on_flat_symbol_is_cancelled_not_failed() -> None:
+    update = _stop_move_update("4.14")
+    store = InMemorySourceManagementStore([update])
+    gateway = RemainderGateway()
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "cancelled-flat"
+    )
+
+    assert store.get(update.id).state == "cancelled-flat"
+    assert gateway.calls == [("get_positions", "SNXXUSDT")]

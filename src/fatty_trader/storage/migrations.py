@@ -542,6 +542,24 @@ MIGRATIONS: Final = [
             ON dispatch_transitions (created_at DESC);
         """,
     ),
+    (
+        39,
+        """
+        -- Source management mirrors explicit stop moves ("sl moved to 4.14").
+        -- The price is pinned by the source instruction; execution still refuses
+        -- any move that would widen the venue stop (tighten-only invariant).
+        ALTER TABLE source_management_updates
+            ADD COLUMN IF NOT EXISTS target_price NUMERIC;
+        ALTER TABLE source_management_updates
+            DROP CONSTRAINT IF EXISTS source_management_updates_action_check;
+        ALTER TABLE source_management_updates
+            ADD CONSTRAINT source_management_updates_action_check
+            CHECK (action IN ('TP1_BOOKED','TP_BOOKED','SL_TO_ENTRY','SL_MOVE','CLOSE'));
+        ALTER TABLE source_management_updates
+            ADD CONSTRAINT source_management_updates_target_price_check
+            CHECK (action <> 'SL_MOVE' OR (target_price IS NOT NULL AND target_price > 0));
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

@@ -62,7 +62,24 @@ intended values, so a single "disabled" claim is wrong:
 | Service | Value | What it gates |
 |---|---|---|
 | `operator-bot` | `0` (`.env`) | Manual `/open`, `/close`, protection commands from Telegram. Closed. |
-| `source-management` | `1` (hard-coded in `docker-compose.yml`) | Automatic copy-trade management from source messages: TP1 booked (reduce-only 50% then SL to entry) and source CLOSE. Intentionally open. |
+| `source-management` | `1` (hard-coded in `docker-compose.yml`) | Automatic copy-trade management from source messages: TP1 booked (reduce-only 50% then SL to entry), explicit stop moves, stop-to-entry, and source CLOSE. Intentionally open. |
+
+### Source-management actions
+
+| Action | Mutation | Guard |
+|---|---|---|
+| `TP1_BOOKED` | reduce-only half close, then native SL to entry | fresh position read, exact size, native readback |
+| `TP_BOOKED` | cancel owned pending entries only | no position mutation |
+| `SL_TO_ENTRY` | native SL to the position entry | single owner, native readback |
+| `SL_MOVE` | native SL to the price pinned by the source message | **tighten-only**: a target that would widen the current venue stop, sit beyond the mark, or lack a provable baseline stop is refused before any POST |
+| `CLOSE` | reduce-only full close | fresh position read, fill-evidence readback |
+
+Stop instructions (`SL_MOVE`, `SL_TO_ENTRY`) use a separate 24-hour bound instead of
+the close/booking window: the target price is absolute, so a late delivery is still
+risk-reducing, and the tighten-only guard is what makes it safe. Close/booking
+instructions keep `BITGET_MANAGEMENT_MAX_SOURCE_AGE_SECONDS` (default `1800`). Every
+terminal outcome carries its reason code in `last_error` and one operator card in the
+outbox.
 
 Anyone auditing "are mutations closed?" must check the service, not just `.env`.
 

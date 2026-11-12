@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import closing
+from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
 from fatty_trader.analyzer.trade_management import ManagementAction
 from fatty_trader.execution.source_management import SourceManagementUpdate
-from fatty_trader.intake.freshness import MANAGEMENT_ELIGIBLE_SQL
+from fatty_trader.intake.freshness import MANAGEMENT_ELIGIBLE_SQL, MANAGEMENT_INTEGRITY_SQL
+
+_STOP_ACTIONS = frozenset({"SL_MOVE", "SL_TO_ENTRY"})
 
 
 def _dead_letter_payload(update_id: UUID, attempts: int, error: str) -> str:
@@ -38,7 +41,8 @@ def _outcome_payload(update: SourceManagementUpdate, state: str, error: str | No
     stop, or refused the request, without reading the database.
     """
     action = getattr(update.action, "value", update.action)
-    message = f"{update.symbol} {action} → {state}"
+    target = f" @ {update.target_price}" if update.target_price is not None else ""
+    message = f"{update.symbol} {action}{target} → {state}"
     if error:
         message = f"{message} ({error[:160]})"
     return json.dumps(
@@ -47,6 +51,7 @@ def _outcome_payload(update: SourceManagementUpdate, state: str, error: str | No
             "update_id": str(update.id),
             "symbol": update.symbol,
             "action": str(action),
+            "target_price": str(update.target_price) if update.target_price is not None else None,
             "state": state,
             "error": (error or "")[:200],
             "message": message,
@@ -99,7 +104,8 @@ class PostgresSourceManagementStore:
                 UPDATE source_management_updates u SET state = 'claimed', claimed_by = %s,
                   claimed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                 FROM candidate WHERE u.id = candidate.id
-                RETURNING u.id, u.source_message_id, u.revision, u.symbol, u.action, u.state
+                RETURNING u.id, u.source_message_id, u.revision, u.symbol, u.action, u.state,
+                          u.target_price
                 """,
                 (worker_id,),
             )
@@ -110,7 +116,7 @@ class PostgresSourceManagementStore:
     def get(self, update_id: UUID) -> SourceManagementUpdate:
         with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
             cursor.execute(
-                """SELECT id, source_message_id, revision, symbol, action, state
+                """SELECT id, source_message_id, revision, symbol, action, state, target_price
                    FROM source_management_updates WHERE id = %s""",
                 (update_id,),
             )
@@ -229,9 +235,12 @@ class PostgresSourceManagementStore:
                 + MANAGEMENT_ELIGIBLE_SQL.format(
                     alias="tm", max_age_seconds=int(self._max_source_age_seconds)
                 )
-                + "),false) AS eligible, tm.intake_state, tm.entry_rejection_reason, "
+                + "),false) AS eligible, COALESCE(("
+                + MANAGEMENT_INTEGRITY_SQL.format(alias="tm")
+                + "),false) AS integrity_ok, tm.intake_state, tm.entry_rejection_reason, "
                 "(tm.revision_hash <> u.revision) AS revision_changed, "
-                "(tm.received_at < clock_timestamp() - (%s * interval '1 second')) AS too_old "
+                "(tm.received_at < clock_timestamp() - (%s * interval '1 second')) AS too_old, "
+                "u.action "
                 "FROM source_management_updates u "
                 "JOIN telegram_messages tm ON tm.id=u.source_message_id "
                 "WHERE u.id=%s FOR UPDATE OF u",
@@ -242,8 +251,15 @@ class PostgresSourceManagementStore:
             if row is None:
                 return "management-update-missing"
             values = list(row.values()) if isinstance(row, dict) else list(row)
-            eligible, intake_state, rejection, revision_changed, too_old = values
+            eligible, integrity_ok, intake_state, rejection, revision_changed, too_old, action = (
+                values
+            )
             if eligible:
+                return None
+            # A stop price is absolute and execution refuses widening, so a stop
+            # instruction gets its own 24-hour source window; only revision
+            # identity and source integrity can disqualify it inside that window.
+            if str(action) in _STOP_ACTIONS and integrity_ok and not revision_changed:
                 return None
             if revision_changed:
                 return "management-source-revision-superseded"
@@ -277,4 +293,5 @@ class PostgresSourceManagementStore:
             symbol=str(values[3]),
             action=ManagementAction(str(values[4])),
             state=str(values[5]),
+            target_price=Decimal(str(values[6])) if values[6] is not None else None,
         )

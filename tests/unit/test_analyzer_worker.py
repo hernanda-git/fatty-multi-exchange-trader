@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, cast
 from uuid import uuid4
 
@@ -347,7 +348,7 @@ def test_management_message_enrolls_with_a_deadline_and_no_signal() -> None:
     statement, params = enrollments[0]
     assert "deadline_at" in statement
     values = cast(tuple[Any, ...], params)
-    assert values[3:6] == ("WLDUSDT", "TP1_BOOKED", 30)
+    assert values[3:7] == ("WLDUSDT", "TP1_BOOKED", None, 30)
     notifications = [
         params
         for statement, params in cursor.executed
@@ -364,6 +365,37 @@ def test_management_message_enrolls_with_a_deadline_and_no_signal() -> None:
         if "intake_state = %s" in statement
     ]
     assert states == ["ANALYZED"]
+
+
+def test_stop_move_message_enrolls_with_the_pinned_price() -> None:
+    cursor = Cursor()
+    cursor.rows = [
+        (
+            uuid4(),
+            7,
+            16493,
+            "c" * 64,
+            "sl moved to 4.14 on $SNXX | Current risk 0.5R at sl",
+            datetime.now(UTC),
+        )
+    ]
+    connection = Connection(cursor)
+
+    processed = process_received_batch(
+        lambda: connection,
+        runner=lambda _: CodexRunResult(False, True, False, 1, "unavailable", "", ""),
+        channel_ids=(7,),
+    )
+
+    assert processed == 1
+    enrollments = [
+        params
+        for statement, params in cursor.executed
+        if "INSERT INTO source_management_updates" in statement
+    ]
+    assert len(enrollments) == 1
+    values = cast(tuple[Any, ...], enrollments[0])
+    assert values[3:7] == ("SNXXUSDT", "SL_MOVE", Decimal("4.14"), 30)
 
 
 class FailingManagementCursor(Cursor):
