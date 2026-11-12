@@ -17,7 +17,7 @@ from fatty_trader.analyzer.image_analysis import (
 )
 from fatty_trader.analyzer.integration import AnalysisResult, AnalysisStatus, analyze_with_fallback
 from fatty_trader.analyzer.source_guard import entry_stands_down
-from fatty_trader.analyzer.trade_management import parse_source_management
+from fatty_trader.analyzer.trade_management import SourceManagement, parse_source_management
 from fatty_trader.intake.freshness import ANALYSIS_ELIGIBLE_SQL, SOURCE_ELIGIBLE_SQL
 from fatty_trader.intake.persistence import RawTelegramMessage
 
@@ -81,6 +81,27 @@ def _open_symbols(cursor: Any) -> list[str]:
     """Symbols whose newest dispatch still holds a filled position."""
     cursor.execute(_OPEN_SYMBOLS)
     return [str(row[0]) for row in cursor.fetchall()]
+
+
+def _management_for_message(
+    text: str,
+    *,
+    signal_present: bool,
+    source_veto: bool,
+    image_result: dict[str, Any] | None,
+) -> SourceManagement | None:
+    """Return the management instruction for a non-signal message.
+
+    An entry announcement is a signal, not a management instruction. Without
+    this gate, a caption such as "longed $TIA here | Sl at 0.3902" enrolls a
+    redundant SL_MOVE for the stop the entry already carries.
+    """
+    if source_veto or signal_present:
+        return None
+    management = parse_source_management(text)
+    if management is None and image_result is not None and not text.strip():
+        management = management_from_image_json(image_result)
+    return management
 
 
 def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management: Any) -> list[str]:
@@ -344,13 +365,15 @@ def process_received_batch(
                     source_veto = entry_stands_down(message.raw_text)
                     if source_veto:
                         result = AnalysisResult(result.status, None, "source caption stands down")
-                    management = None if source_veto else parse_source_management(message.raw_text)
-                    if (
-                        management is None
-                        and image_result is not None
-                        and not message.raw_text.strip()
-                    ):
-                        management = management_from_image_json(image_result)
+                    # An entry message is a signal, not a management instruction.
+                    # The channel's "longed $TIA here | Sl at 0.3902" form would
+                    # otherwise enroll a redundant SL_MOVE for the same message.
+                    management = _management_for_message(
+                        message.raw_text,
+                        signal_present=result.signal is not None,
+                        source_veto=source_veto,
+                        image_result=image_result,
+                    )
                     if management is not None:
                         symbols = _enroll_management(cursor, message_uuid, revision, management)
                         print(
