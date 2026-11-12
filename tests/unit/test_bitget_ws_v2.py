@@ -279,13 +279,22 @@ async def test_quiet_zero_symbol_session_keeps_heartbeat_without_reconnect():
         symbols=[],
         transport=transport,
         clock=asyncio.get_running_loop().time,
-        heartbeat_interval=0.02,
-        private_silent_after=0.06,
+        heartbeat_interval=0.2,
+        private_silent_after=0.6,
     )
     stop = asyncio.Event()
     task = asyncio.create_task(socket.run(_noop, stop))
     try:
-        await asyncio.sleep(0.15)
+        # The socket treats a 2x heartbeat gap as a dead transport. A 20 ms
+        # heartbeat makes that deadline 40 ms, which Windows scheduling cannot
+        # reliably honour, so the test flaked on load. Keep the same behaviour
+        # with a deadline that survives scheduler jitter.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while transport.public.sent.count("ping") < 3 or transport.private.sent.count("ping") < 3:
+            if loop.time() > deadline:
+                break
+            await asyncio.sleep(0.01)
         assert transport.public.sent.count("ping") >= 3
         assert transport.private.sent.count("ping") >= 3
         assert transport.urls == [V2_PUBLIC_URL, V2_PRIVATE_URL]
