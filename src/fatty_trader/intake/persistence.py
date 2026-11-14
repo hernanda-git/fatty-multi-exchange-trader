@@ -76,29 +76,23 @@ class InMemoryRawMessageRepository:
         if existing is None:
             reason = message.entry_rejection_reason
             if reason is None and siblings:
-                vetoed = any(
-                    sibling.entry_rejection_reason == "edited-source-message"
-                    for sibling in siblings
+                current = next(
+                    (s for s in siblings if s.entry_rejection_reason is None), None
                 )
-                same_text = any(
-                    _is_same_signal_or_cosmetic(sibling.raw_text, message.raw_text)
-                    for sibling in siblings
-                )
+                reference = current or max(siblings, key=lambda s: s.received_at)
                 reason = (
-                    "edited-source-message"
-                    if vetoed or not same_text
-                    else "superseded-source-revision"
+                    "superseded-source-revision"
+                    if _is_same_signal_or_cosmetic(reference.raw_text, message.raw_text)
+                    else None
                 )
-            # A revision whose signal text differs revokes every revision of the
-            # message; same-text revisions stay audit-only.
-            if reason == "edited-source-message":
+            # The latest text-changing revision is the signal; every older
+            # revision is audit-only. Same-text re-publications never supersede
+            # the retained eligible revision.
+            if reason is None:
                 for sibling_key, sibling in list(self._messages.items()):
-                    if (
-                        sibling_key[:2] == key[:2]
-                        and not _is_same_signal_or_cosmetic(sibling.raw_text, message.raw_text)
-                    ):
+                    if sibling_key[:2] == key[:2]:
                         self._messages[sibling_key] = replace(
-                            sibling, entry_rejection_reason="edited-source-message"
+                            sibling, entry_rejection_reason="superseded-source-revision"
                         )
             existing = replace(message, entry_rejection_reason=reason)
             self._messages[key] = existing
@@ -141,36 +135,22 @@ class PostgresRawMessageRepository:
         self._connection_factory = connection_factory
 
     @staticmethod
-    def _revoke_edited_source(cursor: Any, message: RawTelegramMessage) -> None:
-        """Revoke the message entry only when the signal text actually changed.
+    def _supersede_earlier_revisions(cursor: Any, message: RawTelegramMessage) -> None:
+        """Make the latest text-changing revision the only eligible revision.
 
         The publisher edits every post (chart attachment/formatting), so an
-        `edit_date` alone is provenance, not a veto. Same-text revisions are
-        audited as `superseded-source-revision` and can never become a second
-        ENTER revision, while a revision whose text differs from an already
-        retained one revokes every revision of that message. Do not alter
-        dispatch/provider truth here; admission gates retire only known-unsent
-        entries through the shared predicate.
+        `edit_date` alone is provenance. A revision whose text differs from the
+        current eligible revision becomes the new signal and every older
+        revision becomes audit-only. Same-text re-publications are classified
+        as `superseded-source-revision` by `_classify_revision` and never call
+        this method, so they cannot create a duplicate management action.
         """
         cursor.execute(
-            """SELECT id, raw_text FROM telegram_messages
-               WHERE channel_id=%s AND message_id=%s""",
-            (message.channel_id, message.message_id),
+            """UPDATE telegram_messages
+            SET entry_rejection_reason='superseded-source-revision'
+            WHERE channel_id=%s AND message_id=%s AND revision_hash<>%s""",
+            (message.channel_id, message.message_id, message.revision_hash),
         )
-        rows = cursor.fetchall()
-        for r in rows:
-            old_id = r["id"] if isinstance(r, dict) else r[0]
-            old_text = r["raw_text"] if isinstance(r, dict) else r[1]
-            if not _is_same_signal_or_cosmetic(old_text, message.raw_text):
-                cursor.execute(
-                    """UPDATE telegram_messages tm
-                    SET entry_rejection_reason='edited-source-message',
-                        edit_veto_recorded_at=CASE
-                            WHEN tm.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
-                            THEN clock_timestamp() ELSE tm.edit_veto_recorded_at END
-                    WHERE id=%s""",
-                    (old_id,),
-                )
 
     @staticmethod
     def _classify_revision(cursor: Any, message: RawTelegramMessage) -> str | None:
@@ -185,27 +165,21 @@ class PostgresRawMessageRepository:
             return message.entry_rejection_reason
         cursor.execute(
             """SELECT raw_text, entry_rejection_reason
-               FROM telegram_messages WHERE channel_id=%s AND message_id=%s""",
+               FROM telegram_messages WHERE channel_id=%s AND message_id=%s
+               ORDER BY (entry_rejection_reason IS NULL) DESC,
+                        received_at DESC, id DESC""",
             (message.channel_id, message.message_id),
         )
         rows = cursor.fetchall()
         if not rows:
             return None
-        vetoed = any(
-            (r["entry_rejection_reason"] if isinstance(r, dict) else r[1])
-            == "edited-source-message"
-            for r in rows
+        reference = rows[0]
+        reference_text = (
+            reference["raw_text"] if isinstance(reference, dict) else reference[0]
         )
-        same_text = any(
-            _is_same_signal_or_cosmetic(
-                r["raw_text"] if isinstance(r, dict) else r[0],
-                message.raw_text,
-            )
-            for r in rows
-        )
-        if vetoed:
-            return "edited-source-message"
-        return "superseded-source-revision" if same_text else "edited-source-message"
+        if _is_same_signal_or_cosmetic(reference_text, message.raw_text):
+            return "superseded-source-revision"
+        return None
 
     @staticmethod
     def _heal_media(cursor: Any, message: RawTelegramMessage) -> None:
@@ -280,7 +254,8 @@ class PostgresRawMessageRepository:
                     ),
                 )
                 self._heal_media(cursor, message)
-                self._revoke_edited_source(cursor, message)
+                if reason is None:
+                    self._supersede_earlier_revisions(cursor, message)
             connection.commit()
         return replace(message, entry_rejection_reason=reason)
 
@@ -326,7 +301,8 @@ class PostgresRawMessageRepository:
                 row = cursor.fetchone()
                 if row is None:
                     self._heal_media(cursor, message)
-                self._revoke_edited_source(cursor, message)
+                if reason is None:
+                    self._supersede_earlier_revisions(cursor, message)
             connection.commit()
         return row is not None
 

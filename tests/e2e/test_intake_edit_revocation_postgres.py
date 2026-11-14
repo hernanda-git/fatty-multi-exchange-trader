@@ -30,7 +30,7 @@ def edit(factory, *, reverted=False, media=False, forward=False):
     raw = intake._build_message(channel_id=CHANNEL, message=item)
     repo = PostgresRawMessageRepository(factory)
     (repo.save_and_enqueue_forward if forward else repo.save_if_new)(raw)
-    # A text-changing re-publication vetoes every revision of that message.
+    # The latest text-changing revision is the signal; older revisions are audit-only.
     with factory() as connection:
         reasons = [
             row[0]
@@ -40,9 +40,9 @@ def edit(factory, *, reverted=False, media=False, forward=False):
                 (CHANNEL, 101),
             ).fetchall()
         ]
-    # A text-changing re-publication vetoes every revision of that message,
-    # including a later re-publication of the original text.
-    assert reasons and set(reasons) == {"edited-source-message"}
+    assert "edited-source-message" not in reasons
+    assert reasons.count(None) == 1
+    assert all(reason is None or reason == "superseded-source-revision" for reason in reasons)
 
 
 @pytest.mark.parametrize("boundary", ["analyzer", "claim", "reserve", "final"])
@@ -77,7 +77,10 @@ def test_edit_revokes_original_at_every_source_boundary(
         process_received_batch(factory, runner=runner, exchanges=("bitget",))
         assert model_calls == []
         with factory() as c:
-            assert c.execute("SELECT count(*) FROM dispatches").fetchone() == (0,)
+            # A reverted text becomes the latest eligible revision and can fan out
+            # again; a "cancel entry" revision produces no dispatch.
+            expected = 1 if reverted else 0
+            assert c.execute("SELECT count(*) FROM dispatches").fetchone() == (expected,)
     elif boundary == "claim":
         assert repo.claim("offline", 30) is None
     elif boundary == "reserve":

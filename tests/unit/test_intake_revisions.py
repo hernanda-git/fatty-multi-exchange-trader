@@ -42,7 +42,7 @@ async def test_actual_edit_event_is_registered_and_retained(forwarder):
     assert revisions[0].entry_expires_at == revisions[1].entry_expires_at
 
 
-def test_edited_caption_revokes_every_revision_of_the_message():
+def test_edited_caption_supersedes_the_earlier_revision():
     repository = InMemoryRawMessageRepository()
     adapter = TelegramIntake(repository)
     adapter.ingest(channel_id=7, message=message(media=None))
@@ -55,7 +55,34 @@ def test_edited_caption_revokes_every_revision_of_the_message():
     )
     adapter.ingest(channel_id=7, message=changed)
     reasons = [item.entry_rejection_reason for item in repository._messages.values()]
-    assert reasons == ["edited-source-message", "edited-source-message"]
+    # The latest text-changing revision is the signal; the older one is audit-only.
+    assert reasons == ["superseded-source-revision", None]
+
+
+def test_edited_management_instruction_keeps_the_latest_revision_eligible():
+    repository = InMemoryRawMessageRepository()
+    adapter = TelegramIntake(repository)
+    first = SimpleNamespace(
+        id=42, message="$POPCAT tp1 booked", date=datetime.now(UTC), media=None
+    )
+    adapter.ingest(channel_id=7, message=first)
+    changed = SimpleNamespace(
+        id=42,
+        message="$POPCAT tp2 booked",
+        date=datetime.now(UTC),
+        media=None,
+        edit_date=datetime.now(UTC),
+    )
+    adapter.ingest(channel_id=7, message=changed)
+    revisions = list(repository._messages.values())
+    eligible = [item for item in revisions if item.entry_rejection_reason is None]
+    assert len(eligible) == 1
+    assert eligible[0].raw_text == "$POPCAT tp2 booked"
+    assert all(
+        item.entry_rejection_reason == "superseded-source-revision"
+        for item in revisions
+        if item is not eligible[0]
+    )
 
 
 def test_cosmetic_typo_edit_preserves_entry_eligibility():

@@ -64,6 +64,15 @@ intended values, so a single "disabled" claim is wrong:
 | `operator-bot` | `0` (`.env`) | Manual `/open`, `/close`, protection commands from Telegram. Closed. |
 | `source-management` | `1` (hard-coded in `docker-compose.yml`) | Automatic copy-trade management from source messages: TP1 booked (reduce-only 50% then SL to entry), explicit stop moves, stop-to-entry, and source CLOSE. Intentionally open. |
 
+### Source edits
+
+The source edits its own posts. The **latest text-changing revision is the signal**:
+older revisions are stored as `superseded-source-revision` and can never execute.
+A same-text re-publication (chart/formatting only) is audit-only and does not
+supersede the retained revision, so a formatting edit cannot duplicate a
+management action. Legacy `edited-source-message` rows remain inert; the policy
+applies to revisions ingested after this change.
+
 ### Source-management actions
 
 | Action | Mutation | Guard |

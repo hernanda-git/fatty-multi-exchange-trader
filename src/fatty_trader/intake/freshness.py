@@ -105,16 +105,8 @@ SOURCE_ELIGIBLE_SQL = """(
     AND isfinite({alias}.received_at)
     AND isfinite({alias}.entry_expires_at)
     AND {alias}.entry_rejection_reason IS NULL
-    -- A revision whose signal text differs from a retained revision is a
-    -- message-level veto, including reverted content and later retrieval of the old
-    -- revision. Same-text re-publications (the publisher edits every post to attach
-    -- its chart) are audited as superseded-source-revision and never revoke the entry.
-    AND NOT EXISTS (
-        SELECT 1 FROM telegram_messages source_edit
-        WHERE source_edit.channel_id = {alias}.channel_id
-          AND source_edit.message_id = {alias}.message_id
-          AND source_edit.entry_rejection_reason = 'edited-source-message'
-    )
+    -- The latest text-changing revision is the signal; older revisions are
+    -- superseded-source-revision and are excluded by the NULL check above.
     AND {alias}.entry_expires_at > clock_timestamp()
     AND {alias}.received_at > clock_timestamp() - interval '5 minutes'
     AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
@@ -150,12 +142,7 @@ ANALYSIS_ELIGIBLE_SQL = (
     + """ minutes'
     AND {alias}.received_at <= clock_timestamp() + interval '30 seconds'
     AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
-    AND NOT EXISTS (
-        SELECT 1 FROM telegram_messages source_edit
-        WHERE source_edit.channel_id = {alias}.channel_id
-          AND source_edit.message_id = {alias}.message_id
-          AND source_edit.entry_rejection_reason = 'edited-source-message'
-    )
+    AND {alias}.entry_rejection_reason IS DISTINCT FROM 'superseded-source-revision'
 )"""
 )
 
@@ -169,12 +156,6 @@ MANAGEMENT_ELIGIBLE_SQL = """(
     AND {alias}.intake_state = 'ANALYZED'
     AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
     AND {alias}.entry_rejection_reason IS DISTINCT FROM 'superseded-source-revision'
-    AND NOT EXISTS (
-        SELECT 1 FROM telegram_messages source_edit
-        WHERE source_edit.channel_id = {alias}.channel_id
-          AND source_edit.message_id = {alias}.message_id
-          AND source_edit.entry_rejection_reason = 'edited-source-message'
-    )
 )"""
 
 #: Revision/integrity checks without the close/booking age window. Stop instructions
@@ -189,10 +170,4 @@ MANAGEMENT_INTEGRITY_SQL = """(
     AND {alias}.intake_state = 'ANALYZED'
     AND {alias}.entry_rejection_reason IS DISTINCT FROM 'edited-source-message'
     AND {alias}.entry_rejection_reason IS DISTINCT FROM 'superseded-source-revision'
-    AND NOT EXISTS (
-        SELECT 1 FROM telegram_messages source_edit
-        WHERE source_edit.channel_id = {alias}.channel_id
-          AND source_edit.message_id = {alias}.message_id
-          AND source_edit.entry_rejection_reason = 'edited-source-message'
-    )
 )"""
