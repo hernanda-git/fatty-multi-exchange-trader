@@ -79,12 +79,14 @@ class InMemoryRawMessageRepository:
                 current = next(
                     (s for s in siblings if s.entry_rejection_reason is None), None
                 )
-                reference = current or max(siblings, key=lambda s: s.received_at)
-                reason = (
-                    "superseded-source-revision"
-                    if _is_same_signal_or_cosmetic(reference.raw_text, message.raw_text)
-                    else None
-                )
+                if current is not None:
+                    reason = (
+                        "superseded-source-revision"
+                        if _is_same_signal_or_cosmetic(current.raw_text, message.raw_text)
+                        else None
+                    )
+                # No eligible revision (legacy edited or all superseded): the new
+                # publication is the signal, even when its text matches an old row.
             # The latest text-changing revision is the signal; every older
             # revision is audit-only. Same-text re-publications never supersede
             # the retained eligible revision.
@@ -174,6 +176,14 @@ class PostgresRawMessageRepository:
         if not rows:
             return None
         reference = rows[0]
+        reference_rejection = (
+            reference["entry_rejection_reason"]
+            if isinstance(reference, dict)
+            else reference[1]
+        )
+        if reference_rejection is not None:
+            # No eligible revision: this publication becomes the signal.
+            return None
         reference_text = (
             reference["raw_text"] if isinstance(reference, dict) else reference[0]
         )

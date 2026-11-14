@@ -5,7 +5,7 @@ import pytest
 from telethon import events
 
 from fatty_trader.config.telegram import TelegramSettings
-from fatty_trader.intake.persistence import InMemoryRawMessageRepository
+from fatty_trader.intake.persistence import InMemoryRawMessageRepository, RawTelegramMessage
 from fatty_trader.intake.telegram import TelegramForwarder, TelegramIntake
 
 
@@ -124,3 +124,27 @@ def test_same_caption_media_replacement_has_distinct_revision_identity():
     assert first.revision_hash != second.revision_hash
     assert second.revision_hash == duplicate.revision_hash
     assert repository.count == 2
+
+
+def test_republication_becomes_eligible_when_no_eligible_revision_exists():
+    repository = InMemoryRawMessageRepository()
+    legacy = RawTelegramMessage(
+        channel_id=7,
+        message_id=42,
+        revision_hash="legacy-hash",
+        raw_text="$POPCAT tp2 booked",
+        received_at=datetime.now(UTC),
+        entry_rejection_reason="edited-source-message",
+    )
+    repository._messages[(7, 42, "legacy-hash")] = legacy
+    adapter = TelegramIntake(repository)
+    adapter.ingest(channel_id=7, message=message(media=None))
+    revisions = list(repository._messages.values())
+    eligible = [item for item in revisions if item.entry_rejection_reason is None]
+    assert len(eligible) == 1
+    assert eligible[0].raw_text == "same caption"
+    assert all(
+        item.entry_rejection_reason == "superseded-source-revision"
+        for item in revisions
+        if item is not eligible[0]
+    )
