@@ -475,10 +475,7 @@ def process_received_batch(
                                         ",".join(m.action.value for m in managements) or None
                                     ),
                                     "management_symbol": (
-                                        ",".join(
-                                            m.symbol or "*" for m in managements
-                                        )
-                                        or None
+                                        ",".join(m.symbol or "*" for m in managements) or None
                                     ),
                                     "pair": result.signal.pair_token if result.signal else "none",
                                     "direction": result.signal.direction.value
