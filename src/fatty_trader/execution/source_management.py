@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from fatty_trader.analyzer.trade_management import ManagementAction
+from fatty_trader.analyzer.trade_management import ManagementAction, is_symbol_less_booking_text
 
 
 def _position_decimal(value: Any) -> Decimal | None:
@@ -19,6 +19,23 @@ def _position_decimal(value: Any) -> Decimal | None:
     except (InvalidOperation, TypeError, ValueError):
         return None
     return result if result.is_finite() else None
+
+
+def _position_in_profit(position: dict[str, Any]) -> bool:
+    """True only when the venue reports this position as currently in profit.
+
+    Used solely for a symbol-less booking, which reaches every open position by
+    owner policy. A symbol-named instruction is never gated on this: the source
+    may have acted earlier and the mark can have dipped since.
+    """
+    reported = _position_decimal(position.get("unrealized_pl"))
+    if reported is not None:
+        return reported > 0
+    entry = _position_decimal(position.get("entry"))
+    mark = _position_decimal(position.get("mark"))
+    if entry is None or mark is None or entry <= 0:
+        return False
+    return mark > entry if position.get("side") == "LONG" else mark < entry
 
 
 @dataclass(frozen=True)
@@ -46,6 +63,7 @@ class SourceManagementUpdate:
 class SourceManagementStore(Protocol):
     def claim(self, worker_id: str) -> SourceManagementUpdate | None: ...
     def get(self, update_id: UUID) -> SourceManagementUpdate: ...
+    def source_text(self, message_id: UUID) -> str | None: ...
     def update_state(self, update_id: UUID, state: str, last_error: str | None = None) -> None: ...
     def alert_outcome(
         self, update: SourceManagementUpdate, state: str, error: str | None = None
@@ -97,6 +115,10 @@ class InMemorySourceManagementStore:
         self.last_errors: dict[UUID, str | None] = {}
         self.claimed_cancellations: set[UUID] = set()
         self.outcomes: list[tuple[str, str]] = []
+        self.source_texts: dict[UUID, str] = {}
+
+    def source_text(self, message_id: UUID) -> str | None:
+        return self.source_texts.get(message_id)
 
     def claim(self, worker_id: str) -> SourceManagementUpdate | None:
         if not worker_id:
@@ -243,6 +265,17 @@ class SourceManagementExecutor:
                         "stale cancellation claim still requires terminal readback"
                     )
                 raise ValueError(ineligibility)
+            if update.action is ManagementAction.TP1_BOOKED and self._is_symbol_less_booking(
+                update
+            ):
+                # Owner policy: a booking with no symbol reaches every open
+                # position, but books only the ones already in profit. The read
+                # happens before any cancellation so a non-applicable instruction
+                # never touches the symbol at all.
+                early = self._gateway.get_positions(update.symbol)
+                if len(early) == 1 and not _position_in_profit(early[0]):
+                    self._finish(update, "failed", "not-in-profit")
+                    return "failed"
             cancels_entries = update.action in {
                 ManagementAction.CLOSE,
                 ManagementAction.TP1_BOOKED,
@@ -439,6 +472,23 @@ class SourceManagementExecutor:
             raise ValueError(reason)
         if not self._store.management_is_eligible(update.id):
             raise ValueError("source management revision is no longer eligible")
+
+    def _is_symbol_less_booking(self, update: SourceManagementUpdate) -> bool:
+        """True when the instruction that produced this update named no symbol.
+
+        Re-derived from the stored source revision rather than a new column, so
+        the guard needs no schema change. An unreadable revision is treated as
+        symbol-named (no extra gate), keeping the explicit path byte-for-byte
+        unchanged.
+        """
+        reader = getattr(self._store, "source_text", None)
+        if not callable(reader):
+            return False
+        try:
+            text = reader(update.source_message_id)
+        except Exception:
+            return False
+        return is_symbol_less_booking_text(text or "")
 
     def _one_position(
         self, symbol: str, positions: list[dict[str, Any]] | None = None

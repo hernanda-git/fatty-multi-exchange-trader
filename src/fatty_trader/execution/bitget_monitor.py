@@ -64,6 +64,10 @@ _TRANSIENT_KILL_SWITCH_REASONS = frozenset(
         "provider-fills-read-failed",
         "provider-orders-read-failed",
         "provider-positions-read-failed",
+        # The aggregate snapshot says the position is open and the per-symbol read
+        # says it is not. That is a disagreement between two reads, not a malformed
+        # payload, so it earns strikes and self-clears instead of latching.
+        "position-read-contradiction",
         "verified-close-evidence-unavailable",
     }
 )
@@ -600,6 +604,36 @@ class BitgetMonitor:
                 symbol=symbol,
                 expected_quantity=quantity,
             )
+            if (
+                report.state is not ProtectionState.VENUE_PROTECTED
+                and report.reason == "position-not-open"
+            ):
+                # The aggregate snapshot and the single-symbol read disagreed. A stop
+                # can fill between the two reads, so re-read the account before
+                # treating this as a divergence (LIVE 2026-11-17 09:19: a SNDK
+                # stop-out latched the entry lane with `position-not-open`).
+                refreshed = await self._client.get_all_positions()
+                still_open = isinstance(refreshed, list) and any(
+                    isinstance(row, dict)
+                    and str(row.get("symbol", "")).strip().upper() == symbol.strip().upper()
+                    and (_open_quantity(row) or Decimal("0")) > 0
+                    for row in refreshed
+                )
+                if still_open:
+                    # Two aggregate reads contradict the per-symbol read.
+                    reasons.append("position-read-contradiction")
+                elif await _run_sync_storage(
+                    self._repository.position_close_proven, self._scope, symbol
+                ):
+                    # Proven exit: nothing left to protect, so nothing to latch.
+                    logging.getLogger(__name__).info(
+                        "symbol=%s protection-check skipped: position closed during check",
+                        symbol,
+                    )
+                else:
+                    # Gone without a proven exit is a real divergence.
+                    reasons.append(f"expected-position-missing:{symbol}")
+                continue
             if report.state is not ProtectionState.VENUE_PROTECTED:
                 reasons.append(report.reason or "native-protection-unconfirmed")
                 await self._alert_unconfirmed_protection(position, quantity, report)

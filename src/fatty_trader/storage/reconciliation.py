@@ -31,6 +31,7 @@ class ReconciliationRepository(Protocol):
     def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]: ...
     def update_intent(self, record: LiveIntentRecord) -> None: ...
     def expected_position_symbols(self, exchange: str) -> set[str]: ...
+    def position_close_proven(self, exchange: str, symbol: str) -> bool: ...
     def kill_switch_active(self, scope: str) -> bool: ...
     def kill_switch_reason(self, scope: str) -> str | None: ...
     def latch_kill_switch(self, scope: str, reason: str) -> None: ...
@@ -64,6 +65,7 @@ class InMemoryReconciliationRepository:
         self.alerts: list[str] = []
         self.alert_payloads: list[dict[str, Any]] = []
         self.reconciliation_state: dict[str, tuple[bool, int]] = {}
+        self.closed_symbols: set[tuple[str, str]] = set()
 
     def unresolved_intents(self, exchange: str) -> list[LiveIntentRecord]:
         return [
@@ -86,6 +88,9 @@ class InMemoryReconciliationRepository:
             for intent in self.intents
             if intent.exchange == exchange and intent.state not in {"rejected", "cancelled"}
         }
+
+    def position_close_proven(self, exchange: str, symbol: str) -> bool:
+        return (exchange, symbol) in self.closed_symbols
 
     def kill_switch_active(self, scope: str) -> bool:
         return scope in self._kill_switches
@@ -173,6 +178,31 @@ class PostgresReconciliationRepository:
             }
         finally:
             connection.close()
+
+    def position_close_proven(self, exchange: str, symbol: str) -> bool:
+        """True when the newest owned entry for this symbol reached a closed dispatch.
+
+        The native-protection read cannot tell "already exited" from "never opened",
+        so a per-symbol read that returns nothing is only benign once the ledger
+        proves the exit. Anything else stays a durable divergence.
+        """
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """SELECT d.state FROM live_order_intents i
+                   JOIN dispatches d ON d.id = i.dispatch_id
+                   WHERE i.exchange = %s AND i.symbol = %s AND i.role = 'ENTRY'
+                   ORDER BY i.created_at DESC LIMIT 1""",
+                (exchange, symbol),
+            )
+            row = cursor.fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return False
+        state = row["state"] if isinstance(row, dict) else row[0]
+        return str(state).upper() == "CLOSED"
 
     def update_intent(self, record: LiveIntentRecord) -> None:
         connection = self._connection_factory()

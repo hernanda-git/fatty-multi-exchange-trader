@@ -542,25 +542,25 @@ def test_named_stop_enrollment_does_not_scan_open_symbols() -> None:
 
 
 def test_entry_signal_never_also_enrolls_management() -> None:
-    from fatty_trader.analyzer.postgres_worker import _management_for_message
+    from fatty_trader.analyzer.postgres_worker import _managements_for_message
 
     text = "long $TIA here\nSl at 0.3902"
 
     assert (
-        _management_for_message(
+        _managements_for_message(
             text, signal_present=True, source_veto=False, image_result=None
         )
-        is None
+        == []
     )
-    management = _management_for_message(
+    managements = _managements_for_message(
         text, signal_present=False, source_veto=False, image_result=None
     )
-    assert management is not None
-    assert management.action.value == "SL_MOVE"
-    assert management.target_price == Decimal("0.3902")
+    assert len(managements) == 1
+    assert managements[0].action.value == "SL_MOVE"
+    assert managements[0].target_price == Decimal("0.3902")
     assert (
-        _management_for_message(
+        _managements_for_message(
             text, signal_present=False, source_veto=True, image_result=None
         )
-        is None
+        == []
     )

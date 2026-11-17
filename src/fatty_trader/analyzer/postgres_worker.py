@@ -17,7 +17,10 @@ from fatty_trader.analyzer.image_analysis import (
 )
 from fatty_trader.analyzer.integration import AnalysisResult, AnalysisStatus, analyze_with_fallback
 from fatty_trader.analyzer.source_guard import entry_stands_down
-from fatty_trader.analyzer.trade_management import SourceManagement, parse_source_management
+from fatty_trader.analyzer.trade_management import (
+    SourceManagement,
+    parse_source_managements,
+)
 from fatty_trader.intake.freshness import ANALYSIS_ELIGIBLE_SQL, SOURCE_ELIGIBLE_SQL
 from fatty_trader.intake.persistence import RawTelegramMessage
 
@@ -83,25 +86,27 @@ def _open_symbols(cursor: Any) -> list[str]:
     return [str(row[0]) for row in cursor.fetchall()]
 
 
-def _management_for_message(
+def _managements_for_message(
     text: str,
     *,
     signal_present: bool,
     source_veto: bool,
     image_result: dict[str, Any] | None,
-) -> SourceManagement | None:
-    """Return the management instruction for a non-signal message.
+) -> list[SourceManagement]:
+    """Return every management instruction in a non-signal message.
 
     An entry announcement is a signal, not a management instruction. Without
     this gate, a caption such as "longed $TIA here | Sl at 0.3902" enrolls a
-    redundant SL_MOVE for the stop the entry already carries.
+    redundant SL_MOVE for the stop the entry already carries. A message that
+    names several symbols yields one instruction per symbol.
     """
     if source_veto or signal_present:
-        return None
-    management = parse_source_management(text)
-    if management is None and image_result is not None and not text.strip():
-        management = management_from_image_json(image_result)
-    return management
+        return []
+    managements = parse_source_managements(text)
+    if not managements and image_result is not None and not text.strip():
+        image_management = management_from_image_json(image_result)
+        return [image_management] if image_management is not None else []
+    return managements
 
 
 def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management: Any) -> list[str]:
@@ -214,18 +219,22 @@ def process_received_batch(
                         )
                         if cursor.fetchone() is None:
                             source_veto = entry_stands_down(message.raw_text)
-                            management = (
-                                None if source_veto else parse_source_management(message.raw_text)
+                            managements = (
+                                [] if source_veto else parse_source_managements(message.raw_text)
                             )
-                            if management is not None:
-                                symbols = _enroll_management(
-                                    cursor, message_uuid, revision, management
-                                )
+                            if managements:
+                                symbols = [
+                                    symbol
+                                    for management in managements
+                                    for symbol in _enroll_management(
+                                        cursor, message_uuid, revision, management
+                                    )
+                                ]
                                 print(
                                     f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                                     f"symbols={','.join(symbols) or 'none'} "
-                                    f"action={management.action.value} "
-                                    f"target={management.target_price}",
+                                    f"actions={','.join(m.action.value for m in managements)} "
+                                    f"targets={[str(m.target_price) for m in managements]}",
                                     flush=True,
                                 )
                                 cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
@@ -335,18 +344,22 @@ def process_received_batch(
                         )
                         if cursor.fetchone() is None:
                             source_veto = entry_stands_down(message.raw_text)
-                            management = (
-                                None if source_veto else parse_source_management(message.raw_text)
+                            managements = (
+                                [] if source_veto else parse_source_managements(message.raw_text)
                             )
-                            if management is not None:
-                                symbols = _enroll_management(
-                                    cursor, message_uuid, revision, management
-                                )
+                            if managements:
+                                symbols = [
+                                    symbol
+                                    for management in managements
+                                    for symbol in _enroll_management(
+                                        cursor, message_uuid, revision, management
+                                    )
+                                ]
                                 print(
                                     f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                                     f"symbols={','.join(symbols) or 'none'} "
-                                    f"action={management.action.value} "
-                                    f"target={management.target_price}",
+                                    f"actions={','.join(m.action.value for m in managements)} "
+                                    f"targets={[str(m.target_price) for m in managements]}",
                                     flush=True,
                                 )
                                 cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
@@ -368,19 +381,25 @@ def process_received_batch(
                     # An entry message is a signal, not a management instruction.
                     # The channel's "longed $TIA here | Sl at 0.3902" form would
                     # otherwise enroll a redundant SL_MOVE for the same message.
-                    management = _management_for_message(
+                    managements = _managements_for_message(
                         message.raw_text,
                         signal_present=result.signal is not None,
                         source_veto=source_veto,
                         image_result=image_result,
                     )
-                    if management is not None:
-                        symbols = _enroll_management(cursor, message_uuid, revision, management)
+                    if managements:
+                        symbols = [
+                            symbol
+                            for management in managements
+                            for symbol in _enroll_management(
+                                cursor, message_uuid, revision, management
+                            )
+                        ]
                         print(
                             f"[ANALYZER] msg_id={message_id} MANAGEMENT "
                             f"symbols={','.join(symbols) or 'none'} "
-                            f"action={management.action.value} "
-                            f"target={management.target_price}",
+                            f"actions={','.join(m.action.value for m in managements)} "
+                            f"targets={[str(m.target_price) for m in managements]}",
                             flush=True,
                         )
                     signal_id = None
@@ -428,7 +447,7 @@ def process_received_batch(
                             f"dispatches={dispatches}",
                             flush=True,
                         )
-                    if management is None and result.signal is None:
+                    if not managements and result.signal is None:
                         preview = message.raw_text.replace("\n", " ")[:60]
                         print(
                             f"[ANALYZER] msg_id={message_id} NO_ACTION text={preview!r}",
@@ -453,9 +472,14 @@ def process_received_batch(
                                     "failure_class": result.failure_class or "none",
                                     "canonical_signal": signal_id is not None,
                                     "management_action": (
-                                        management.action.value if management else None
+                                        ",".join(m.action.value for m in managements) or None
                                     ),
-                                    "management_symbol": management.symbol if management else None,
+                                    "management_symbol": (
+                                        ",".join(
+                                            m.symbol or "*" for m in managements
+                                        )
+                                        or None
+                                    ),
                                     "pair": result.signal.pair_token if result.signal else "none",
                                     "direction": result.signal.direction.value
                                     if result.signal
@@ -493,12 +517,12 @@ def process_received_batch(
                     # state and reason above remain the primary evidence if this retry or
                     # the alert insert cannot be written either.
                     with suppress(Exception):
-                        fallback_management = (
-                            None
+                        fallback_managements = (
+                            []
                             if entry_stands_down(message.raw_text)
-                            else parse_source_management(message.raw_text)
+                            else parse_source_managements(message.raw_text)
                         )
-                        if fallback_management is not None:
+                        for fallback_management in fallback_managements:
                             _enroll_management(cursor, message_uuid, revision, fallback_management)
                     # Never silent: one durable card per failed message revision.
                     with suppress(Exception):

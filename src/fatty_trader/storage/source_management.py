@@ -125,6 +125,18 @@ class PostgresSourceManagementStore:
             raise LookupError(f"unknown management update: {update_id}")
         return self._row(row)
 
+    def source_text(self, message_id: UUID) -> str | None:
+        """Return the retained revision text for a management policy decision."""
+        with closing(self._connection_factory()) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT raw_text FROM telegram_messages WHERE id = %s",
+                (message_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return row[0] if not isinstance(row, dict) else row.get("raw_text")
+
     def park(self, update_id: UUID, *, error: str, retry_seconds: int, max_attempts: int) -> str:
         """Count one attempt against the budget and dead-letter when it is spent.
 

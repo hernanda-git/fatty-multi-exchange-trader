@@ -953,3 +953,73 @@ async def test_transient_read_failure_needs_consecutive_strikes_then_auto_releas
     clean = await monitor.run_once()
     assert clean.status == "ok"
     assert not repository.kill_switch_active("bitget")
+
+
+@pytest.mark.asyncio
+async def test_position_closed_between_reads_does_not_latch_a_proven_exit() -> None:
+    """The LIVE 2026-11-17 09:19 regression: a stop fill latched the entry lane.
+
+    The aggregate snapshot still had SNDK, the per-symbol read did not, and the
+    monitor latched `position-not-open` for an exit it had already executed.
+    """
+
+    class DrainingVenue(ReadOnlyVenue):
+        async def get_all_positions(self) -> list[dict[str, str]]:
+            self.calls.append("get_all_positions")
+            rows = list(self.positions)
+            self.positions = []  # the stop consumed it right after the snapshot
+            return rows
+
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            self.calls.append("get_single_position")
+            return []
+
+    venue = DrainingVenue(positions=[{"symbol": "SNXXUSDT", "total": "3.63"}])
+    repository = InMemoryReconciliationRepository(expected_symbols={"SNXXUSDT"})
+    repository.closed_symbols.add(("bitget", "SNXXUSDT"))
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.status == "ok"
+    assert report.reasons == ()
+    assert repository.kill_switch_active("bitget") is False
+
+
+@pytest.mark.asyncio
+async def test_position_gone_without_a_proven_close_is_a_durable_divergence() -> None:
+    class DrainingVenue(ReadOnlyVenue):
+        async def get_all_positions(self) -> list[dict[str, str]]:
+            self.calls.append("get_all_positions")
+            rows = list(self.positions)
+            self.positions = []
+            return rows
+
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            self.calls.append("get_single_position")
+            return []
+
+    venue = DrainingVenue(positions=[{"symbol": "SNXXUSDT", "total": "3.63"}])
+    repository = InMemoryReconciliationRepository(expected_symbols={"SNXXUSDT"})
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.reasons == ("expected-position-missing:SNXXUSDT",)
+    assert repository.kill_switch_active("bitget")
+    assert "expected-position-missing:SNXXUSDT" in repository.alerts
+
+
+@pytest.mark.asyncio
+async def test_symbol_read_that_contradicts_two_aggregate_reads_stays_transient() -> None:
+    class FlickeringVenue(ReadOnlyVenue):
+        async def get_single_position(self, symbol: str) -> list[dict[str, str]]:
+            self.calls.append("get_single_position")
+            return []
+
+    venue = FlickeringVenue(positions=[{"symbol": "SNXXUSDT", "total": "3.63"}])
+    repository = InMemoryReconciliationRepository(expected_symbols={"SNXXUSDT"})
+    repository.closed_symbols.add(("bitget", "SNXXUSDT"))
+
+    report = await BitgetMonitor(venue, repository).run_once()
+
+    assert report.reasons == ("position-read-contradiction",)
+    assert repository.kill_switch_active("bitget") is False

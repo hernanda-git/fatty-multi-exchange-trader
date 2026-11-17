@@ -13,7 +13,19 @@ This document records the owner-selected behavior and the local implementation c
 
 ## Source booking and CLOSE
 
-Source messages are management instructions, not new entry setups. A nonconditional/nonnegated instruction is required; an explicit, unambiguous symbol is required for every action except `SL_TO_ENTRY`. A symbol-less stop reminder ("don't forget to move your stoploss to entry") expands to one durable update per open position instead of being silently dropped. The analyzer durably queues management before marking a message analyzed; `(source_message_id, revision, symbol, action)` deduplicates the same instruction.
+Source messages are management instructions, not new entry setups. A nonconditional/nonnegated instruction is required; an explicit, unambiguous symbol is required for every action except `SL_TO_ENTRY` and a booking instruction (see below). A symbol-less stop reminder ("don't forget to move your stoploss to entry") expands to one durable update per open position instead of being silently dropped. The analyzer durably queues management before marking a message analyzed; `(source_message_id, revision, symbol, action)` deduplicates the same instruction.
+
+A booking with no fraction and no TP label ("$TIA 2.5R Up so far, book some profits here",
+"Book some profits also") is an instruction, not commentary. It maps to `TP1_BOOKED` — half
+close, then stop to entry — because that is the channel's own TP1 meaning. The symbol-less
+form expands to every open position under owner policy, and the executor books only the
+positions already in profit; the rest finish `failed` with `not-in-profit` and one operator
+card. A barer target line ("TAKE PROFIT 1.2") is a target, never a half close. Past
+narration ("booked profits last week") is not an instruction.
+
+A message that names several symbols ("$WLD $BTC TP2 booked") yields one instruction per
+symbol, deduplicated independently by `(source_message_id, revision, symbol, action)`.
+Collapsing it to a single instruction previously dropped the whole message.
 
 Before any recognized booking TP or CLOSE is executed, stop all bot-owned remaining entry legs for that symbol, including when there is no open position. Use only exact durable ENTRY ownership and client order IDs. Never call symbol-wide cancel-all and never cancel native SL/TP, reduce-only closes, plan protection or unrelated/manual orders to accomplish this.
 

@@ -691,3 +691,108 @@ def test_sl_move_on_flat_symbol_is_cancelled_not_failed() -> None:
 
     assert store.get(update.id).state == "cancelled-flat"
     assert gateway.calls == [("get_positions", "SNXXUSDT")]
+
+
+def test_symbol_less_booking_skips_a_position_that_is_not_in_profit() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def get_positions(self, symbol: str) -> list[dict[str, object]]:
+            self.calls.append(("get_positions", symbol))
+            return [
+                {
+                    "symbol": symbol,
+                    "side": "LONG",
+                    "size": Decimal("3.63"),
+                    "entry": Decimal("4.234"),
+                    "mark": Decimal("4.10"),
+                    "unrealized_pl": "-0.49",
+                }
+            ]
+
+        def cancel_pending_entries(self, *args: object, **kwargs: object) -> bool:
+            self.calls.append(("cancel_pending_entries", args))
+            return True
+
+        def close_reduce_only(self, **kwargs: object) -> None:
+            self.calls.append(("close_reduce_only", kwargs))
+
+        def replace_stop_loss(self, **kwargs: object) -> None:
+            self.calls.append(("replace_stop_loss", kwargs))
+
+    update = SourceManagementUpdate(
+        id=UUID("00000000-0000-0000-0000-000000000011"),
+        source_message_id=UUID("00000000-0000-0000-0000-000000000012"),
+        revision="b" * 64,
+        symbol="SNXXUSDT",
+        action=ManagementAction.TP1_BOOKED,
+    )
+    store = InMemorySourceManagementStore([update])
+    store.source_texts[update.source_message_id] = "Book some profits also❤️"
+    gateway = Gateway()
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "failed"
+    )
+
+    assert store.get(update.id).state == "failed"
+    assert store.last_errors[update.id] == "not-in-profit"
+    assert gateway.calls == [("get_positions", "SNXXUSDT")]
+    assert store.outcomes == [("SNXXUSDT", "failed")]
+
+
+def test_symbol_named_booking_executes_even_below_entry() -> None:
+    class Gateway:
+        def __init__(self) -> None:
+            self.positions = [
+                {
+                    "symbol": "TIAUSDT",
+                    "side": "LONG",
+                    "size": Decimal("10"),
+                    "entry": Decimal("0.401"),
+                    "mark": Decimal("0.398"),
+                    "unrealized_pl": "-0.03",
+                }
+            ]
+            self.calls: list[tuple[str, object]] = []
+
+        def cancel_pending_entries(self, symbol: str, management_id: UUID) -> bool:
+            self.calls.append(("cancel_pending_entries", symbol))
+            return True
+
+        def get_positions(self, symbol: str) -> list[dict[str, object]]:
+            self.calls.append(("get_positions", symbol))
+            return [dict(row) for row in self.positions if row["symbol"] == symbol]
+
+        def close_reduce_only(
+            self, *, symbol: str, side: str, quantity: Decimal, client_oid: str
+        ) -> None:
+            self.calls.append(("close_reduce_only", quantity))
+            self.positions[0]["size"] = self.positions[0]["size"] - quantity
+
+        def replace_stop_loss(self, **kwargs: object) -> None:
+            self.calls.append(("replace_stop_loss", kwargs))
+
+    update = SourceManagementUpdate(
+        id=UUID("00000000-0000-0000-0000-000000000021"),
+        source_message_id=UUID("00000000-0000-0000-0000-000000000022"),
+        revision="c" * 64,
+        symbol="TIAUSDT",
+        action=ManagementAction.TP1_BOOKED,
+    )
+    store = InMemorySourceManagementStore([update])
+    store.source_texts[update.source_message_id] = (
+        "$TIA 2.5R Up so far, book some profits here\n\n"
+        "Timing is key remember, pick your entry right"
+    )
+    gateway = Gateway()
+
+    assert (
+        SourceManagementExecutor(store, gateway, mutations_enabled=True).run_once("worker")
+        == "reconciled"
+    )
+
+    assert ("close_reduce_only", Decimal("5")) in gateway.calls
+    assert store.get(update.id).state == "reconciled"

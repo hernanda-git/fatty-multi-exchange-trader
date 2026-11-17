@@ -1,6 +1,11 @@
 import pytest
 
-from fatty_trader.analyzer.trade_management import ManagementAction, parse_source_management
+from fatty_trader.analyzer.trade_management import (
+    ManagementAction,
+    is_symbol_less_booking_text,
+    parse_source_management,
+    parse_source_managements,
+)
 
 
 def test_tp1_booked_is_recognized_as_wld_partial_profit_management() -> None:
@@ -189,7 +194,6 @@ def test_symbol_less_stop_to_entry_targets_every_open_position() -> None:
     "text",
     [
         "close everything now",
-        "book some profits also❤️",
         "close half here",
         "if price comes back move stoploss to entry",
         "never move your stoploss to entry",
@@ -197,6 +201,71 @@ def test_symbol_less_stop_to_entry_targets_every_open_position() -> None:
 )
 def test_symbol_less_closes_and_conditional_stops_stay_ambiguous(text: str) -> None:
     assert parse_source_management(text) is None
+
+
+def test_bare_booking_with_symbol_maps_to_the_tp1_booking() -> None:
+    update = parse_source_management(
+        "$TIA 2.5R Up so far, book some profits here\n\n"
+        "Timing is key remember, pick your entry right"
+    )
+
+    assert update is not None
+    assert update.symbol == "TIAUSDT"
+    assert update.action is ManagementAction.TP1_BOOKED
+
+
+def test_symbol_less_booking_reaches_every_open_position() -> None:
+    update = parse_source_management("Book some profits also❤️")
+
+    assert update is not None
+    assert update.symbol is None
+    assert update.action is ManagementAction.TP1_BOOKED
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "booked profits on $TIA last week",
+        "I booked some profits yesterday",
+        "already booked profits on $WLD",
+    ],
+)
+def test_historical_booking_narration_is_not_an_instruction(text: str) -> None:
+    assert parse_source_management(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "TAKE PROFIT 1.2 on $WLD",
+        "$WLD LONGED @ 1.0 TAKE PROFIT 1.2 STOPLOSS 0.95",
+    ],
+)
+def test_entry_template_targets_are_not_bookings(text: str) -> None:
+    update = parse_source_management(text)
+
+    # A target line must never authorize a half close. (The pre-existing
+    # TP_BOOKED reading of "take profit ... on $SYM" only cancels owned pending
+    # entries and is deliberately left unchanged here.)
+    assert update is None or update.action is not ManagementAction.TP1_BOOKED
+
+
+def test_multi_symbol_management_yields_one_instruction_per_symbol() -> None:
+    updates = parse_source_managements("$WLD $BTC TP2 booked")
+
+    assert {update.symbol for update in updates} == {"WLDUSDT", "BTCUSDT"}
+    assert all(update.action is ManagementAction.TP_BOOKED for update in updates)
+
+
+def test_single_symbol_plural_parse_matches_the_singular_contract() -> None:
+    text = "closed half $ONE position\n\nWill keep it running with half size"
+
+    assert parse_source_managements(text) == [parse_source_management(text)]
+
+
+def test_symbol_less_booking_is_the_only_form_that_fans_out() -> None:
+    assert is_symbol_less_booking_text("Book some profits also❤️")
+    assert not is_symbol_less_booking_text("$TIA 2.5R Up so far, book some profits here")
 
 
 @pytest.mark.parametrize(
