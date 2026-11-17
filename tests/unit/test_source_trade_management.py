@@ -141,6 +141,7 @@ def test_channel_close_variations_are_recognized(text: str, expected_symbol: str
     assert update.symbol == expected_symbol
     assert update.action is ManagementAction.CLOSE
 
+
 def test_multiparagraph_commentary_preserves_close_action() -> None:
     text = (
         "$PUMP up more than 3R on my main account and closed here\n\n"
@@ -181,8 +182,7 @@ def test_half_and_partial_close_instructions_are_recognized_as_tp1(
 
 def test_symbol_less_stop_to_entry_targets_every_open_position() -> None:
     update = parse_source_management(
-        "Going to sleep now, goodnight guys and dont forget to move your "
-        "stoploss to entry❤️"
+        "Going to sleep now, goodnight guys and dont forget to move your stoploss to entry❤️"
     )
 
     assert update is not None
@@ -248,6 +248,35 @@ def test_entry_template_targets_are_not_bookings(text: str) -> None:
     # TP_BOOKED reading of "take profit ... on $SYM" only cancels owned pending
     # entries and is deliberately left unchanged here.)
     assert update is None or update.action is not ManagementAction.TP1_BOOKED
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$PEPE close around entry  Will wait for better opportunity",
+        "$PEPE close around entry",
+        "$WLD close near entry",
+        "$ENA close at be",
+        "$WIF close it",
+        "close it $WIF",
+    ],
+)
+def test_close_around_entry_is_an_instruction_not_chatter(text: str) -> None:
+    update = parse_source_management(text)
+
+    assert update is not None
+    assert update.action is ManagementAction.CLOSE
+
+
+def test_negated_close_around_entry_stays_silent() -> None:
+    assert parse_source_management("do not close $WIF around entry") is None
+
+
+def test_half_close_at_entry_stays_a_tp1_booking() -> None:
+    update = parse_source_management("closed half at entry $ONE")
+
+    assert update is not None
+    assert update.action is ManagementAction.TP1_BOOKED
 
 
 def test_multi_symbol_management_yields_one_instruction_per_symbol() -> None:

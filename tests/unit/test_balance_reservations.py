@@ -80,7 +80,7 @@ def test_reserve_serializes_fresh_balance_and_keeps_unknown_commitments() -> Non
     sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
     assert "pg_advisory_xact_lock(hashtext(%s))" in sql
     assert "state = 'unknown'" in sql
-    assert "state IN ('reserved', 'unknown', 'consumed')" in sql
+    assert "state IN ('reserved', 'unknown')" in sql
     assert "INSERT INTO balance_snapshots" in sql
     assert "INSERT INTO bitget_margin_reservations" in sql
     assert connection.committed is True

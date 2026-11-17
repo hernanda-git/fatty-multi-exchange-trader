@@ -82,6 +82,17 @@ _NEGATED_CLOSE = re.compile(
     r"(?<![$#])\b(?:do\s+not|don['’]?t|dont|never|not)\s+(?:close|exit)\b", re.I
 )
 
+#: A close stated at the breakeven area, or an imperative "close it". Matched before
+#: the conditional guard because the channel often adds an unrelated intention in the
+#: same sentence: "$PEPE close around entry Will wait for better opportunity" is an
+#: instruction to close, followed by what the author will do next (LIVE 2026-11-17).
+_CLOSE_IMPERATIVE = re.compile(
+    r"\b(?:close|closed|closing|exit|exited)\b[^\n]{0,20}?"
+    r"\b(?:around|near|at)\s+(?:entry|be|breakeven)\b"
+    r"|\b(?:close|exit)\s+(?:it|this one|the trade)\b",
+    re.I,
+)
+
 _CANDLE_ANALYSIS_CLOSE = re.compile(
     r"\b(?:daily|candle|session|weekly|monthly|4h|1h|2h|15m)\s+close\b|\bclose\s+(?:above|below)\b",
     re.I,
@@ -105,13 +116,9 @@ _HISTORICAL_BOOKING = re.compile(
     r"already\s+booked|the\s+other\s+day)\b",
     re.I,
 )
-_CONDITIONAL = re.compile(
-    r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", re.I
-)
+_CONDITIONAL = re.compile(r"(?<![$#])\b(?:not|never|don['’]?t|if|when|unless|wait|waiting)\b", re.I)
 # "don't forget to move your stoploss to entry" is an instruction, not a veto.
-_AFFIRMATIVE_REDIRECT = re.compile(
-    r"\b(?:do\s+not|don['’]?t|never)\s+forget\s+to\b", re.I
-)
+_AFFIRMATIVE_REDIRECT = re.compile(r"\b(?:do\s+not|don['’]?t|never)\s+forget\s+to\b", re.I)
 
 
 class ManagementAction(StrEnum):
@@ -207,6 +214,14 @@ def _instruction_for_symbol(text: str, symbol: str) -> SourceManagement | None:
     """The instruction this text gives for one named symbol, if any."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     for line in lines:
+        if (
+            _CLOSE_IMPERATIVE.search(line)
+            and not _NEGATED_CLOSE.search(line)
+            and not _CANDLE_ANALYSIS_CLOSE.search(line)
+            # "closed half at entry" is the TP1 form; it must reach the TP1 branch.
+            and not _HALF_OR_PARTIAL.search(line)
+        ):
+            return SourceManagement(symbol=symbol, action=ManagementAction.CLOSE)
         if _CONDITIONAL.search(line):
             continue
         if _TP1.search(line):

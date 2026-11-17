@@ -216,10 +216,15 @@ class PostgresBitgetMarginReservationRepository:
                 """
                 SELECT COALESCE(SUM(planned_margin_usdt), 0)
                 FROM bitget_margin_reservations
-                WHERE exchange = %s AND state IN ('reserved', 'unknown', 'consumed')
+                WHERE exchange = %s AND state IN ('reserved', 'unknown')
                 """,
                 (exchange,),
             )
+            # A `consumed` reservation is margin the venue already holds: the
+            # provider's `available` balance is net of it. Counting it again
+            # double-charges headroom, and a single filled reservation that never
+            # left `consumed` (LIVE 2026-11-13 POPCAT) silently refused every new
+            # signal once a second position was open.
             active = Decimal(str(_first(cursor.fetchone(), Decimal("0")) or "0"))
             if active + planned_margin_usdt > available_balance * headroom:
                 connection.commit()
