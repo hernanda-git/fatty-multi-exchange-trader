@@ -446,9 +446,9 @@ async def test_context_aware_near_limit_route_is_passed_to_routed_execution() ->
 
     assert result == "filled"
     assert execution.route is not None
-    assert execution.route.mode is EntryMode.NEAR_LIMIT_SPLIT_MARKET_LIMIT
-    assert execution.route.market_quantity == Decimal("0.001")
-    assert execution.route.limit_quantity == Decimal("0.003")
+    assert execution.route.mode is EntryMode.FULL_MARKET
+    assert execution.route.market_quantity == Decimal("0.004")
+    assert execution.route.limit_quantity == Decimal("0")
 
 
 @pytest.mark.asyncio

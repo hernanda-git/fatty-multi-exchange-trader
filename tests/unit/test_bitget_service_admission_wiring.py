@@ -368,7 +368,7 @@ async def test_stop_rounded_across_liquidation_buffer_is_rejected_before_reserva
 
 
 @pytest.mark.asyncio
-async def test_recent_departed_entry_admits_exact_legal_split_with_actual_risk_values():
+async def test_recent_departed_entry_admits_full_market_with_actual_risk_values():
     from dataclasses import replace
 
     venue = Venue()
@@ -389,13 +389,13 @@ async def test_recent_departed_entry_admits_exact_legal_split_with_actual_risk_v
     )(dispatch)
 
     submission = admission.submission
-    assert submission.quantity == Decimal("9.2")
-    assert submission.entry_route.market_quantity == Decimal("2.3")
-    assert submission.entry_route.limit_quantity == Decimal("6.9")
-    assert submission.planned_notional_usdt == Decimal("21.528")
-    assert submission.planned_margin_usdt == Decimal("1.0764")
+    assert submission.quantity == Decimal("9.4")
+    assert submission.entry_route.market_quantity == Decimal("9.4")
+    assert submission.entry_route.limit_quantity == Decimal("0")
+    assert submission.planned_notional_usdt == Decimal("21.996")
+    assert submission.planned_margin_usdt == Decimal("1.0998")
     assert reservations.kwargs is not None
-    assert reservations.kwargs["planned_margin_usdt"] == Decimal("1.0764")
+    assert reservations.kwargs["planned_margin_usdt"] == Decimal("1.0998")
 
 
 @pytest.mark.asyncio
@@ -430,6 +430,7 @@ async def test_longing_here_signal_always_admits_full_market_and_zero_limit():
     assert submission.entry_route.limit_quantity == Decimal("0")
     assert submission.entry_route.market_quantity == submission.quantity
 
+
 @pytest.mark.asyncio
 async def test_pepe_100x_multiplier_discrepancy_preflight_admission_success():
     from dataclasses import replace
@@ -456,7 +457,9 @@ async def test_pepe_100x_multiplier_discrepancy_preflight_admission_success():
         stop_loss=Decimal("0.0004902"),
         take_profits=(Decimal("0.000575"),),
         source_received_at=datetime.now(UTC),
-        source_text="#PEPE $PEPE LONG TRADE\n\nENTRY: 0.000502\n\nTARGET: 0.000575\n\nSTOPLOSS: 0.0004902",
+        source_text=(
+            "#PEPE $PEPE LONG TRADE\n\nENTRY: 0.000502\n\nTARGET: 0.000575\n\nSTOPLOSS: 0.0004902"
+        ),
     )
     reservations = Reservations()
     admission = await _bitget_dispatch_preflight(
@@ -470,6 +473,8 @@ async def test_pepe_100x_multiplier_discrepancy_preflight_admission_success():
     assert submission.planned_take_profits == (Decimal("0.00000575"),)
     assert submission.quantity > Decimal("0")
     assert submission.planned_margin_usdt <= Decimal("1.1")
+
+
 def _split_sizing_meta() -> SymbolMetadata:
     """Metadata whose 25% child misses the venue minimum while the total clears it."""
     return SymbolMetadata(
@@ -531,7 +536,7 @@ def test_split_child_minimum_flat_lane_retries_all_in_instead_of_bypassing() -> 
 
 
 @pytest.mark.asyncio
-async def test_position_read_crossing_route_window_cannot_expand_market_child(monkeypatch):
+async def test_position_read_crossing_route_window_cannot_expand_full_market_child(monkeypatch):
     from dataclasses import replace
     from datetime import timedelta
 
@@ -574,8 +579,8 @@ async def test_position_read_crossing_route_window_cannot_expand_market_child(mo
         reservation_repository=Reservations(),
     )(dispatch)
     assert admission.submission.entry_route.market_quantity == Decimal("2.1")
-    assert admission.submission.entry_route.limit_quantity == Decimal("6.3")
-    assert admission.submission.quantity == Decimal("8.4")
+    assert admission.submission.entry_route.limit_quantity == Decimal("0")
+    assert admission.submission.quantity == Decimal("2.1")
 
 
 def _budget_venue_and_dispatch(available: str, equity: str):

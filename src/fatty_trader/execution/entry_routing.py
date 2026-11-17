@@ -1,6 +1,7 @@
 """Pure, fail-closed routing for signal entries affected by front-running."""
 
 from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,6 +46,7 @@ class EntryRoute:
     limit_price: Decimal | None
     reason: str = "legacy-price-route"
 
+
 _EXPLICIT_MARKET_SIGNAL_PATTERN = re.compile(
     r"(?is)\b(?:longing|shorting|longed|shorted|long|short|buy|buying|sell|selling|enter|entering)\b.*?\b(?:here|at\s+market|market)\b"
     r"|\b(?:market\s+entry|market\s+order|entry\s*:\s*market|at\s+market)\b"
@@ -52,19 +54,12 @@ _EXPLICIT_MARKET_SIGNAL_PATTERN = re.compile(
 
 
 def is_explicit_market_signal(text: str | None) -> bool:
-    """True if source text explicitly denotes an immediate market execution ('longing here', etc.)."""
+    """True when the source text asks for an immediate market execution."""
     if not text:
         return False
     if re.search(r"(?i)\blimit\b", text):
         return False
     return bool(_EXPLICIT_MARKET_SIGNAL_PATTERN.search(text))
-
-def _split(
-    total_quantity: Decimal, *, mode: EntryMode, limit_price: Decimal, reason: str
-) -> EntryRoute:
-    market_quantity = total_quantity * Decimal("0.25")
-    limit_quantity = total_quantity - market_quantity
-    return EntryRoute(mode, market_quantity, limit_quantity, limit_price, reason)
 
 
 def route_entry(
@@ -81,11 +76,13 @@ def route_entry(
     recent_window_seconds: int = 60,
     force_market: bool = False,
 ) -> EntryRoute:
-    """Route entry while requiring lifecycle evidence for near-limit splitting.
+    """Route a full-size entry: market when the entry was just passed, else a limit.
 
-    The legacy price-only behavior is preserved when ``limit_context`` is omitted.
-    Production callers should provide context so a normal pullback wait cannot be
-    mistaken for a limit that has just departed.
+    Owner policy: the bot never splits a position into a partial market leg. If the
+    price has just moved through the signal entry, take the whole quantity at
+    market; if it has not (or has run too far past to chase), rest the whole
+    quantity at the signal entry. ``limit_context`` adds lifecycle evidence so a
+    normal pullback wait cannot be mistaken for a limit that has just departed.
     """
     if force_market:
         if market_price <= 0 or total_quantity <= 0:
@@ -114,18 +111,29 @@ def route_entry(
             else market_price < signal_entry
         )
         if passed and 0 <= age <= recent_window_seconds:
-            return _split(
+            # Slightly front-run: the price crossed the signal entry moments ago and
+            # the trade is live. Take the whole quantity now.
+            return EntryRoute(
+                EntryMode.FULL_MARKET,
                 total_quantity,
-                mode=EntryMode.SPLIT_MARKET_LIMIT,
-                limit_price=signal_entry,
-                reason="recent-source-passed-entry",
+                Decimal("0"),
+                None,
+                "recent-source-passed-entry",
+            )
+        if not passed:
+            return EntryRoute(
+                EntryMode.LIMIT_ONLY,
+                Decimal("0"),
+                total_quantity,
+                signal_entry,
+                "awaiting-entry-limit",
             )
         return EntryRoute(
             EntryMode.FULL_MARKET,
             total_quantity,
             Decimal("0"),
             None,
-            "not-recently-passed-entry",
+            "passed-entry-not-recent",
         )
 
     if limit_context is not None:
@@ -166,11 +174,12 @@ def route_entry(
                     and market_price >= near_entry
                 )
             if just_departed:
-                return _split(
+                return EntryRoute(
+                    EntryMode.FULL_MARKET,
                     total_quantity,
-                    mode=EntryMode.NEAR_LIMIT_SPLIT_MARKET_LIMIT,
-                    limit_price=signal_entry,
-                    reason="just-departed-acknowledged-limit",
+                    Decimal("0"),
+                    None,
+                    "just-departed-acknowledged-limit",
                 )
         return EntryRoute(
             EntryMode.LIMIT_ONLY,
@@ -180,16 +189,26 @@ def route_entry(
             "normal-pullback-or-insufficient-limit-evidence",
         )
 
-    adverse_move = (
+    passed = (
+        market_price > signal_entry if direction is Direction.LONG else market_price < signal_entry
+    )
+    beyond_threshold = (
         market_price >= signal_entry * (Decimal("1") + late_threshold_pct)
         if direction is Direction.LONG
         else market_price <= signal_entry * (Decimal("1") - late_threshold_pct)
     )
-    if not adverse_move:
-        return EntryRoute(EntryMode.FULL_MARKET, total_quantity, Decimal("0"), None)
-    return _split(
+    if passed and not beyond_threshold:
+        # Slightly front-run: the price moved through the signal entry a moment ago.
+        # Take the whole quantity now; never a partial market leg.
+        return EntryRoute(
+            EntryMode.FULL_MARKET, total_quantity, Decimal("0"), None, "passed-entry-market"
+        )
+    # Not passed, or too far past to chase: rest the full quantity at the signal
+    # entry. A trade either fills as designed or does not happen.
+    return EntryRoute(
+        EntryMode.LIMIT_ONLY,
+        Decimal("0"),
         total_quantity,
-        mode=EntryMode.SPLIT_MARKET_LIMIT,
-        limit_price=signal_entry,
-        reason="legacy-price-route",
+        signal_entry,
+        "frontrun-beyond-threshold-limit" if beyond_threshold else "awaiting-entry-limit",
     )
