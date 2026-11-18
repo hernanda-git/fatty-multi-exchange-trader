@@ -28,7 +28,11 @@ _RIGID = re.compile(
 )
 _LIMIT_ENTRY = re.compile(
     r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})(?:\s+[\$#](?P<pair2>[A-Z0-9]{1,20}))?\s+"
-    r"(?:placing\s+|placed\s+)?(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\s*(?:limits?\s*)?(?:at|around|near|@|between)?\s*"
+    # "LIMIT LONG @", "LONG LIMIT PLACED @", "PLACED LONG LIMIT AT", "LONG @"
+    r"(?:limit\s+|placing\s+|placed\s+)?"
+    r"(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\s*"
+    r"(?:limits?\s*)?(?:order\s*)?(?:placed\s*)?"
+    r"(?:at|around|near|@|between)?\s*"
     r"(?P<entry>\d+(?:\.\d+)?).*?"
     r"(?:(?:TARGETS?|TPS?)\b[^0-9]*(?P<tps>\d+(?:\.\d+)?(?:\s*(?:-|,|/)\s*\d+(?:\.\d+)?){0,4}).*?)?"
     r"(?:STOPLOSS|STOP\s*LOSS|STOPPOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\b.*?$",
@@ -71,7 +75,9 @@ def parse_explicit_signal(
             text, message_id=message_id, market_price_lookup=market_price_lookup
         )
     try:
-        direction_text = (match.groupdict().get("direction") or match.groupdict().get("direction2") or "").upper()
+        direction_text = (
+            match.groupdict().get("direction") or match.groupdict().get("direction2") or ""
+        ).upper()
         direction = {
             "LONGED": Direction.LONG,
             "SHORTED": Direction.SHORT,
@@ -89,7 +95,11 @@ def parse_explicit_signal(
         )
         if not match.groupdict().get("entry") and not take_profits:
             return None
-        pair_token = (match.groupdict().get("pair2") or match.groupdict().get("pair3") or match["pair"]).upper().removesuffix("USDT")
+        pair_token = (
+            (match.groupdict().get("pair2") or match.groupdict().get("pair3") or match["pair"])
+            .upper()
+            .removesuffix("USDT")
+        )
         if match.groupdict().get("entry"):
             entry = Decimal(match["entry"])
         else:

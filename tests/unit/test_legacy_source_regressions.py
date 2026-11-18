@@ -189,3 +189,38 @@ def test_management_symbol_rejects_reserved_prefix_candidates() -> None:
         assert result is not None
         assert result.symbol == "ETHFIUSDT"
     assert parse_source_management("SLUSDT to entry") is None
+
+
+def test_limit_placed_announcement_with_stop_only_is_fallback_parseable() -> None:
+    """LIVE 2026-11-18 #16545: "$WLD LONG LIMIT PLACED @ 0.257 / Sl below 0.2512".
+
+    The channel's limit announcement puts "LIMIT" right after the side, which the
+    previous pattern rejected, so a valid entry became NO_ACTION while the vision
+    path was unavailable.
+    """
+    signal = parse_explicit_signal(
+        "$WLD LONG LIMIT PLACED @ 0.257\n\nSl below 0.2512",
+        message_id=16545,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "WLD"
+    assert signal.direction.value == "LONG"
+    assert signal.entry_price == Decimal("0.257")
+    assert signal.stop_loss == Decimal("0.2512")
+    assert signal.take_profits == ()
+
+
+def test_limit_before_side_is_fallback_parseable() -> None:
+    signal = parse_explicit_signal(
+        "$WLD LIMIT LONG @ 0.257\n\nSl below 0.2512",
+        message_id=16546,
+    )
+
+    assert signal is not None
+    assert signal.entry_price == Decimal("0.257")
+    assert signal.stop_loss == Decimal("0.2512")
+
+
+def test_plain_commentary_is_still_not_a_signal() -> None:
+    assert parse_explicit_signal("Gm gm new week new trades", message_id=16547) is None

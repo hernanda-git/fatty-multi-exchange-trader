@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -80,6 +81,16 @@ def analyze_image_json(
         else runner.run(prompt, image_paths=(image_path,))
     )
     if not result.succeeded:
+        # A failing runner used to collapse into the same opaque payload as a missing
+        # file, so a dead credential looked like "no signals" for days. The stderr is
+        # already redacted and bounded by CodexRunner.
+        logging.getLogger(__name__).warning(
+            "image analysis failed: exit=%s timeout=%s reason=%s stderr=%s",
+            result.exit_code,
+            result.timed_out,
+            result.failure_reason or "none",
+            (result.stderr or "").strip().replace("\n", " ")[:300] or "none",
+        )
         return {"message": "Image analysis unavailable", "setup": {}}
     try:
         raw = result.stdout.strip()
@@ -150,7 +161,9 @@ def signal_from_image_json(
         raw_targets = setup.get("take_profits") or setup.get("targets")
         targets = _extract_all_decimals(raw_targets)
         if not targets and isinstance(setup.get("levels"), dict):
-            level_key = "lower_marked_level" if direction is Direction.SHORT else "upper_marked_level"
+            level_key = (
+                "lower_marked_level" if direction is Direction.SHORT else "upper_marked_level"
+            )
             targets = _extract_all_decimals(setup["levels"].get(level_key))
 
         # Harmonize target scales if they were extracted in chart units (e.g. 1e-5) while entry is unscaled (e.g. 0.51)
@@ -181,6 +194,7 @@ def signal_from_image_json(
         )
     except (InvalidOperation, TypeError, ValueError):
         return None
+
 
 def management_from_image_json(data: dict[str, Any]) -> SourceManagement | None:
     setup = data.get("setup")
