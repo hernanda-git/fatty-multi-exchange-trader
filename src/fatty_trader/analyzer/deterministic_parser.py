@@ -16,7 +16,7 @@ _CHANNEL = re.compile(
 )
 _NATURAL_STOP_ONLY = re.compile(
     r"(?is)^\s*(?:(?P<direction>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT)\s+(?:here\s+)?\$?(?P<pair>[A-Z0-9]{1,20})|(?:\$|#)?(?P<pair3>[A-Z0-9]{1,20})\s+(?P<direction2>LONGED|SHORTED|LONGING|SHORTING|LONG|SHORT))\s+"
-    r"(?:here\s+)?(?:around|at|near)?\s*"
+    r"(?:here\s+)?(?:around|at|near|@)?\s*"
     r"(?P<entry>\d+(?:\.\d+)?).*?"
     r"(?:STOPLOSS|STOP\s*LOSS|STOPPOSS|SL)\b[^0-9]*(?P<sl>\d+(?:\.\d+)?)\b.*?$",
     re.IGNORECASE | re.DOTALL,
@@ -43,6 +43,11 @@ _LIMIT_ENTRY = re.compile(
 # so the shape required is: pair + a long/short verb first, and a stop-loss clause with a
 # number last. Anything that merely mentions a stop mid-sentence stays unparsed, and an
 # entry price in the text always wins (that path is tried before this one).
+# The source occasionally splits a decimal ("TARGET: 0. 2037"); rejoining it stops
+# the target parsing as zero. Kept separate from matching so no price is invented.
+_SPLIT_DECIMAL = re.compile(r"(\d)\.\s+(\d)")
+
+
 _SCALP_MARKET_STOP_ONLY = re.compile(
     r"(?is)^\s*(?:#|\$)?(?P<pair>[A-Z0-9]{1,20})"
     r"(?:\s+[\$#](?P<pair2>[A-Z0-9]{1,20}))?\s+"
@@ -62,6 +67,7 @@ def parse_explicit_signal(
     ``market_price_lookup`` is required whenever the source says market or states
     only a stop. Missing market data never permits an invented entry.
     """
+    text = _SPLIT_DECIMAL.sub(r"\1.\2", text or "")
     if entry_stands_down(text):
         return None
     match = (

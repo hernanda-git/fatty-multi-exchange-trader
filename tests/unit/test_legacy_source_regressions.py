@@ -224,3 +224,46 @@ def test_limit_before_side_is_fallback_parseable() -> None:
 
 def test_plain_commentary_is_still_not_a_signal() -> None:
     assert parse_explicit_signal("Gm gm new week new trades", message_id=16547) is None
+
+
+def test_longed_here_with_at_marker_is_fallback_parseable() -> None:
+    """LIVE 2026-11-18 #16541: "$PENGU longed here @0.00473 Sl below 0.004635".
+
+    The natural stop-only pattern accepted at/around/near but not "@", so a real
+    entry became NO_ACTION and the trade was never opened.
+    """
+    signal = parse_explicit_signal(
+        "$PENGU longed here @0.00473 Sl below 0.004635",
+        message_id=16541,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "PENGU"
+    assert signal.direction.value == "LONG"
+    assert signal.entry_price == Decimal("0.00473")
+    assert signal.stop_loss == Decimal("0.004635")
+
+
+def test_repeated_longing_with_at_marker_is_fallback_parseable() -> None:
+    signal = parse_explicit_signal(
+        "$TRUMP LONG @1.683 longing again here with sl below 1.652",
+        message_id=16434,
+    )
+
+    assert signal is not None
+    assert signal.pair_token == "TRUMP"
+    assert signal.entry_price == Decimal("1.683")
+    assert signal.stop_loss == Decimal("1.652")
+
+
+def test_split_decimal_target_is_rejoined() -> None:
+    """LIVE 2026-10-31 #16421: "TARGET: 0. 2037" must not parse as a zero target."""
+    signal = parse_explicit_signal(
+        "#ENA $ENA LONG TRADE ENTRY: 0.192 TARGET: 0. 2037 STOPLOSS: 0.18815",
+        message_id=16421,
+    )
+
+    assert signal is not None
+    assert signal.entry_price == Decimal("0.192")
+    assert signal.take_profits == (Decimal("0.2037"),)
+    assert signal.stop_loss == Decimal("0.18815")
