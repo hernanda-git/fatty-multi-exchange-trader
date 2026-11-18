@@ -45,13 +45,13 @@ SUPPORTED_SERVICES = (
 )
 
 # Bitget LIVE policy, pinned in application code. These are invariants, not
-# tunables: a live trade plans at most 1.1 USDT of isolated margin at no more than 20x.
-# The cap bounds the planned margin; a market fill can realize slightly more
-# through slippage (filled_notional / leverage), so it is a ceiling on planning, not on
-# the exchange's post-fill number. 1.1 USDT (was 1) clears the venue quantity grid
-# for the 25/75 split route on symbols like NEARUSDT, where four size steps cost
-# 20.88 USDT of notional and 1.044 USDT of margin at 20x.
-_LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("1.1")
+# tunables: a live trade plans at most 2.0 USDT of isolated margin at no more than 20x.
+# The ceiling is absolute; BITGET_MAX_MARGIN_PER_TRADE_USDT selects the operating
+# cap inside it, so tightening back to 1.1 is an environment change and raising past
+# 2.0 is a code change. The cap bounds the planned margin; a market fill can realize
+# slightly more through slippage, so it is a ceiling on planning, not on the
+# exchange's post-fill number.
+_LIVE_MAX_MARGIN_PER_TRADE_USDT = Decimal("2.0")
 _LIVE_LEVERAGE = 20
 # Lowest leverage the LIVE sizing policy may back off to. It exists so a signal whose
 # stop needs more liquidation headroom than 20x allows can still trade at a lower
@@ -673,10 +673,10 @@ def _bitget_dispatch_preflight(
         raise ValueError("BITGET_MAX_MARGIN_PER_TRADE_USDT must be a finite positive amount")
     if margin_mode_type not in {"PERCENTAGE", "FIXED_USDT"}:
         raise ValueError("BITGET_MARGIN_MODE_TYPE must be PERCENTAGE or FIXED_USDT")
-    if max_margin_per_trade != _LIVE_MAX_MARGIN_PER_TRADE_USDT:
+    if max_margin_per_trade > _LIVE_MAX_MARGIN_PER_TRADE_USDT:
         raise ValueError(
-            f"Bitget LIVE margin cap is fixed at {_LIVE_MAX_MARGIN_PER_TRADE_USDT} USDT: "
-            f"BITGET_MAX_MARGIN_PER_TRADE_USDT must be exactly {_LIVE_MAX_MARGIN_PER_TRADE_USDT} "
+            "Bitget LIVE margin cap must not exceed the pinned "
+            f"{_LIVE_MAX_MARGIN_PER_TRADE_USDT} USDT ceiling "
             f"(got {raw_margin_cap!r})"
         )
     if (
@@ -770,8 +770,8 @@ def _bitget_dispatch_preflight(
             route_entry,
         )
         from fatty_trader.risk.live_policy import LiveSizingInput, plan_live_position
-        from fatty_trader.risk.sizing import round_price_to_tick
         from fatty_trader.risk.price_scale import align_price_scale
+        from fatty_trader.risk.sizing import round_price_to_tick
 
         aligned_entry, aligned_sl, aligned_tps, applied_scale = align_price_scale(
             entry_price=dispatch.entry_price,
@@ -782,9 +782,11 @@ def _bitget_dispatch_preflight(
         )
         if applied_scale != Decimal("1"):
             print(
-                f"[PRICE-ALIGN] symbol={symbol} detected {applied_scale}x unit multiplier mismatch; "
+                f"[PRICE-ALIGN] symbol={symbol} detected {applied_scale}x "
+                "unit multiplier mismatch; "
                 f"scaling prices: entry {dispatch.entry_price}->{aligned_entry}, "
-                f"sl {dispatch.stop_loss}->{aligned_sl}, tps {dispatch.take_profits}->{aligned_tps}",
+                f"sl {dispatch.stop_loss}->{aligned_sl}, "
+                f"tps {dispatch.take_profits}->{aligned_tps}",
                 flush=True,
             )
 
@@ -813,7 +815,7 @@ def _bitget_dispatch_preflight(
                     quantity,
                     Decimal("0"),
                     None,
-                    "explicit-market-signal" if force_market else None,
+                    "explicit-market-signal" if force_market else "market-entry-no-source-time",
                 )
             return route_entry(
                 direction=Direction(dispatch.direction),

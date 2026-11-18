@@ -399,6 +399,40 @@ async def test_recent_departed_entry_admits_full_market_with_actual_risk_values(
 
 
 @pytest.mark.asyncio
+async def test_fixed_two_usdt_margin_sizes_at_two_and_admits():
+    from dataclasses import replace
+
+    venue = Venue()
+    venue.snapshot.current_price = Decimal("2.34")
+    venue.snapshot.metadata = venue.snapshot.metadata.model_copy(
+        update={
+            "size_step": Decimal("0.1"),
+            "min_order_qty": Decimal("0.1"),
+            "min_notional": Decimal("1"),
+        }
+    )
+    dispatch = replace(_dispatch(), source_received_at=datetime.now(UTC))
+    reservations = Reservations()
+    admission = await _bitget_dispatch_preflight(
+        venue,
+        {
+            "BITGET_MAX_MARGIN_PER_TRADE_USDT": "2",
+            "BITGET_MARGIN_MODE_TYPE": "FIXED_USDT",
+            "BITGET_FIXED_MARGIN_USDT": "2",
+        },
+        reservation_repository=reservations,
+    )(dispatch)
+
+    # Quantity is quantized to the venue size step, so the planned margin lands at
+    # or just below the configured 2 USDT rather than exactly on it.
+    planned = admission.submission.planned_margin_usdt
+    assert Decimal("1.98") <= planned <= Decimal("2")
+    assert admission.submission.planned_notional_usdt <= Decimal("40")
+    assert reservations.kwargs is not None
+    assert reservations.kwargs["planned_margin_usdt"] == planned
+
+
+@pytest.mark.asyncio
 async def test_longing_here_signal_always_admits_full_market_and_zero_limit():
     from dataclasses import replace
 
@@ -701,7 +735,7 @@ async def test_automated_defaults_do_not_change_manual_margin_or_leverage(mode, 
         ("BITGET_FIXED_MARGIN_USDT", "NaN"),
         ("BITGET_FIXED_MARGIN_USDT", "Infinity"),
         ("BITGET_FIXED_MARGIN_USDT", "1.11"),
-        ("BITGET_MAX_MARGIN_PER_TRADE_USDT", "2"),
+        ("BITGET_MAX_MARGIN_PER_TRADE_USDT", "2.01"),
     ],
 )
 @pytest.mark.parametrize("mode", ["PERCENTAGE", "FIXED_USDT"])

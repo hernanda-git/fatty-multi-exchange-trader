@@ -1,7 +1,8 @@
 """Fail-closed proofs for the Bitget LIVE safety policy.
 
 These lock in the two invariants that must never silently degrade:
-  * every applicable live trade is capped at 1 USDT committed margin;
+  * every applicable live trade is capped at 2.0 USDT committed margin, with the
+    operating cap selected by BITGET_MAX_MARGIN_PER_TRADE_USDT;
   * leverage is fixed at exactly 20x.
 
 A missing, blank, malformed, or non-conforming value must raise at startup
@@ -50,10 +51,15 @@ def test_invalid_margin_cap_values_are_rejected(raw: str) -> None:
         _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw})
 
 
-@pytest.mark.parametrize("raw", ["1", "1.0001", "2", "2.5", "50", "1e999999"])
-def test_margin_cap_other_than_the_exact_pin_is_rejected(raw: str) -> None:
-    """LIVE margin is pinned exactly; any wider or narrower value is rejected."""
-    with pytest.raises(ValueError, match="fixed at 1.1 USDT"):
+@pytest.mark.parametrize("raw", ["1", "1.1", "2", "2.0"])
+def test_margin_cap_within_the_pinned_ceiling_is_accepted(raw: str) -> None:
+    """The operating cap is configurable up to the absolute 2.0 USDT ceiling."""
+    assert _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw}) is not None
+
+
+@pytest.mark.parametrize("raw", ["2.0001", "2.5", "50"])
+def test_margin_cap_above_the_pinned_ceiling_is_rejected(raw: str) -> None:
+    with pytest.raises(ValueError, match="2.0 USDT ceiling"):
         _preflight({"BITGET_MAX_MARGIN_PER_TRADE_USDT": raw})
 
 
