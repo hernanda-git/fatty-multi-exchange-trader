@@ -22,6 +22,7 @@ from fatty_trader.execution.bitget_dispatch_repository import (
 from fatty_trader.execution.bitget_protection_watchdog import PROTECTION_STREAM_SCOPE
 from fatty_trader.execution.entry_routing import EntryRoute, LimitEntryContext, route_entry
 from fatty_trader.intake.freshness import SourceFreshnessExpired
+from fatty_trader.policy.selectivity import SelectivitySettings, reject_reason
 from fatty_trader.risk.sizing import minimum_safe_plan
 
 
@@ -111,6 +112,7 @@ class BitgetDispatcher:
         kill_switch: KillSwitch | None = None,
         protection_admission: ProtectionAdmission | None = None,
         entry_routing: EntryRoutingContext | None = None,
+        selectivity: SelectivitySettings | None = None,
     ) -> None:
         self._repository = repository
         self._kill_switch = kill_switch
@@ -119,6 +121,7 @@ class BitgetDispatcher:
         self._preflight = preflight
         self._protection_admission = protection_admission
         self._entry_routing = entry_routing
+        self._selectivity = selectivity or SelectivitySettings()
 
     async def run_once(self, worker_id: str, lease_seconds: int) -> str:
         dispatch = self._repository.claim(worker_id, lease_seconds)
@@ -196,6 +199,17 @@ class BitgetDispatcher:
         if not self._gate.execution_enabled:
             reject("QUEUED", "cutover-gated")
             return "cutover-gated"
+        policy_reason = reject_reason(
+            entry=dispatch.entry_price,
+            stop_loss=dispatch.stop_loss,
+            take_profits=dispatch.take_profits,
+            direction=dispatch.direction,
+            settings=self._selectivity,
+        )
+        if policy_reason is not None:
+            stage = "policy"
+            reject("QUEUED", policy_reason)
+            return "rejected"
         if (
             self._gate.canary_max_orders > 0
             and self._gate.canary_symbol is not None

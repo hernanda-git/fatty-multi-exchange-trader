@@ -177,3 +177,31 @@ All commands require a **private, non-forwarded** chat from the configured opera
 Manual operator mutations are currently disabled for `operator-bot`
 (`BITGET_OPERATOR_MUTATIONS_ENABLED=0`). The value is per-service: `source-management`
 runs with `=1` on purpose so source TP1/SL/CLOSE actions are applied automatically.
+
+## Alerting and silent-failure guards (2026-11-19)
+
+- **Recovery alerts re-arm every six hours.** Key shape:
+  `dispatcher-recovery-blocked:<issues>:<YYYY-MM-DDTHH>`. A lasting block pages the
+  owner four times a day, and its card states the queued-signal count and the oldest
+  wait. A position the bot does not own is a **warning**
+  (`dispatcher-recovery-warning`): the bot keeps trading other symbols, and that
+  symbol's entries stay refused by `active-symbol-position`.
+- **Backups are watched, not assumed.** `fatty-backup.service` allows 30 minutes
+  (`TimeoutStartSec=1800`). `scripts/live_watchdog.py` raises `backup-stale` when the
+  newest `fatty_trader_*.dump` is older than 26 h, `backup-empty` for a zero-byte
+  dump, and `backup-missing` when the directory cannot be read.
+- **Vision is observable.** The analyzer logs `codex_auth=ok|expired` at startup
+  (`codex login status`, offline, no tokens). Each analyzed image persists
+  `telegram_messages.image_status`, and a failure emits at most one
+  `vision-failed:<hour>` card per hour.
+- **Re-login** — the server owns its session; never copy `auth.json` between
+  machines (rotating refresh tokens make the older copy die):
+  `ssh fspmi-hostinger '/home/valarion/.local/bin/codex login --device-auth'`,
+  approve the printed URL, then `docker compose up -d --force-recreate analyzer`.
+- **Scorecard** (read-only):
+  `docker compose exec -T dispatcher-bitget /app/.venv/bin/python /app/scripts/signal_scorecard.py`
+  — `SCORECARD_WINDOW` defaults to `30 days`, `SCORECARD_JSON=1` adds a summary line.
+- **Selectivity is off by default.** `BITGET_POLICY_MIN_REWARD_RISK=2` rejects entries
+  whose best target is below that reward:risk; `BITGET_POLICY_REQUIRE_TARGET=1`
+  rejects target-less signals. Every rejection is recorded as `policy-*` so the
+  scorecard can audit whether the rule earned its keep.

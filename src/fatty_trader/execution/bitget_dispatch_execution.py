@@ -321,6 +321,12 @@ class BitgetDispatchExecution:
         if callable(alert):
             alert(self.recovery_issues)
 
+    def alert_recovery_advisory(self) -> None:
+        """Announce issues that warn without blocking, e.g. a foreign position."""
+        alert = getattr(self._dispatch_repository, "alert_recovery_advisory", None)
+        if callable(alert):
+            alert(self.recovery_issues)
+
     def _is_locally_managed(self, intent: LiveIntentRecord) -> bool:
         """Whether a durable fallback_protection row owns this entry root.
 

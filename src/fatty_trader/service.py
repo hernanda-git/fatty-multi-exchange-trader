@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
-from fatty_trader.analyzer.codex_runner import CodexRunner
+from fatty_trader.analyzer.codex_runner import CodexRunner, CodexRunnerConfig
 from fatty_trader.analyzer.postgres_worker import process_received_batch
 from fatty_trader.config.telegram import TelegramSettings
 from fatty_trader.domain.enums import Direction, Exchange, MarginMode
@@ -29,6 +29,7 @@ from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
 from fatty_trader.storage.migrations import apply_migrations
+from fatty_trader.policy.selectivity import SelectivitySettings
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
 from fatty_trader.worker_health import owned_worker_health, worker_progress
 
@@ -1064,6 +1065,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         # LIVE-only (bitget_kill_switch_enforced), so this is a read gate.
         kill_switch=PostgresReconciliationRepository(cast(Any, psycopg.connect)),
         protection_admission=protection_admission,
+        selectivity=SelectivitySettings.from_environ(environ),
     )
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "10"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
@@ -1094,6 +1096,11 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                             f"issues={','.join(issues)}",
                             flush=True,
                         )
+                        alert_warning = getattr(
+                            runtime.execution, "alert_recovery_advisory", None
+                        )
+                        if callable(alert_warning):
+                            alert_warning()
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
             worker_progress()
             print(
@@ -1584,9 +1591,15 @@ def build_codex_runner(
     """
     return CodexRunner(
         auth_env={
-            key: environ[key] for key in ("CODEX_HOME", "OPENAI_API_KEY") if environ.get(key)
+            key: environ[key] for key in ("OPENAI_API_KEY", "CODEX_HOME") if environ.get(key)
         },
         popen_factory=popen_factory,
+        config=CodexRunnerConfig(
+            model=environ.get("CODEX_MODEL") or "gpt-5.6-luna",
+            reasoning_effort=environ.get("CODEX_REASONING_EFFORT") or "medium",
+            # A real chart took 9-11 s; 30 s left too little headroom.
+            timeout_seconds=float(environ.get("CODEX_TIMEOUT_SECONDS") or "60"),
+        ),
     )
 
 
@@ -1598,6 +1611,9 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
     runner = build_codex_runner(environ)
     account_label = environ.get("CODEX_ACCOUNT_LABEL", "unset")
     codex_cli = "available" if shutil.which("codex") else "unavailable"
+    # Offline verdict: a dead token must be visible at startup, not only when a
+    # chart arrives and silently falls back to text parsing.
+    codex_auth = runner.probe_auth() if codex_cli == "available" else "unavailable"
     poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "5"))
     batch_size = int(environ.get("ANALYZER_BATCH_SIZE", "10"))
     while True:
@@ -1615,7 +1631,7 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
             # "account_label" is a static operator-supplied name, not an auth probe.
             # The old key name read as a status and led an audit to conclude Codex was
             # unconfigured while its token was valid.
-            f"codex_cli={codex_cli} codex_account_label={account_label}",
+            f"codex_cli={codex_cli} codex_auth={codex_auth} codex_account_label={account_label}",
             flush=True,
         )
         worker_progress()

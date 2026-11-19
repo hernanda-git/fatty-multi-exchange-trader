@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -35,6 +36,11 @@ STATE_DIR = Path(
 )
 INTERVAL = max(15, int(os.environ.get("WATCHDOG_INTERVAL_SECONDS", "60")))
 ALERTS_ENABLED = os.environ.get("FATTY_WATCHDOG_ALERTS", "1") == "1"
+BACKUP_DIR = Path(
+    os.environ.get("FATTY_BACKUP_DIR", str(Path.home() / "backups" / "fatty-trader"))
+)
+BACKUP_MAX_AGE_HOURS = float(os.environ.get("FATTY_BACKUP_MAX_AGE_HOURS", "26"))
+_DUMP_NAME = re.compile(r"^fatty_trader_\d{8}T\d{6}Z(_[A-Za-z0-9]{6})?\.dump$")
 HEALTH_URL = os.environ.get("FATTY_WATCHDOG_HEALTH_URL", "http://127.0.0.1:18081/health/telemetry")
 DOCKER = os.environ.get("FATTY_WATCHDOG_DOCKER", "/usr/bin/docker")
 REQUIRED_SERVICES = (
@@ -216,6 +222,51 @@ def observe_containers(reasons: list[dict[str, str]]) -> dict[str, Any]:
         }
         for name, row in services.items()
     }
+
+
+def backup_health(directory: Path, now: float, max_age_hours: float) -> dict[str, Any]:
+    """Newest complete dump and its age. Read-only; never touches the files."""
+    try:
+        entries = [
+            path for path in directory.iterdir() if path.is_file() and _DUMP_NAME.match(path.name)
+        ]
+    except OSError:
+        return {"status": "missing", "newest": None, "age_hours": None, "bytes": None}
+    if not entries:
+        return {"status": "missing", "newest": None, "age_hours": None, "bytes": None}
+    newest = max(entries, key=lambda path: path.stat().st_mtime)
+    stat = newest.stat()
+    age_hours = (now - stat.st_mtime) / 3600.0
+    if stat.st_size <= 0:
+        status = "empty"
+    elif age_hours > max_age_hours:
+        status = "stale"
+    else:
+        status = "ok"
+    return {
+        "status": status,
+        "newest": newest.name,
+        "age_hours": round(age_hours, 2),
+        "bytes": stat.st_size,
+    }
+
+
+def observe_backup(reasons: list[dict[str, str]]) -> dict[str, Any]:
+    """A killed dump is otherwise silent; the nightly backup must prove itself."""
+    health = backup_health(BACKUP_DIR, time.time(), BACKUP_MAX_AGE_HOURS)
+    if health["status"] == "missing":
+        reasons.append(
+            {"code": "backup-missing", "severity": "critical", "detail": str(BACKUP_DIR)}
+        )
+    elif health["status"] == "empty":
+        reasons.append(
+            {"code": "backup-empty", "severity": "critical", "detail": str(health["newest"])}
+        )
+    elif health["status"] == "stale":
+        reasons.append(
+            {"code": "backup-stale", "severity": "critical", "detail": f"{health['age_hours']}h"}
+        )
+    return health
 
 
 def observe_health(reasons: list[dict[str, str]]) -> dict[str, Any]:
@@ -505,6 +556,7 @@ def main() -> int:
         observation: dict[str, Any] = {}
         try:
             observation["containers"] = observe_containers(reasons)
+            observation["backup"] = observe_backup(reasons)
             observation["health"] = observe_health(reasons)
             ledger = observe_ledger(reasons)
             observation["ledger"] = {

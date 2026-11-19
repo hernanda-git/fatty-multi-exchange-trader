@@ -11,4 +11,4 @@ WorkingDirectory=/home/valarion/apps/fatty-multi-exchange-trader
 Environment=BACKUP_DIR=/home/valarion/backups/fatty-trader
 Environment=BACKUP_RETAIN_DAYS=14
 ExecStart=/usr/bin/flock -n /tmp/fatty-backup.lock /bin/bash /home/valarion/apps/fatty-multi-exchange-trader/scripts/backup_postgres.sh
-TimeoutStartSec=300
+TimeoutStartSec=1800

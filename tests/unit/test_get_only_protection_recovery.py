@@ -119,7 +119,10 @@ async def test_new_pass_cannot_use_last_pass_owned_inventory_truth():
     )
     assert (await reader(*evidence())).state is ProtectionState.VENUE_PROTECTED
     reader.begin()
-    assert "provider-position-not-uniquely-owned-and-protected" in await reader.inventory()
+    assert any(
+        issue.startswith("provider-position-not-uniquely-owned-and-protected")
+        for issue in await reader.inventory()
+    )
 
 
 @pytest.mark.asyncio

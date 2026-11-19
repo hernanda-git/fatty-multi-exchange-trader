@@ -166,7 +166,12 @@ class GetOnlyProtectionRecovery:
             if verified.count(key) != 1 and not self._locally_managed_position(
                 row.get("symbol"), side, quantity
             ):
-                issues.append("provider-position-not-uniquely-owned-and-protected")
+                # The symbol rides with the issue so an owner alert can name the
+                # position that is not the bot's; the advisory classifier matches
+                # the prefix, never the exact string.
+                issues.append(
+                    "provider-position-not-uniquely-owned-and-protected:" + str(row.get("symbol"))
+                )
         for key in self._verified.values():
             if observed.count(key) != 1:
                 issues.append("owned-position-inventory-mismatch")

@@ -546,6 +546,8 @@ def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
     reason = _safe_text(_safe_value(payload.get("reason", "")), limit=512)
     if reason == "cutover-gated":
         return _format_execution_event_html(payload)
+    if reason in {"dispatcher-recovery-blocked", "dispatcher-recovery-warning"}:
+        return _format_recovery_alert_html(payload)
     lines = [
         "⚠️ <b>Perhatian Eksekusi</b>",
         "━━━━━━━━━━━━━━━━━━━━",
@@ -565,6 +567,50 @@ def _format_execution_alert_html(payload: Mapping[str, Any]) -> str:
     if isinstance(evidence_raw, str) and evidence_raw.strip():
         lines.append(f"Bukti: {escape(_safe_text(_safe_value(evidence_raw), limit=200))}")
     lines.append("Perlu pemeriksaan operator.")
+    return "\n".join(lines)
+
+
+def _format_recovery_alert_html(payload: Mapping[str, Any]) -> str:
+    """Say plainly whether trading stopped, why, and what it is costing."""
+    blocked = payload.get("reason") == "dispatcher-recovery-blocked"
+    issues = payload.get("issues")
+    evidence = payload.get("evidence")
+    queued = payload.get("queued")
+    oldest = payload.get("oldest_queued_minutes")
+    lines = [
+        "⛔ <b>TRADING HALTED</b>" if blocked else "⚠️ <b>DISPATCHER WARNING</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "No new entries are being taken."
+        if blocked
+        else "Trading continues; the affected symbol's entries stay refused.",
+    ]
+    if isinstance(queued, int):
+        line = f"Queued signals: <b>{queued}</b>"
+        if isinstance(oldest, int) and queued > 0:
+            line += f" · oldest waiting {oldest} min"
+        lines.append(line)
+    for label, key, limit in (
+        ("Dispatch", "dispatch_id", 96),
+        ("Intent", "intent", 96),
+        ("Symbol", "symbol", 32),
+    ):
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            lines.append(
+                f"{label}: <code>{escape(_safe_text(_safe_value(raw), limit=limit))}</code>"
+            )
+    causes = (
+        [str(item) for item in issues]
+        if isinstance(issues, list)
+        else ([str(evidence)] if evidence else [])
+    )
+    for cause in causes[:5]:
+        lines.append(f"Cause: <code>{escape(_safe_text(_safe_value(cause), limit=160))}</code>")
+    lines.append(
+        "Resumes automatically once recovery is clean."
+        if blocked
+        else "Nothing to do unless this persists."
+    )
     return "\n".join(lines)
 
 

@@ -53,6 +53,7 @@ def payload(cursor):
             params[2]
             for statement, params in cursor.executed
             if "INSERT INTO notifications_outbox" in statement
+            and not str(params[1]).startswith("vision-failed:")
         )
     )
 

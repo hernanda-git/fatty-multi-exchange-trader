@@ -560,6 +560,15 @@ MIGRATIONS: Final = [
             CHECK (action <> 'SL_MOVE' OR (target_price IS NOT NULL AND target_price > 0));
         """,
     ),
+    (
+        40,
+        """
+        -- Vision outcomes were invisible: a dead Codex token only surfaced as a
+        -- per-message fallback. Persist the verdict so an outage is auditable.
+        ALTER TABLE telegram_messages
+            ADD COLUMN IF NOT EXISTS image_status TEXT;
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

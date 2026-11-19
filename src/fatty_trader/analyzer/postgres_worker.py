@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from contextlib import closing, suppress
+from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -273,7 +274,14 @@ def process_received_batch(
                             else None
                         )
                         image_status = "FAILED" if image_failure else "SUCCEEDED"
+                        cursor.execute(
+                            "UPDATE telegram_messages SET image_status=%s WHERE id=%s",
+                            (image_status, message_uuid),
+                        )
                         if image_failure:
+                            _alert_vision_failure(
+                                cursor, message.message_id, str(image_failure)
+                            )
                             # A failed image is not successful analysis. Accept only explicit
                             # source text; no second model call or implicit market-price I/O.
                             explicit_signal = parse_explicit_signal(
@@ -556,6 +564,29 @@ def _runner_callable(
     if callable(runner):
         return runner
     return runner.run
+
+
+def _alert_vision_failure(cursor: Any, message_id: int, reason: str) -> None:
+    """One card per hour while vision is down, never one per message."""
+    payload = {
+        "kind": "system-event",
+        "state": "warning",
+        "message": f"Vision analysis failed: {reason}",
+        "reasons": ["warning:vision-analysis-failed"],
+        "message_id": message_id,
+    }
+    bucket = datetime.now(UTC).strftime("%Y-%m-%dT%H")
+    cursor.execute("SAVEPOINT vision_alert")
+    try:
+        cursor.execute(
+            "INSERT INTO notifications_outbox (id, dedup_key, payload) "
+            "VALUES (%s, %s, %s::jsonb) ON CONFLICT (dedup_key) DO NOTHING",
+            (str(uuid4()), f"vision-failed:{bucket}", json.dumps(payload, sort_keys=True)),
+        )
+        cursor.execute("RELEASE SAVEPOINT vision_alert")
+    except Exception:
+        # Alerting must never fail the analysis transaction.
+        cursor.execute("ROLLBACK TO SAVEPOINT vision_alert")
 
 
 def _image_runner(

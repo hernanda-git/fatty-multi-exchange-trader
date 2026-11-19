@@ -195,6 +195,8 @@ async def reconcile_unknown_intent(
             LiveOrderStatus.REJECTED: "rejected",
             LiveOrderStatus.UNKNOWN: "unknown",
         }[outcome.status]
+        if intent.state == "rejected":
+            intent.last_error = "provider-order-rejected"
         return intent
     fills = await read_fills(intent.symbol)
     if isinstance(fills, dict):
@@ -239,6 +241,8 @@ async def reconcile_unknown_intent(
     }[status]
     if intent.state == "unknown":
         intent.last_error = "provider-order-unresolved"
+    elif intent.state == "rejected":
+        intent.last_error = "provider-order-rejected"
     return intent
 
 

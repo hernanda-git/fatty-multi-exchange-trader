@@ -13,6 +13,21 @@ from uuid import UUID, uuid4
 from fatty_trader.intake.freshness import SOURCE_ELIGIBLE_SQL, expire_source_dispatch
 
 
+_ALERT_BUCKET_HOURS = 6
+
+
+def _now() -> datetime:
+    """Patchable clock for alert bucketing."""
+    return datetime.now(UTC)
+
+
+def _alert_bucket(now: datetime) -> str:
+    """Six-hour bucket: a lasting condition re-alerts four times a day."""
+    moment = now.astimezone(UTC)
+    hour = moment.hour // _ALERT_BUCKET_HOURS * _ALERT_BUCKET_HOURS
+    return f"{moment:%Y-%m-%d}T{hour:02d}"
+
+
 def _retire_stale(cursor: Any) -> None:
     cursor.execute(
         """SELECT d.id FROM dispatches d
@@ -610,16 +625,52 @@ class PostgresBitgetDispatchRepository:
         )
 
     def alert_recovery_blocked(self, issues: tuple[str, ...]) -> None:
-        """One owner alert per distinct recovery issue set (cycles repeat every 30 s)."""
+        """Announce a block, re-announcing four times a day while it persists.
+
+        The dedup key used to be the bare issue signature, so the second
+        occurrence of the same condition was silenced forever (2026-10-19 key
+        still swallowing the 2026-11-19 WLD block). The six-hour bucket keeps a
+        lasting block visible without turning the 30-second cycle into spam.
+        """
+        self._alert_recovery(status="blocked", issues=issues)
+
+    def alert_recovery_advisory(self, issues: tuple[str, ...]) -> None:
+        """Announce a non-blocking issue, e.g. a position the bot does not own."""
+        self._alert_recovery(status="warning", issues=issues)
+
+    def _alert_recovery(self, *, status: str, issues: tuple[str, ...]) -> None:
         signature = ",".join(sorted(issues)) or "unconfirmed"
         self._alert(
-            dedup_key=f"dispatcher-recovery-blocked:{signature}",
+            dedup_key=f"dispatcher-recovery-{status}:{signature}:{_alert_bucket(_now())}",
             payload={
                 "kind": "execution-alert",
-                "reason": "dispatcher-recovery-blocked",
+                "reason": f"dispatcher-recovery-{status}",
+                "state": status,
                 "evidence": signature,
+                "issues": list(issues),
+                **self._queued_signal_context(),
             },
         )
+
+    def _queued_signal_context(self) -> dict[str, Any]:
+        """What the block costs right now: queued entries and the oldest wait."""
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT count(*), min(created_at) FROM dispatches "
+                "WHERE exchange='bitget' AND state='QUEUED'"
+            )
+            row = cursor.fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        queued = int(row[0]) if row and row[0] is not None else 0
+        oldest_minutes: int | None = None
+        if row and row[1] is not None:
+            oldest_minutes = max(0, int((_now() - row[1]).total_seconds() // 60))
+        return {"queued": queued, "oldest_queued_minutes": oldest_minutes}
 
     def _alert(self, *, dedup_key: str, payload: dict[str, Any]) -> None:
         connection = self._connection_factory()

@@ -122,6 +122,36 @@ class CodexRunner:
             argv.extend(("--image", image_path))
         return argv
 
+    def probe_auth(self) -> str:
+        """Offline auth verdict from the isolated Codex home; spends no tokens.
+
+        Returns ``ok``, ``expired`` or ``unavailable``. ``codex login status``
+        only inspects auth.json, so running it on startup is safe.
+        """
+        with TemporaryDirectory(prefix="codex-auth-") as cwd:
+            env = {
+                "PATH": "/usr/local/bin:/usr/bin:/bin",
+                "HOME": cwd,
+                "TMPDIR": cwd,
+                "LANG": "C.UTF-8",
+                **self._auth_env,
+            }
+            try:
+                completed = subprocess.run(
+                    [self._config.executable, "login", "status"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=env,
+                    cwd=cwd,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return "unavailable"
+        output = (completed.stdout + completed.stderr).lower()
+        if completed.returncode == 0 and "logged in" in output:
+            return "ok"
+        return "expired"
+
     def run(self, prompt: str, *, image_paths: Sequence[str] = ()) -> CodexRunResult:
         try:
             _harden_credential_parent()
