@@ -569,6 +569,19 @@ MIGRATIONS: Final = [
             ADD COLUMN IF NOT EXISTS image_status TEXT;
         """,
     ),
+    (
+        41,
+        """
+        -- X intake cursor: one row per followed handle. since_id is TEXT so a
+        -- future id format cannot overflow the column.
+        CREATE TABLE IF NOT EXISTS x_poll_state (
+            handle TEXT PRIMARY KEY,
+            user_id TEXT,
+            since_id TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        """,
+    ),
 ]
 # Error fragments that mean "this DDL was already applied" on PostgreSQL
 # (psycopg raises them as UniqueViolation/DuplicateTable etc.) and SQLite.

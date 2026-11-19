@@ -35,6 +35,7 @@ from fatty_trader.worker_health import owned_worker_health, worker_progress
 
 SUPPORTED_SERVICES = (
     "intake",
+    "x-intake",
     "analyzer",
     "dispatcher-binance",
     "dispatcher-bitget",
@@ -1531,6 +1532,11 @@ async def run_worker(name: str) -> None:
     if name == "intake":
         await run_intake(os.environ)
         return
+    if name == "x-intake":
+        from fatty_trader.intake.x_poll import run_x_intake
+
+        await run_x_intake(os.environ)
+        return
     if name == "analyzer":
         await run_analyzer(os.environ)
         return
@@ -2056,6 +2062,7 @@ def main() -> int:
     if args.check:
         if args.service in {
             "intake",
+            "x-intake",
             "analyzer",
             "operator-bot",
             "source-management",

@@ -205,3 +205,29 @@ runs with `=1` on purpose so source TP1/SL/CLOSE actions are applied automatical
   whose best target is below that reward:risk; `BITGET_POLICY_REQUIRE_TARGET=1`
   rejects target-less signals. Every rejection is recorded as `policy-*` so the
   scorecard can audit whether the rule earned its keep.
+
+## X (Twitter) copy-source intake
+
+X is pay-per-usage now: **$0.005 per post read**, deduplicated within a UTC day, so
+following a handful of accounts costs cents rather than a $200 tier. `x-intake`
+polls each handle and writes durable `telegram_messages` rows on a synthetic
+**negative** channel id; the analyzer, dispatcher, protection lanes and scorecard
+are unchanged.
+
+1. Create an app at `console.x.com` and copy its Bearer Token.
+2. On the server, add to `.env`:
+   ```
+   X_BEARER_TOKEN=...
+   X_ACCOUNTS=handle1:-2000000001,handle2:-2000000002
+   ANALYZER_CHANNEL_IDS=-1001252615519,-2000000001,-2000000002
+   ```
+3. `docker compose up -d x-intake analyzer`
+4. Watch `docker compose logs -f x-intake` for `state=ready inserted=N`.
+
+Behaviour that matters:
+
+- A post keeps its **own** creation time, so a late read ages out of the five-minute
+  entry window instead of front-running the fill.
+- Only a single photo attachment is downloaded; video previews are not charts.
+- Channels must be negative, so an X handle can never collide with a Telegram id.
+- Without both variables the service runs green and idle (`state=disabled`).
