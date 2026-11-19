@@ -1073,12 +1073,9 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                 await runtime.execution.recover_entry_lifecycles()  # type: ignore[attr-defined]
                 if runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
                     issues = runtime.execution.recovery_issues  # type: ignore[attr-defined]
-                    blocking_issues = [
-                        issue
-                        for issue in issues
-                        if not issue.endswith("owned-flat-close-fill-unproven")
-                        and not issue.startswith("recovery-closed")
-                    ]
+                    blocking_issues = list(
+                        runtime.execution.recovery_blocking_issues  # type: ignore[attr-defined]
+                    )
                     if blocking_issues:
                         print(
                             "service=dispatcher-bitget state=recovery-blocked "

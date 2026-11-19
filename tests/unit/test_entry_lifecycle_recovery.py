@@ -366,3 +366,37 @@ async def test_restart_recovery_protection_verifies_against_owned_residual_after
     assert await adapter.recover_entry_lifecycles() == 1
     assert adapter.recovery_ready is True
     assert repo.events[-1]["reason"] == "recovery-protection-verified"
+
+
+@pytest.mark.asyncio
+async def test_foreign_position_warns_without_parking_the_dispatcher():
+    class Inventory:
+        def __init__(self, issues):
+            self.issues = issues
+
+        async def inventory(self):
+            return self.issues
+
+    class EmptyRepository:
+        def recovery_candidates(self):
+            return []
+
+    def adapter(issues):
+        return BitgetDispatchExecution(
+            Execution(result=_result()),
+            InMemoryLiveIntentStore(),
+            dispatch_repository=EmptyRepository(),
+            recovery_protection=Inventory(issues),
+        )
+
+    foreign = adapter(("provider-position-not-uniquely-owned-and-protected",))
+    assert await foreign.recover_entry_lifecycles() == 0
+    assert foreign.recovery_ready is False
+    assert foreign.recovery_issues == ("provider-position-not-uniquely-owned-and-protected",)
+    # A position the bot does not own still gates its own symbol at preflight, but it
+    # must not stop claims for every other symbol.
+    assert foreign.recovery_blocking_issues == ()
+
+    genuine = adapter(("pending-orders-require-reconciliation",))
+    assert await genuine.recover_entry_lifecycles() == 0
+    assert genuine.recovery_blocking_issues == ("pending-orders-require-reconciliation",)

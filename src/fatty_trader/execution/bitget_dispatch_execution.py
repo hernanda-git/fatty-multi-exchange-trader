@@ -77,6 +77,24 @@ class BitgetDispatchExecution:
         self.recovery_issues: tuple[str, ...] = ()
         self.console_cancel_claim: Callable[[str, UUID], bool] | None = None
 
+    @property
+    def recovery_blocking_issues(self) -> tuple[str, ...]:
+        """Issues that must stop new entries, versus issues that only warn.
+
+        A venue position this bot does not own is the owner's position; it cannot
+        be protected by us and it is not a reason to stop trading every other
+        symbol. Same-symbol entries stay guarded by the venue-derived
+        "Bitget symbol has an active position" check at preflight. Treating it as
+        global turned one manual trade into an 7.5-hour outage on 2026-11-19.
+        """
+        return tuple(
+            issue
+            for issue in self.recovery_issues
+            if not issue.endswith("owned-flat-close-fill-unproven")
+            and not issue.startswith("recovery-closed")
+            and not issue.startswith("provider-position-not-uniquely-owned-and-protected")
+        )
+
     async def recover_entry_lifecycles(self) -> int:
         """GET-only recovery, including consumed reservations and terminal fills.
 
