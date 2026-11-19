@@ -72,7 +72,7 @@ def attribute(
     same key ``fills`` uses.
     """
     entry_oids = {
-        intent["dispatch_id"]: intent["client_order_id"]
+        str(intent["dispatch_id"]): intent["client_order_id"]
         for intent in intents
         if intent.get("dispatch_id") and intent.get("client_order_id")
     }

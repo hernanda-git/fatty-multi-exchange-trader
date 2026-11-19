@@ -121,3 +121,23 @@ def test_summary_reports_expectancy_and_unlinked_entries():
     assert summary["unlinked"] == 1
     assert summary["net"] == Decimal("8.89")
     assert summary["win_rate"] == Decimal("1")
+
+
+def test_uuid_dispatch_ids_still_link_to_their_entry_intent_fills():
+    from uuid import uuid4
+
+    dispatch_id = uuid4()
+    dispatches = [_dispatch(dispatch_id, "CCCUSDT", START)]
+    intents = [{"dispatch_id": dispatch_id, "client_order_id": "live-ccc"}]
+    fills = [
+        _fill("CCCUSDT", "live-ccc", "1.00", "10", None, "0.01", START),
+        _fill("CCCUSDT", "provider-ccc", "1.05", "10", "0.5", "0.01", START + timedelta(hours=1)),
+    ]
+
+    trades = attribute(
+        dispatches=dispatches, intents=intents, fills=fills, now=START + timedelta(days=1)
+    )
+
+    assert trades[0].linked is True
+    assert trades[0].filled_qty == Decimal("10")
+    assert trades[0].realized == Decimal("0.5")
