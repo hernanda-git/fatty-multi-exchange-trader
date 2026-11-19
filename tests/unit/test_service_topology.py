@@ -268,3 +268,14 @@ def test_apply_schema_runs_additive_live_migrations(monkeypatch: pytest.MonkeyPa
 
     assert called
     assert connection.committed
+
+
+def test_every_supported_service_resolves_its_config() -> None:
+    """A supported service with no ``_CREDENTIALS`` entry crashes on startup."""
+    for name in SUPPORTED_SERVICES:
+        assert service_config(name, {"TRADER_MODE": "DEMO"}).name == name
+
+
+def test_compose_launches_the_x_intake_service() -> None:
+    assert "x-intake:" in COMPOSE
+    assert '"--service", "x-intake"' in COMPOSE

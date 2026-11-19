@@ -88,6 +88,7 @@ _CREDENTIALS: dict[str, tuple[str, ...]] = {
         "TELEGRAM_SOURCE_CHANNELS",
         "TELEGRAM_TARGET_CHAT_ID",
     ),
+    "x-intake": ("X_BEARER_TOKEN", "X_ACCOUNTS", "X_POLL_SECONDS", "X_MEDIA_ROOT", "X_API_BASE"),
     "analyzer": (),
     "dispatcher-binance": ("BINANCE_API_KEY", "BINANCE_API_SECRET"),
     "dispatcher-bitget": ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE"),
