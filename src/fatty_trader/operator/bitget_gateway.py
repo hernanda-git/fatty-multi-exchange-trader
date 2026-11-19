@@ -524,9 +524,9 @@ class BitgetOperatorGateway:
                     f"mark price {mark} is at or above stop {normalized_stop}"
                 )
         sl_id = str(position["stop_loss_id"] or "").strip()
-        tp_id = str(position["take_profit_id"] or "").strip()
-        if not sl_id or not tp_id:
-            raise ValueError("owned native SL and retained TP identities are required")
+        tp_id = str(position["take_profit_id"] or "").strip() or None
+        if not sl_id:
+            raise ValueError("owned native SL identity is required")
         pending = self._run(self._client.get_pending_plan_orders(symbol))
         plans = [dict(row) for row in _rows(pending, "pending protection")]
         candidates = [
@@ -554,11 +554,14 @@ class BitgetOperatorGateway:
             or root.role != "ENTRY"
             or root.symbol.upper() != symbol
             or root.side.upper() not in ({"BUY", "LONG"} if side == "LONG" else {"SELL", "SHORT"})
-            or root.entry_leg == "limit"
             or root.planned_stop_loss is None
-            or not root.planned_take_profits
         ):
-            raise ValueError("native SL ownership does not match the live residual")
+            # A position opened outside the dispatcher has no bot-owned ENTRY root.
+            # Say so precisely: the operator has to manage it by hand, and this text
+            # is the only thing that tells them why the instruction was refused.
+            # A limit entry is still a bot-owned ENTRY, and a target-less signal is
+            # still owned, so neither may be rejected here.
+            raise ValueError(f"position-not-owned:{plan_client_oid or 'unknown'}")
         remaining_owned = self._intent_store.remaining_owned_quantity(root_oid)
         if remaining_owned != quantity:
             lifecycle = getattr(self._intent_store, "verified_close_lifecycle", None)
@@ -567,7 +570,7 @@ class BitgetOperatorGateway:
                 with suppress(Exception):
                     remaining_owned = self._intent_store.remaining_owned_quantity(root_oid)
         if remaining_owned != quantity:
-            raise ValueError("native SL ownership does not match the live residual")
+            raise ValueError("native SL quantity does not match the live residual")
         old_stop = root.active_stop_loss_price or root.planned_stop_loss
         venue_stop = position.get("stop_loss")
         if isinstance(venue_stop, Decimal) and venue_stop > 0:
@@ -583,7 +586,10 @@ class BitgetOperatorGateway:
             hold_side=side.lower(),
             quantity=quantity,
             stop_loss=old_stop,
-            take_profit=root.active_take_profit_price or root.planned_take_profits[0],
+            take_profit=(
+                root.active_take_profit_price
+                or (root.planned_take_profits[0] if root.planned_take_profits else None)
+            ),
             stop_loss_client_oid=plan_client_oid,
             take_profit_client_oid=self._native_plan_client_oid(root, "TP"),
             stop_loss_provider_order_id=sl_id,

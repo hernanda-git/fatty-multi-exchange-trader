@@ -394,6 +394,7 @@ def test_source_stop_accepts_venue_margin_echo_on_position_level_plans() -> None
     assert store.get("management-sl").state == "reconciled"
     gateway.close()
 
+
 def test_source_stop_modifies_with_preexisting_protection_intents() -> None:
     gateway, client, store = stop_gateway()
     client.plans[0]["clientOid"] = "root-entry-sl"
@@ -438,6 +439,7 @@ def test_source_stop_modifies_with_preexisting_protection_intents() -> None:
     assert store.get("root-entry").active_stop_loss_price == Decimal("60000")
     gateway.close()
 
+
 def test_source_stop_parks_when_mark_price_worse_than_stop() -> None:
     from fatty_trader.execution.source_management import SourceManagementReconciliationPending
 
@@ -461,6 +463,7 @@ def test_source_stop_rejects_on_definitive_venue_error() -> None:
         move_stop(gateway)
     assert store.get("management-sl").state == "rejected"
     gateway.close()
+
 
 @pytest.mark.parametrize(
     ("field", "value"),
@@ -528,7 +531,7 @@ def test_stop_modify_rejects_unowned_residual_without_post() -> None:
     root = store.get("root-entry")
     root.filled_qty = Decimal("0.02")
     store.update(root)
-    with pytest.raises(ValueError, match="ownership"):
+    with pytest.raises(ValueError, match="quantity does not match the live residual"):
         move_stop(gateway)
     assert not any(name == "modify_position_stop_loss" for name, _ in client.calls)
     gateway.close()
