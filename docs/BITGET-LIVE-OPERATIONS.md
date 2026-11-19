@@ -231,3 +231,28 @@ Behaviour that matters:
 - Only a single photo attachment is downloaded; video previews are not charts.
 - Channels must be negative, so an X handle can never collide with a Telegram id.
 - Without both variables the service runs green and idle (`state=disabled`).
+
+## Manual instructions (owner lane)
+
+Never open a position directly on Bitget: it becomes a foreign position the bot
+cannot own or protect (that is exactly what caused the 2026-11-19 outage). Use the
+manual lane, which creates an ordinary dispatch the bot owns end to end.
+
+```bash
+docker compose exec -T dispatcher-bitget /app/.venv/bin/python \
+  /app/scripts/manual_signal.py --symbol SOLUSDT --direction LONG \
+  --entry 132.5 --stop 128.1 --target 142
+```
+
+- Without `--confirm` it prints the plan, risk per unit and reward:risk, and writes
+  nothing.
+- `--verify-sql` executes the inserts and rolls them back: proves the SQL without
+  leaving a row.
+- With `--confirm` the dispatcher claims the instruction within one poll and applies
+  preflight, `$2`/20x sizing, native SL/TP, reconciliation and scorecard
+  attribution exactly like a sourced signal. No venue order is ever placed by the
+  script itself.
+- The instruction expires after `--expires-minutes` (default 5); the bot will not
+  chase a stale manual order.
+- Close an owned position through the same gate:
+  `--action close --symbol SOLUSDT --confirm` (source-management lane).
