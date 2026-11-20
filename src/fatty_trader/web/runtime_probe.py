@@ -98,6 +98,63 @@ def create_entry_lane_reader(
     return read
 
 
+_QUEUE_DELAYED_SECONDS = 120
+_QUEUE_STALLED_SECONDS = 300
+
+
+def create_dispatch_queue_reader(
+    *, connection_factory: Callable[..., Any] | None = None
+) -> Callable[[], dict[str, Any]]:
+    """Report the oldest queued entry without leaking connection details.
+
+    A dispatcher that is alive but paused (recovery block, hung claim query)
+    keeps its health file fresh, so container health cannot see it. Queue age is
+    the observable symptom: a normal entry waits for one poll, while 2026-11-19
+    waited seven hours before expiring as stale.
+    """
+
+    def read() -> dict[str, Any]:
+        try:
+            with (
+                (connection_factory or psycopg.connect)(
+                    connect_timeout=2,
+                    options="-c default_transaction_read_only=on -c statement_timeout=2000",
+                ) as connection,
+                connection.cursor() as cursor,
+            ):
+                cursor.execute(
+                    "SELECT count(*), "
+                    "extract(epoch FROM (clock_timestamp() - min(created_at))) "
+                    "FROM dispatches WHERE exchange = 'bitget' AND state = 'QUEUED'"
+                )
+                row = cursor.fetchone()
+        except Exception:
+            return {
+                "status": "unknown",
+                "queued": None,
+                "oldest_seconds": None,
+                "evidence": "dispatches-unreadable",
+            }
+        queued = int(row[0]) if row and row[0] is not None else 0
+        oldest = float(row[1]) if row and row[1] is not None else 0.0
+        oldest = max(oldest, 0.0)
+        status = (
+            "stalled"
+            if oldest >= _QUEUE_STALLED_SECONDS
+            else "delayed"
+            if oldest >= _QUEUE_DELAYED_SECONDS
+            else "flowing"
+        )
+        return {
+            "status": status,
+            "queued": queued,
+            "oldest_seconds": round(oldest, 1),
+            "evidence": "dispatches",
+        }
+
+    return read
+
+
 def create_runtime_health_reader(
     environ: Mapping[str, str],
     *,

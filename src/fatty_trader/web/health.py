@@ -16,6 +16,7 @@ def build_health_report(
     required_components: tuple[str, ...] = ("postgres", "intake", "analyzer", "notification"),
     max_age_seconds: float = 120,
     entry_lane: Mapping[str, Any] | None = None,
+    dispatch_queue: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     """Separate static configuration, HTTP liveness, and fresh runtime evidence.
 
@@ -82,6 +83,11 @@ def build_health_report(
         "entry_lane": (
             dict(entry_lane)
             if isinstance(entry_lane, Mapping) and entry_lane
+            else {"status": "unknown", "evidence": "not supplied"}
+        ),
+        "dispatch_queue": (
+            dict(dispatch_queue)
+            if isinstance(dispatch_queue, Mapping) and dispatch_queue
             else {"status": "unknown", "evidence": "not supplied"}
         ),
         "components": components,

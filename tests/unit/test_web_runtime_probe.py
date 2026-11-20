@@ -344,9 +344,7 @@ def test_entry_lane_reports_the_active_scope_and_reason():
 
     assert reader() == {
         "status": "blocked",
-        "blocked_scopes": [
-            {"scope": "bitget", "reason": "unexpected-order:1507487858898726912"}
-        ],
+        "blocked_scopes": [{"scope": "bitget", "reason": "unexpected-order:1507487858898726912"}],
         "evidence": "venue_kill_switches",
     }
     assert calls and calls[0]["options"] == (
@@ -377,4 +375,81 @@ def test_entry_lane_fails_closed_to_unknown_without_leaking_errors():
         "status": "unknown",
         "blocked_scopes": [],
         "evidence": "venue_kill_switches-unreadable",
+    }
+
+
+class QueueCursor(LaneCursor):
+    def __init__(self, row):
+        super().__init__([])
+        self.row = row
+
+    def fetchone(self):
+        return self.row
+
+
+class QueueConnection(LaneConnection):
+    def __init__(self, row):
+        super().__init__([])
+        self.cursor_obj = QueueCursor(row)
+
+
+def queue_factory(row, calls):
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return QueueConnection(row)
+
+    return factory
+
+
+def test_dispatch_queue_flags_a_stalled_entry():
+    from fatty_trader.web.runtime_probe import create_dispatch_queue_reader
+
+    calls = []
+    reader = create_dispatch_queue_reader(connection_factory=queue_factory((2, 450.4), calls))
+
+    assert reader() == {
+        "status": "stalled",
+        "queued": 2,
+        "oldest_seconds": 450.4,
+        "evidence": "dispatches",
+    }
+    assert calls and calls[0]["options"] == (
+        "-c default_transaction_read_only=on -c statement_timeout=2000"
+    )
+
+
+def test_dispatch_queue_is_delayed_after_two_minutes():
+    from fatty_trader.web.runtime_probe import create_dispatch_queue_reader
+
+    reader = create_dispatch_queue_reader(connection_factory=queue_factory((1, 150.0), []))
+
+    assert reader()["status"] == "delayed"
+
+
+def test_dispatch_queue_is_flowing_when_empty():
+    from fatty_trader.web.runtime_probe import create_dispatch_queue_reader
+
+    reader = create_dispatch_queue_reader(connection_factory=queue_factory((0, None), []))
+
+    assert reader() == {
+        "status": "flowing",
+        "queued": 0,
+        "oldest_seconds": 0.0,
+        "evidence": "dispatches",
+    }
+
+
+def test_dispatch_queue_never_leaks_a_connection_error():
+    from fatty_trader.web.runtime_probe import create_dispatch_queue_reader
+
+    def failing(**kwargs):
+        raise OSError("postgresql://secret@private/db")
+
+    reader = create_dispatch_queue_reader(connection_factory=failing)
+
+    assert reader() == {
+        "status": "unknown",
+        "queued": None,
+        "oldest_seconds": None,
+        "evidence": "dispatches-unreadable",
     }

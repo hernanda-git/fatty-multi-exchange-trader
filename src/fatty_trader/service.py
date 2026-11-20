@@ -1071,36 +1071,60 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
     )
     interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "2"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
+    # GET-only lifecycle recovery is expensive (it reads every candidate against
+    # the venue); the claim poll is deliberately faster. Keep recovery on its own
+    # cadence so a 2s claim poll does not multiply provider reads.
+    recovery_interval = max(interval, float(environ.get("BITGET_RECOVERY_INTERVAL_SECONDS", "10")))
+    next_recovery = 0.0
+    recovery_log_at = 0.0
+    recovery_signature: tuple[str, tuple[str, ...]] | None = None
+
+    def report_recovery(state: str, issues: list[str], alert: object) -> None:
+        """Announce a persistent recovery state at most once a minute.
+
+        The loop polls every two seconds. Printing and enqueueing the alert each
+        cycle rotated the 10 MB container log in under two hours, which is why
+        the 2026-11-19 block could not be reconstructed afterwards. The alert
+        itself is deduplicated by a six-hour bucket; this throttle only avoids
+        the per-cycle outbox write and preserves log evidence.
+        """
+        nonlocal recovery_log_at, recovery_signature
+        signature = (state, tuple(issues))
+        now = time.monotonic()
+        if signature == recovery_signature and now - recovery_log_at < 60:
+            return
+        recovery_signature = signature
+        recovery_log_at = now
+        print(f"service=dispatcher-bitget state={state} issues={','.join(issues)}", flush=True)
+        if callable(alert):
+            alert()
+
     try:
         while True:
-            if runtime is not None:
+            now = time.monotonic()
+            if runtime is not None and now >= next_recovery:
                 await runtime.execution.recover_entry_lifecycles()  # type: ignore[attr-defined]
-                if runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
-                    issues = runtime.execution.recovery_issues  # type: ignore[attr-defined]
-                    blocking_issues = list(
-                        runtime.execution.recovery_blocking_issues  # type: ignore[attr-defined]
+                next_recovery = time.monotonic() + recovery_interval
+            if runtime is not None and runtime.execution.recovery_ready is not True:  # type: ignore[attr-defined]
+                issues = runtime.execution.recovery_issues  # type: ignore[attr-defined]
+                blocking_issues = list(
+                    runtime.execution.recovery_blocking_issues  # type: ignore[attr-defined]
+                )
+                if blocking_issues:
+                    report_recovery(
+                        "recovery-blocked",
+                        blocking_issues,
+                        getattr(runtime.execution, "alert_recovery_blocked", None),
                     )
-                    if blocking_issues:
-                        print(
-                            "service=dispatcher-bitget state=recovery-blocked "
-                            f"issues={','.join(blocking_issues)}",
-                            flush=True,
-                        )
-                        alert_blocked = getattr(runtime.execution, "alert_recovery_blocked", None)
-                        if callable(alert_blocked):
-                            alert_blocked()
-                        worker_progress()
-                        await asyncio.sleep(interval)
-                        continue
-                    elif issues:
-                        print(
-                            "service=dispatcher-bitget state=recovery-warning "
-                            f"issues={','.join(issues)}",
-                            flush=True,
-                        )
-                        alert_warning = getattr(runtime.execution, "alert_recovery_advisory", None)
-                        if callable(alert_warning):
-                            alert_warning()
+                    worker_progress()
+                    await asyncio.sleep(interval)
+                    continue
+                elif issues:
+                    report_recovery(
+                        "recovery-warning",
+                        list(issues),
+                        getattr(runtime.execution, "alert_recovery_advisory", None),
+                    )
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)
             worker_progress()
             print(
