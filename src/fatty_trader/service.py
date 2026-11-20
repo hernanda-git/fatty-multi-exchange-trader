@@ -28,8 +28,8 @@ from fatty_trader.domain.models import BitgetLiveRiskConfig, InstrumentSpec, Ven
 from fatty_trader.intake.persistence import PostgresRawMessageRepository
 from fatty_trader.intake.telegram import TelegramForwarder
 from fatty_trader.intake.telethon_client import build_telethon_client
-from fatty_trader.storage.migrations import apply_migrations
 from fatty_trader.policy.selectivity import SelectivitySettings
+from fatty_trader.storage.migrations import apply_migrations
 from fatty_trader.storage.schema import INITIAL_SCHEMA_SQL
 from fatty_trader.worker_health import owned_worker_health, worker_progress
 
@@ -1098,9 +1098,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
                             f"issues={','.join(issues)}",
                             flush=True,
                         )
-                        alert_warning = getattr(
-                            runtime.execution, "alert_recovery_advisory", None
-                        )
+                        alert_warning = getattr(runtime.execution, "alert_recovery_advisory", None)
                         if callable(alert_warning):
                             alert_warning()
             cycle_state = await dispatcher.run_once("dispatcher-bitget", lease_seconds)

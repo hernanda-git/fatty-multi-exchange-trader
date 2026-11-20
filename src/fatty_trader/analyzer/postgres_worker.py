@@ -363,9 +363,7 @@ def process_received_batch(
                             (image_status, message_uuid),
                         )
                         if image_failure:
-                            _alert_vision_failure(
-                                cursor, message.message_id, str(image_failure)
-                            )
+                            _alert_vision_failure(cursor, message.message_id, str(image_failure))
                             # A failed image is not successful analysis. Accept only explicit
                             # source text; no second model call or implicit market-price I/O.
                             explicit_signal = parse_explicit_signal(

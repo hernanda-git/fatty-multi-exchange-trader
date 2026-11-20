@@ -286,3 +286,95 @@ async def test_actual_notification_cycle_success_controls_web_evidence(
         with pytest.raises(asyncio.CancelledError):
             await task
     assert read()["notification"]["state"] != "ready"
+
+
+class LaneCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.sql = ""
+        self.params = ()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def execute(self, sql, params=()):
+        self.sql = sql
+        self.params = params
+
+    def fetchall(self):
+        return self.rows
+
+
+class LaneConnection:
+    def __init__(self, rows):
+        self.cursor_obj = LaneCursor(rows)
+        self.closed = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.closed += 1
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+def lane_factory(rows, calls):
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return LaneConnection(rows)
+
+    return factory
+
+
+def test_entry_lane_reports_the_active_scope_and_reason():
+    from fatty_trader.web.runtime_probe import create_entry_lane_reader
+
+    calls = []
+    reader = create_entry_lane_reader(
+        connection_factory=lane_factory(
+            [("bitget", True, "unexpected-order:1507487858898726912"), ("global", False, "")],
+            calls,
+        )
+    )
+
+    assert reader() == {
+        "status": "blocked",
+        "blocked_scopes": [
+            {"scope": "bitget", "reason": "unexpected-order:1507487858898726912"}
+        ],
+        "evidence": "venue_kill_switches",
+    }
+    assert calls and calls[0]["options"] == (
+        "-c default_transaction_read_only=on -c statement_timeout=2000"
+    )
+
+
+def test_entry_lane_is_open_when_every_scope_is_inactive():
+    from fatty_trader.web.runtime_probe import create_entry_lane_reader
+
+    reader = create_entry_lane_reader(
+        connection_factory=lane_factory([("bitget", False, "released:approved")], [])
+    )
+
+    assert reader()["status"] == "open"
+    assert reader()["blocked_scopes"] == []
+
+
+def test_entry_lane_fails_closed_to_unknown_without_leaking_errors():
+    from fatty_trader.web.runtime_probe import create_entry_lane_reader
+
+    def failing(**kwargs):
+        raise OSError("postgresql://secret@private/db")
+
+    reader = create_entry_lane_reader(connection_factory=failing)
+
+    assert reader() == {
+        "status": "unknown",
+        "blocked_scopes": [],
+        "evidence": "venue_kill_switches-unreadable",
+    }

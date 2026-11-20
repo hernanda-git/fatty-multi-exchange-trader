@@ -547,9 +547,7 @@ def test_entry_signal_never_also_enrolls_management() -> None:
     text = "long $TIA here\nSl at 0.3902"
 
     assert (
-        _managements_for_message(
-            text, signal_present=True, source_veto=False, image_result=None
-        )
+        _managements_for_message(text, signal_present=True, source_veto=False, image_result=None)
         == []
     )
     managements = _managements_for_message(
@@ -559,8 +557,38 @@ def test_entry_signal_never_also_enrolls_management() -> None:
     assert managements[0].action.value == "SL_MOVE"
     assert managements[0].target_price == Decimal("0.3902")
     assert (
-        _managements_for_message(
-            text, signal_present=False, source_veto=True, image_result=None
-        )
+        _managements_for_message(text, signal_present=False, source_veto=True, image_result=None)
         == []
     )
+
+
+def test_management_message_is_enrolled_without_running_the_analyzer() -> None:
+    """A close is deterministic and must not wait for a model call.
+
+    LIVE 2026-11-20: "close $RAVE here -0.5R" reached the analyzer at 02:27:17
+    and was enrolled at 02:27:27, after the venue stop had already executed.
+    """
+    cursor = Cursor()
+    cursor.rows = [
+        (
+            uuid4(),
+            7,
+            43,
+            "b" * 64,
+            "close $RAVE here -0.5R",
+            datetime.now(UTC),
+        )
+    ]
+    connection = Connection(cursor)
+    calls: list[str] = []
+
+    def runner(text: str) -> CodexRunResult:
+        calls.append(text)
+        return CodexRunResult(False, True, False, 1, "unavailable", "", "")
+
+    result = process_received_batch(lambda: connection, runner=runner)
+
+    assert result == 1
+    statements = "\n".join(statement for statement, _ in cursor.executed)
+    assert "INSERT INTO source_management_updates" in statements
+    assert calls == []

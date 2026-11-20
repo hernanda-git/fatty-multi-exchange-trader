@@ -339,3 +339,25 @@ def test_stop_to_entry_still_wins_over_an_explicit_price_move() -> None:
     assert update is not None
     assert update.action is ManagementAction.SL_TO_ENTRY
     assert update.target_price is None
+
+
+def test_rave_close_signal_is_deterministic_management() -> None:
+    updates = parse_source_managements("close $RAVE here -0.5R")
+
+    assert len(updates) == 1
+    assert updates[0].symbol == "RAVEUSDT"
+    assert updates[0].action is ManagementAction.CLOSE
+    assert looks_like_entry_signal("close $RAVE here -0.5R") is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "#RAVE $RAVE LONG TRADE\n\nENTRY: 0.128\nTARGET: 0.161\nSTOPLOSS: 0.1228",
+        "longed $TIA here | Sl at 0.3902",
+        "$PEPE LONG entry 0.000385",
+        "BTCUSDT SHORT TRADE\nENTRY: 60000\nSTOPLOSS: 61000",
+    ],
+)
+def test_management_fast_path_never_swallows_entry_announcements(text: str) -> None:
+    assert looks_like_entry_signal(text) is True

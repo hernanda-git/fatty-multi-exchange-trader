@@ -87,6 +87,7 @@ def looks_like_entry_signal(text: str) -> bool:
     """Whether the message announces an entry and must reach the analyzer."""
     return bool(_ENTRY_ANNOUNCEMENT.search(text or ""))
 
+
 _CLOSE = re.compile(
     r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+\d+(?:\.\d+)?R(?:\+)?(?:\s+profit)?)\b"
     r"|\b(?:close|closed|closing|exit|exited)\s+(?:all\s+|fully\s+)?[$#]?[A-Z0-9]{1,15}\b"
