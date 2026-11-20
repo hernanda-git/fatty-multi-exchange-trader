@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Protocol
@@ -32,6 +33,25 @@ class AmbiguousOrderResult:
     provider_order_id: str | None
     provider_fill_ids: tuple[str, ...]
     provider_fills: tuple[dict[str, Any], ...]
+
+
+#: A protection leg younger than this is never retired on absent reads. Both
+#: the plan listing and the position snapshot are eventually consistent right
+#: after `place-pos-tpsl`; a flat read 2s after the fill retired a *resting*
+#: guard (LIVE 2026-11-20 FET), and the venue stop executed two hours later
+#: while the ledger said cancelled. Five minutes exceeds every observed race
+#: and equals the entry window.
+_PROTECTION_PLAN_RETIRE_AGE_SECONDS = 300
+
+
+def _intent_age_seconds(intent: LiveIntentRecord) -> float | None:
+    """Seconds since the durable intent was written, or None when unknown."""
+    created = intent.created_at
+    if created is None:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - created).total_seconds()
 
 
 def _complete_fills(value: Any) -> tuple[list[dict[str, Any]], bool]:
@@ -188,10 +208,17 @@ async def reconcile_unknown_intent(
                 intent.state = "partially_filled"
                 intent.last_error = None
             elif outcome.status is LiveOrderStatus.REJECTED:
-                # Complete readbacks prove a flat position, no pending order and
-                # no fill: the guard was cancelled without executing.
-                intent.state = "cancelled"
-                intent.last_error = "protection-plan-cancelled"
+                # Complete readbacks can still be stale for a fresh leg: the
+                # position snapshot may not show the fill yet. Only retire a
+                # guard after the placement race window has passed; before
+                # that, keep it retryable so the monitor can observe it again.
+                age = _intent_age_seconds(intent)
+                if age is None or age < _PROTECTION_PLAN_RETIRE_AGE_SECONDS:
+                    intent.state = "unknown"
+                    intent.last_error = "protection-plan-not-observed"
+                else:
+                    intent.state = "cancelled"
+                    intent.last_error = "protection-plan-cancelled"
             else:
                 intent.state = "unknown"
                 intent.last_error = "protection-plan-not-observed"

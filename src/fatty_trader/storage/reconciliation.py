@@ -150,7 +150,7 @@ class PostgresReconciliationRepository:
             cursor.execute(
                 """SELECT exchange, client_order_id, symbol, side, role, state, requested_qty,
                           filled_qty, filled_price, fee, provider_order_id,
-                          provider_fill_ids, last_error
+                          provider_fill_ids, last_error, created_at
                    FROM live_order_intents i
                    WHERE exchange = %s
                      AND NOT EXISTS (SELECT 1 FROM bitget_baseline_records b
@@ -444,4 +444,5 @@ def _intent_from_row(row: Any) -> LiveIntentRecord:
         provider_order_id=str(values[10]) if values[10] is not None else None,
         provider_fill_ids=tuple(str(value) for value in json.loads(raw_fill_ids)),
         last_error=str(values[12]) if len(values) > 12 and values[12] is not None else None,
+        created_at=values[13] if len(values) > 13 else None,
     )

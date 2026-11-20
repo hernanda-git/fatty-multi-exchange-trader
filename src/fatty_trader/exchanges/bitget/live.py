@@ -22,6 +22,7 @@ import re
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol
@@ -161,6 +162,7 @@ class LiveIntentRecord:
     protection_root_oid: str | None = None
     active_take_profit_price: Decimal | None = None
     last_error: str | None = None
+    created_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.role != "ENTRY":

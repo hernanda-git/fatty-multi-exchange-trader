@@ -8,6 +8,7 @@ an order it could not account for, latching the entry lane.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -17,7 +18,7 @@ from fatty_trader.exchanges.bitget.live import LiveIntentRecord
 from fatty_trader.exchanges.bitget.reconciliation import reconcile_unknown_intent
 
 
-def sl_intent() -> LiveIntentRecord:
+def sl_intent(*, age_minutes: float | None = None) -> LiveIntentRecord:
     return LiveIntentRecord(
         exchange="bitget",
         client_oid="live-bitget-RAVEUSDT-59db70c391105568-sl",
@@ -27,6 +28,11 @@ def sl_intent() -> LiveIntentRecord:
         requested_qty=Decimal("185"),
         state="unknown",
         provider_order_id="1507487858898726912",
+        created_at=(
+            datetime.now(UTC) - timedelta(minutes=age_minutes)
+            if age_minutes is not None
+            else datetime.now(UTC)
+        ),
     )
 
 
@@ -118,7 +124,7 @@ async def test_absent_plan_with_open_position_is_never_rejected() -> None:
 
 async def test_absent_plan_flat_without_fills_is_cancelled() -> None:
     result = await reconcile_unknown_intent(
-        sl_intent(),
+        sl_intent(age_minutes=10),
         **reads(plans=[], position=[], fills=[], pending=[]),
     )
     assert result.state == "cancelled"
@@ -147,3 +153,17 @@ async def test_executed_plan_binds_its_fill() -> None:
     assert result.filled_qty == Decimal("185")
     assert result.avg_price == Decimal("0.12227")
     assert result.provider_fill_ids == ("1507498769521557504",)
+
+
+async def test_fresh_absent_plan_is_never_retired() -> None:
+    """A flat read seconds after placement is a race, not proof of absence.
+
+    LIVE 2026-11-20 FET: the guard was retired ~2s after placement while the
+    venue plan was resting; it executed two hours later.
+    """
+    result = await reconcile_unknown_intent(
+        sl_intent(age_minutes=0.05),
+        **reads(plans=[], position=[], fills=[], pending=[]),
+    )
+    assert result.state == "unknown"
+    assert result.last_error == "protection-plan-not-observed"
