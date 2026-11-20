@@ -13,6 +13,7 @@ from fatty_trader.web.health import build_health_report
 def create_app(
     *,
     runtime_health_reader: Callable[[], Mapping[str, Mapping[str, Any]]] | None = None,
+    entry_lane_reader: Callable[[], Mapping[str, Any]] | None = None,
 ) -> FastAPI:
     console_enabled = environ.get("CONSOLE_ENABLED", "0") == "1"
     app = FastAPI(
@@ -50,7 +51,15 @@ def create_app(
             except Exception:
                 # Do not leak provider/DB exception messages into telemetry.
                 pass
-        return build_health_report(environ, runtime_components=runtime)
+        lane = None
+        if entry_lane_reader is not None:
+            try:
+                candidate_lane = entry_lane_reader()
+                if isinstance(candidate_lane, Mapping):
+                    lane = candidate_lane
+            except Exception:
+                pass
+        return build_health_report(environ, runtime_components=runtime, entry_lane=lane)
 
     @app.get("/health")
     def health() -> dict[str, object]:

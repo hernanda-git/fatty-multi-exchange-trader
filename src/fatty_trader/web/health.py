@@ -15,6 +15,7 @@ def build_health_report(
     runtime_components: Mapping[str, Mapping[str, Any]] | None = None,
     required_components: tuple[str, ...] = ("postgres", "intake", "analyzer", "notification"),
     max_age_seconds: float = 120,
+    entry_lane: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     """Separate static configuration, HTTP liveness, and fresh runtime evidence.
 
@@ -75,8 +76,14 @@ def build_health_report(
         "mode": mode,
         "venue_mode": venue_mode,
         "live_execution_enabled": execution_enabled,
-        # Web observes configuration, not dispatcher permission or kill switches.
+        # Web observes configuration; the entry lane is a live latch read, not
+        # a configuration flag. `orders_enabled` alone hid a latched lane.
         "orders_enabled": None if service == "web" else execution_enabled,
+        "entry_lane": (
+            dict(entry_lane)
+            if isinstance(entry_lane, Mapping) and entry_lane
+            else {"status": "unknown", "evidence": "not supplied"}
+        ),
         "components": components,
         "configuration": {
             "execution_enabled": execution_enabled,

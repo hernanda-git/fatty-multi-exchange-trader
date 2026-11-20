@@ -50,6 +50,54 @@ def _owner_is_alive(
     return response["valid"] is True and response["challenge"] == challenge
 
 
+_ENTRY_LANE_SCOPES = ("global", "bitget", "bitget-protection-stream")
+
+
+def create_entry_lane_reader(
+    *, connection_factory: Callable[..., Any] | None = None
+) -> Callable[[], dict[str, Any]]:
+    """Read the venue latches that gate new entries (read-only, sanitized).
+
+    ``/health`` used to report ``ok`` while a kill switch had the entry lane
+    closed. The flag is deliberately separate from readiness: a latched lane
+    does not make the web process unhealthy or restart it.
+    """
+
+    def read() -> dict[str, Any]:
+        try:
+            with (
+                (connection_factory or psycopg.connect)(
+                    connect_timeout=2,
+                    options="-c default_transaction_read_only=on -c statement_timeout=2000",
+                ) as connection,
+                connection.cursor() as cursor,
+            ):
+                cursor.execute(
+                    "SELECT scope, active, reason FROM venue_kill_switches "
+                    "WHERE scope = ANY(%s) ORDER BY scope",
+                    (list(_ENTRY_LANE_SCOPES),),
+                )
+                rows = cursor.fetchall()
+        except Exception:
+            return {
+                "status": "unknown",
+                "blocked_scopes": [],
+                "evidence": "venue_kill_switches-unreadable",
+            }
+        blocked = [
+            {"scope": str(scope), "reason": str(reason or "")}
+            for scope, active, reason in rows
+            if active
+        ]
+        return {
+            "status": "blocked" if blocked else "open",
+            "blocked_scopes": blocked,
+            "evidence": "venue_kill_switches",
+        }
+
+    return read
+
+
 def create_runtime_health_reader(
     environ: Mapping[str, str],
     *,

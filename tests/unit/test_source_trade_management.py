@@ -3,6 +3,7 @@ import pytest
 from fatty_trader.analyzer.trade_management import (
     ManagementAction,
     is_symbol_less_booking_text,
+    looks_like_entry_signal,
     parse_source_management,
     parse_source_managements,
 )

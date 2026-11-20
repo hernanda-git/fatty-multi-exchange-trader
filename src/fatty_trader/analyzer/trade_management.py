@@ -71,6 +71,22 @@ _ENTRY_SIGNAL_MARKER = re.compile(
     r"(?is)\bENTRY\s*:|\bTARGETS?\s*:|\b(?:LONG|SHORT)\b[^\n]{0,50}\bSTOP\s*LOSS\b"
 )
 
+#: Entry announcements that a management fast path must never swallow. The
+#: parser's own veto covers the full templates; the shorter "longed $TIA here |
+#: Sl at 0.3902" form carries its stop on the entry line and would otherwise
+#: look like an SL_MOVE.
+_ENTRY_ANNOUNCEMENT = re.compile(
+    r"(?is)\bENTRY\s*:|\bTARGETS?\s*:|\bSTOP\s*LOSS\b"
+    r"|\b(?:LONG|SHORT)\s+TRADE\b"
+    r"|\b(?:longed|shorted)\b[^\n]{0,40}\b(?:here|at|around|entry)\b"
+    r"|\b(?:LONG|SHORT)\b[^\n]{0,20}\bENTRY\b"
+)
+
+
+def looks_like_entry_signal(text: str) -> bool:
+    """Whether the message announces an entry and must reach the analyzer."""
+    return bool(_ENTRY_ANNOUNCEMENT.search(text or ""))
+
 _CLOSE = re.compile(
     r"\b(?:close|closed|closing|exit|exited)\b.*\b(?:all|full|position|trade|here|at\s+entry|in\s+(?:small\s+)?profit|in\s+(?:small\s+)?loss|for\s+\d+(?:\.\d+)?R(?:\+)?(?:\s+profit)?)\b"
     r"|\b(?:close|closed|closing|exit|exited)\s+(?:all\s+|fully\s+)?[$#]?[A-Z0-9]{1,15}\b"

@@ -158,6 +158,48 @@ async def reconcile_unknown_intent(
                         intent.provider_order_id = plan_oid
                     intent.last_error = None
                     return intent
+            # The plan listing is eventually consistent: `place-pos-tpsl` can
+            # return an order id before the guard is visible here. Terminalizing
+            # on one absent read wrote `rejected` one second after placement and
+            # the venue stop executed 43 minutes later (LIVE 2026-11-20 RAVE),
+            # so the monitor then saw an order it could not account for and
+            # latched the entry lane. A plan leg is never terminal on one
+            # absent listing: prove execution from fills, keep it retryable
+            # otherwise, and only retire it when the evidence is complete,
+            # flat, and fill-free.
+            outcome = await classify_missing_detail(
+                intent,
+                read_fills=read_fills,
+                read_position=read_position,
+                read_pending_orders=read_pending_orders,
+                provider_order_id=intent.provider_order_id,
+                missing_order_confirmed=True,
+            )
+            intent.filled_qty = outcome.filled_qty
+            intent.avg_price = outcome.avg_price
+            intent.fee = outcome.fee
+            intent.provider_fill_ids = outcome.provider_fill_ids
+            intent.provider_fills = outcome.provider_fills
+            intent.provider_order_id = outcome.provider_order_id or intent.provider_order_id
+            if outcome.status is LiveOrderStatus.FILLED:
+                intent.state = "filled"
+                intent.last_error = None
+            elif outcome.status is LiveOrderStatus.PARTIAL:
+                intent.state = "partially_filled"
+                intent.last_error = None
+            elif outcome.status is LiveOrderStatus.REJECTED:
+                # Complete readbacks prove a flat position, no pending order and
+                # no fill: the guard was cancelled without executing.
+                intent.state = "cancelled"
+                intent.last_error = "protection-plan-cancelled"
+            else:
+                intent.state = "unknown"
+                intent.last_error = "protection-plan-not-observed"
+            return intent
+        # An unreadable or malformed plan listing is not evidence of absence.
+        intent.state = "unknown"
+        intent.last_error = "protection-plan-read-unavailable"
+        return intent
     detail_not_found = False
     try:
         detail = await read_order_detail(intent.symbol, intent.client_oid)

@@ -1069,7 +1069,7 @@ async def run_bitget_dispatcher(environ: Mapping[str, str]) -> None:
         protection_admission=protection_admission,
         selectivity=SelectivitySettings.from_environ(environ),
     )
-    interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "10"))
+    interval = float(environ.get("BITGET_DISPATCH_POLL_SECONDS", "2"))
     lease_seconds = int(environ.get("BITGET_DISPATCH_LEASE_SECONDS", "30"))
     try:
         while True:
@@ -1621,7 +1621,7 @@ async def run_analyzer(environ: Mapping[str, str]) -> None:
     # Offline verdict: a dead token must be visible at startup, not only when a
     # chart arrives and silently falls back to text parsing.
     codex_auth = runner.probe_auth() if codex_cli == "available" else "unavailable"
-    poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "5"))
+    poll_seconds = float(environ.get("ANALYZER_POLL_SECONDS", "1"))
     batch_size = int(environ.get("ANALYZER_BATCH_SIZE", "10"))
     while True:
         processed = process_received_batch(
@@ -1780,7 +1780,7 @@ async def run_source_management(environ: Mapping[str, str]) -> None:
         max_attempts=int(environ.get("SOURCE_MANAGEMENT_MAX_ATTEMPTS", "5")),
         retry_seconds=int(environ.get("SOURCE_MANAGEMENT_RETRY_SECONDS", "60")),
     )
-    interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "30"))
+    interval = float(environ.get("SOURCE_MANAGEMENT_POLL_SECONDS", "2"))
     try:
         while True:
             state = await asyncio.to_thread(executor.run_once, "source-management")

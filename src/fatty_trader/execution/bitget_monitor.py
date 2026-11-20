@@ -338,7 +338,7 @@ class BitgetMonitor:
 
     async def _run_cycle(self) -> MonitorReport:
         reasons: list[str] = []
-        await self._reconcile_unresolved_intents(reasons)
+        intents_complete = await self._reconcile_unresolved_intents(reasons)
         provider_exits_reconciled = await self._reconcile_provider_exits(reasons)
         positions = await self._read_rows(
             self._client.get_all_positions, "provider-positions-invalid", reasons
@@ -347,7 +347,14 @@ class BitgetMonitor:
             self._client.get_pending_orders, "provider-orders-invalid", reasons
         )
         await self._check_positions(positions, reasons)
-        await self._check_orders(orders, reasons)
+        if intents_complete:
+            await self._check_orders(orders, reasons)
+        else:
+            # An unreadable intent is not evidence of an unowned order. The
+            # reconciliation failure already earns transient strikes above.
+            logging.getLogger(__name__).info(
+                "reason=unexpected-order-check-skipped intents_incomplete=true"
+            )
         # A post-fill margin/leverage mismatch is durable evidence that a position is
         # not what the plan promised. The adapter that recorded it cannot block a
         # replacement worker, so the latch lives here: it survives restarts and blocks
@@ -449,8 +456,9 @@ class BitgetMonitor:
         except Exception as exc:
             reasons.append(f"fallback-monitor-error:{exc}")
 
-    async def _reconcile_unresolved_intents(self, reasons: list[str]) -> None:
+    async def _reconcile_unresolved_intents(self, reasons: list[str]) -> bool:
         intents = await _run_sync_storage(self._repository.unresolved_intents, self._scope)
+        complete = True
         for intent in intents:
             try:
                 before = _intent_observation(intent)
@@ -467,7 +475,9 @@ class BitgetMonitor:
                 if _intent_observation(reconciled) != before:
                     await _run_sync_storage(self._repository.update_intent, reconciled)
             except Exception:
+                complete = False
                 reasons.append(f"unknown-intent-unreconciled:{intent.client_oid}")
+        return complete
 
     async def _reconcile_provider_exits(self, reasons: list[str]) -> int:
         """Persist unmatched provider exit fills without treating entries as exits."""
@@ -622,6 +632,14 @@ class BitgetMonitor:
                 if still_open:
                     # Two aggregate reads contradict the per-symbol read.
                     reasons.append("position-read-contradiction")
+                elif await self._bind_owned_exit_fills(symbol):
+                    # Our own protection plan executed between the reads. The
+                    # ledger reconciler owns the close; a stop-out is not a
+                    # rogue disappearance (LIVE 2026-11-20 RAVE latched the
+                    # lane one second after its venue stop filled).
+                    logging.getLogger(__name__).info(
+                        "symbol=%s protection-check skipped: owned plan exit observed", symbol
+                    )
                 elif await _run_sync_storage(
                     self._repository.position_close_proven, self._scope, symbol
                 ):
@@ -637,6 +655,34 @@ class BitgetMonitor:
             if report.state is not ProtectionState.VENUE_PROTECTED:
                 reasons.append(report.reason or "native-protection-unconfirmed")
                 await self._alert_unconfirmed_protection(position, quantity, report)
+
+    async def _bind_owned_exit_fills(self, symbol: str) -> bool:
+        """Bind a just-executed protection plan before calling a gone position rogue.
+
+        The aggregate position read can lose the position between the cycle's
+        provider-exit reconciliation and this check. Re-read the symbol's fills
+        and prove ownership through the plan order instead of latching on a
+        stop-out (LIVE 2026-11-20 RAVE).
+        """
+        try:
+            raw = await self._client.get_fills(symbol)
+        except Exception:
+            return False
+        if isinstance(raw, dict):
+            raw = raw.get("fillList")
+        if not isinstance(raw, list):
+            return False
+        bound = False
+        for fill in raw:
+            if not isinstance(fill, dict):
+                continue
+            if str(fill.get("symbol", "")).strip().upper() != symbol.strip().upper():
+                continue
+            if not _is_recent_fill(fill, _NATIVE_CLOSE_LOOKBACK_SECONDS):
+                continue
+            if await self._bind_native_plan_close(fill):
+                bound = True
+        return bound
 
     async def _alert_unconfirmed_protection(
         self,

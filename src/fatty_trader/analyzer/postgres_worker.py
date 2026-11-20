@@ -20,6 +20,7 @@ from fatty_trader.analyzer.integration import AnalysisResult, AnalysisStatus, an
 from fatty_trader.analyzer.source_guard import entry_stands_down
 from fatty_trader.analyzer.trade_management import (
     SourceManagement,
+    looks_like_entry_signal,
     parse_source_managements,
 )
 from fatty_trader.intake.freshness import ANALYSIS_ELIGIBLE_SQL, SOURCE_ELIGIBLE_SQL
@@ -141,6 +142,51 @@ def _enroll_management(cursor: Any, message_uuid: Any, revision: str, management
     return symbols
 
 
+def _notify_management(
+    cursor: Any,
+    *,
+    message: RawTelegramMessage,
+    message_uuid: Any,
+    revision: str,
+    managements: list[SourceManagement],
+) -> None:
+    """Enqueue the operator card for a management-only message.
+
+    The card is keyed by message revision, so a later re-enrollment cannot
+    duplicate it. A close that skips the analyzer still needs to say what it
+    did; otherwise the entry lane's most time-critical action is silent.
+    """
+    cursor.execute(
+        _ANALYSIS_NOTIFICATION_INSERT,
+        (
+            uuid4(),
+            f"analysis:{message_uuid}:{revision}",
+            json.dumps(
+                {
+                    "kind": "signal-analysis",
+                    "source_message_id": message.message_id,
+                    "source_text": message.raw_text,
+                    "source_received_at": message.received_at.isoformat()
+                    if message.received_at
+                    else None,
+                    "status": "MANAGEMENT",
+                    "failure_class": "none",
+                    "canonical_signal": False,
+                    "management_action": (",".join(m.action.value for m in managements) or None),
+                    "management_symbol": (",".join(m.symbol or "*" for m in managements) or None),
+                    "pair": "none",
+                    "direction": "none",
+                    "entry": "none",
+                    "stop_loss": "none",
+                    "take_profits": [],
+                    "dispatches": 0,
+                    "exchange_count": 0,
+                }
+            ),
+        ),
+    )
+
+
 def process_received_batch(
     connection_factory: Callable[[], Any],
     *,
@@ -212,6 +258,44 @@ def process_received_batch(
                 )
                 cursor.execute("SAVEPOINT analyzer_message")
                 try:
+                    # Management instructions are deterministic and time-critical:
+                    # the channel's "close $RAVE here -0.5R" (LIVE 2026-11-20) was
+                    # enrolled 24s after receipt, and the venue stop executed 12s
+                    # after the post. Enroll known management before the vision/LLM
+                    # analysis so a close never waits on a model call. Entry
+                    # announcements keep the full analyzer path.
+                    fast_managements = (
+                        []
+                        if entry_stands_down(message.raw_text)
+                        or looks_like_entry_signal(message.raw_text)
+                        else parse_source_managements(message.raw_text)
+                    )
+                    if fast_managements:
+                        symbols = [
+                            symbol
+                            for management in fast_managements
+                            for symbol in _enroll_management(
+                                cursor, message_uuid, revision, management
+                            )
+                        ]
+                        print(
+                            f"[ANALYZER] msg_id={message_id} MANAGEMENT "
+                            f"symbols={','.join(symbols) or 'none'} "
+                            f"actions={','.join(m.action.value for m in fast_managements)} "
+                            f"targets={[str(m.target_price) for m in fast_managements]}",
+                            flush=True,
+                        )
+                        cursor.execute(_UPDATE_STATE, ("ANALYZED", message_uuid))
+                        _notify_management(
+                            cursor,
+                            message=message,
+                            message_uuid=message_uuid,
+                            revision=revision,
+                            managements=fast_managements,
+                        )
+                        cursor.execute("RELEASE SAVEPOINT analyzer_message")
+                        processed += 1
+                        continue
                     if len(row) >= 14:
                         cursor.execute(
                             "SELECT 1 FROM telegram_messages tm WHERE tm.id = %s AND "
